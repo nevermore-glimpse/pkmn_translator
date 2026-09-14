@@ -1,62 +1,66 @@
-# 宝可梦同人游戏翻译工具
-
-[中文](README-ch.md) | [English](README.md)
-
-使用本地 Ollama 大模型批量翻译宝可梦同人游戏文本文件，支持术语表、
-
-占位符保护、断点续传、自动检查。
+\# Pokémon Fan Game Translation Tool
 
 
 
-## 特性
+\[中文](README.md) | \[English](README\_EN.md)
 
 
 
-- 🤖 **本地翻译**：调用 Ollama API，数据不出本机
+A batch translation tool for Pokémon fan game text files, powered by a local Ollama LLM.
 
-- 📚 **术语表**：从 Excel 多语言表一键生成，官方译名预替换
-
-- 🔒 **占位符保护**：`\PN`、`\wt[10]`、`[Haya]` 等控制码不被翻译
-
-- 💾 **断点续传**：缓存每批落盘，随时 Ctrl+C 都能继续
-
-- ✅ **自动检查**：翻译后自动报告未翻译 / 符号不匹配 / 特殊行
-
-- 🔀 **换行重排**：按 15–17 字 + 句末标点智能换行
+Supports terminology lists, placeholder protection, resume from cache, and automatic checking.
 
 
 
-## 环境要求
+\## Features
 
 
 
-- Python 3.9+
+\- 🤖 \*\*Local translation\*\*: Uses the Ollama API, data never leaves your machine
 
-- [Ollama](https://ollama.com/download) 已安装并运行
+\- 📚 \*\*Terminology list\*\*: Generate from an Excel multilingual sheet with one click; official translations are pre-substituted
 
-- 推荐模型：`qwen2.5:14b`（中文本地化）
+\- 🔒 \*\*Placeholder protection\*\*: Control codes like `\\PN`, `\\wt\[10]`, `\[Haya]` are not translated
+
+\- 💾 \*\*Resume from cache\*\*: Cache is saved after each batch; you can Ctrl+C and continue anytime
+
+\- ✅ \*\*Auto-check\*\*: Automatically reports untranslated lines / symbol mismatches / special lines after translation
+
+\- 🔀 \*\*Line rewrapping\*\*: Smart line breaks at 15–17 characters and sentence-ending punctuation
 
 
 
-## 安装
+\## Requirements
+
+
+
+\- Python 3.9+
+
+\- \[Ollama](https://ollama.com/download) installed and running
+
+\- Recommended model: `qwen2.5:14b` (good for Chinese localization)
+
+
+
+\## Installation
 
 
 
 ```bash
 
-# 1. 安装依赖
+\# 1. Install dependencies
 
 pip install -r requirements.txt
 
 
 
-# 2. 拉取模型
+\# 2. Pull the model
 
 ollama pull qwen2.5:14b
 
 
 
-# 3. 确认 Ollama 在跑
+\# 3. Make sure Ollama is running
 
 curl http://localhost:11434/api/tags
 
@@ -64,15 +68,15 @@ curl http://localhost:11434/api/tags
 
 
 
-## 使用
+\## Usage
 
 
 
-### 快速开始
+\### Quick Start
 
 
 
-双击 `启动.bat`，或在命令行：
+Double-click `启动.bat`, or run from the command line:
 
 
 
@@ -84,51 +88,53 @@ python main.py
 
 
 
-出现菜单：
+You will see the menu:
 
 
 
 ```
 
-1\. 翻译
+1\. Translate
 
-2\. 检查（未翻译 / 符号不匹配 / 特殊行）
+2\. Check (untranslated / symbol mismatch / special lines)
 
-3\. Excel 转术语表
+3\. Excel to terminology
 
-4\. 切换输入文件
+4\. Switch input file
 
-0\. 退出
+0\. Exit
 
 ```
 
 
 
-### 翻译流程
+\### Translation Workflow
 
 
 
-1\. 选 `1` → 弹窗选择要翻译的 `.txt` 文件
+1\. Select `1` → a file dialog opens to choose the `.txt` file to translate
 
-2\. 等待翻译完成，输出到 `<文件名>_translated.txt`
+2\. Wait for translation to finish; output is written to `<filename>\_translated.txt`
 
-3\. 打开 `reports/check_report.txt`，按报告逐行修正
+3\. Open `reports/check\_report.txt` and fix issues line by line as reported
 
-4\. 若还有问题，选 `2` 重新检查
-
-
-
-### 术语表
+4\. If problems remain, select `2` to run the check again
 
 
 
-准备一份 Excel，每个 sheet 表头含语言列名（`英文`、`简体中文` 等），当然也可以用我的：
+\### Terminology List
 
 
 
-| 图鉴编号 | 英语 | 简体中文 |
+Prepare an Excel file where each sheet has language column headers (e.g. `English`, `Simplified Chinese`).
 
-|---------|------|---------|
+You can also use mine:
+
+
+
+| Pokédex No. | English | Simplified Chinese |
+
+|-------------|---------|-------------------|
 
 | 1 | Bulbasaur | 妙蛙种子 |
 
@@ -136,21 +142,21 @@ python main.py
 
 
 
-选菜单 `3` → 弹窗选 Excel → 选源/目标语言 → 自动生成 `term\_dict.py`。
+Select menu `3` → choose the Excel file in the dialog → choose source/target languages → `term\_dict.py` is generated automatically.
 
 
 
-### 输入文件格式
+\### Input File Format
 
 
 
 ```
 
-[map1]
+\[map1]
 
 Text A
 
-Text A            ← 重复的第二行会被翻译
+Text A            ← the repeated second line will be translated
 
 Text B
 
@@ -160,49 +166,51 @@ Text B
 
 
 
-- 区块符 `[map1]` 独占一行
+\- Block markers `\[map1]` occupy a line by themselves
 
-- 纯数字行跳过
+\- Pure numeric lines are skipped
 
-- 文本行必须**成对重复**，只翻译第二行
+\- Text lines must appear in \*\*duplicate pairs\*\*; only the second line is translated
 
-- 不成对的文本行会被标记为"特殊行"，需手动处理
-
-
-## 配置
+\- Text lines that are not paired are marked as "special lines" and need manual handling
 
 
 
-编辑 `config.py`：
+\## Configuration
+
+
+
+Edit `config.py`:
 
 
 
 ```python
 
-MODEL = "qwen2.5:14b"   # 换模型
+MODEL = "qwen2.5:14b"        # change model
 
-BATCH_SIZE  = 20             # 每批条数
+BATCH\_SIZE  = 20             # lines per batch
 
-WRAP_CHARS_MIN = 15          # 换行下限
+WRAP\_CHARS\_MIN = 15          # lower wrap limit
 
-WRAP_CHARS_MAX = 17          # 换行上限
+WRAP\_CHARS\_MAX = 17          # upper wrap limit
 
 ```
 
 
 
-## 日志
+\## Logging
 
 
 
-- 控制台：`INFO` 级
+\- Console: `INFO` level
 
-- 文件：`logs/translate_YYYYMMDD.log`（含 `DEBUG`）
+\- File: `logs/translate\_YYYYMMDD.log` (includes `DEBUG`)
 
-- 调试模式：`set DEBUG_PH=1 && python main.py`
+\- Debug mode: `set DEBUG\_PH=1 \&\& python main.py`
 
 
-## 许可
+
+\## License
 
 
 
