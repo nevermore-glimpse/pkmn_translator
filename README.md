@@ -37,7 +37,7 @@ curl http://localhost:11434/api/tags
 
 ### Quick Start
 
-Double-click `启动.bat`, or run from the command line:
+Double-click `Start.bat`, or run from the command line:
 
 ```bash
 python main.py
@@ -52,6 +52,11 @@ You will see the menu:
 4. Switch input file
 0. Exit
 ```
+
+### Create Desktop Shortcut (Optional)
+
+Double-click `Create Desktop Shortcut.vbs`
+
 
 ### Translation Workflow
 
