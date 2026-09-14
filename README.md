@@ -32,9 +32,9 @@
 
 - Python 3.9+
 
-- \[Ollama](https://ollama.com/download) 已安装并运行
+- [Ollama](https://ollama.com/download) 已安装并运行
 
-- 推荐模型：`qwen2.5:7b`（平衡质量与速度）或 `translategemma:4b`
+- 推荐模型：`qwen2.5:14b`（中文本地化）
 
 
 
