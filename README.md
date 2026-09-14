@@ -1,6 +1,6 @@
 # Pokémon Fan Game Translation Tool
 
-[中文](README.md) | [English](README_EN.md)
+[中文](README-ch.md) | [English](README.md)
 
 A batch translation tool for Pokémon fan game text files, powered by a local Ollama LLM.
 Supports terminology lists, placeholder protection, resume from cache, and automatic checking.
