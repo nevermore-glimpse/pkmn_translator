@@ -1,6 +1,6 @@
 # 宝可梦同人游戏翻译工具
 
-
+[中文](README.md) | [English](README_EN.md)
 
 使用本地 Ollama 大模型批量翻译宝可梦同人游戏文本文件，支持术语表、
 
