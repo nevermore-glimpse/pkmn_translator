@@ -1,0 +1,46 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.spec
+.venv/
+venv/
+env/
+ENV/
+
+# ---------- IDE ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---------- 运行时产物 ----------
+logs/
+reports/
+*.log
+*.runtime.json
+.runtime.json
+
+# 翻译输出
+*_translated.txt
+*_cache.json
+intl_translated.txt
+intl_cache.json
+
+# ---------- 用户私有数据 ----------
+*.xlsm
+term_dict.py
+.private/
+
+# ---------- 系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.bak
+*.tmp
+~$*

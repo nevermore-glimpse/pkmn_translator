@@ -1,0 +1,11 @@
+[map1]
+Hello, \PN!\nI can see you calling me over there!
+Hello, \PN!\nI can see you calling me over there!
+Come over and talk to me.
+Come over and talk to me.
+
+[map2]
+\bHey man, you want Fly?
+\bHey man, you want Fly?
+\bTake it, it's yours.
+\bTake it, it's yours.
