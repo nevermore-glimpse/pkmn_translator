@@ -25,6 +25,10 @@ reports/
 *.log
 *.runtime.json
 .runtime.json
+term_dict.snapshot.json
+config.py.tmp
+user_config.json
+user_config.json.tmp
 
 # 翻译输出
 *_translated.txt

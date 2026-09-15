@@ -7,20 +7,41 @@ Supports terminology lists, placeholder protection, resume from cache, and autom
 
 ## Features
 
-- 🤖 **Local translation**: Uses the Ollama API, data never leaves your machine
-- 📚 **Terminology list**: Generate from an Excel multilingual sheet with one click; official translations are pre-substituted
-- 🔒 **Placeholder protection**: Control codes like `\PN`, `\wt[10]`, `[Haya]` are not translated
-- 💾 **Resume from cache**: Cache is saved after each batch; you can Ctrl+C and continue anytime
-- ✅ **Auto-check**: Automatically reports untranslated lines / symbol mismatches / special lines after translation
-- 🔀 **Line rewrapping**: Smart line breaks at 15–17 characters and sentence-ending punctuation
+- 🤖 **Local translation** — Uses the Ollama API, data never leaves your machine
+- 📚 **Terminology list** — Generate from an Excel multilingual sheet with one click; official translations are pre-substituted
+- 🔒 **Placeholder protection** — Control codes like `\PN`, `\wt[10]`, `[Haya]` are not translated
+- 💾 **Resume from cache** — Cache is saved after each batch; you can Ctrl+C and continue anytime
+- ✅ **Auto-check** — Automatically reports untranslated lines / symbol mismatches / special lines after translation
+- 🔄 **Auto re-translate** — Re-translates untranslated / suspected-untranslated sentences with one click
+- 🔀 **Line rewrapping** — Smart line breaks at 15–17 characters and sentence-ending punctuation
+- 🧠 **Terminology re-translation** — Detects newly added terms and re-translates only the affected sentences
+- ⚙️ **In-app settings** — Edit all configuration values from the menu, no manual file editing
+- 🖥️ **Standalone exe** — Releases include a ready-to-run Windows executable
 
 ## Requirements
 
+**If you download the exe from [Releases](https://github.com/nevermore-glimpse/pkmn_translator/releases):**
+
+- Windows 10/11
+- [Ollama](https://ollama.com/download) installed and running
+- Recommended model: `qwen2.5:14b`
+
+**If you run from source:**
+
 - Python 3.9+
 - [Ollama](https://ollama.com/download) installed and running
-- Recommended model: `qwen2.5:14b` (good for Chinese localization)
+- Recommended model: `qwen2.5:14b`
 
 ## Installation
+
+### Option A — Download the exe (recommended)
+
+1. Go to the [Releases](https://github.com/nevermore-glimpse/pkmn_translator/releases) page
+2. Download `PkmnTranslator_vX.Y.Z.zip` and unzip it
+3. Run `宝可梦翻译工具.exe`
+4. (Optional) Double-click `创建桌面快捷方式.vbs` to create a desktop shortcut with icon
+
+### Option B — Run from source
 
 ```bash
 # 1. Install dependencies
@@ -31,39 +52,59 @@ ollama pull qwen2.5:14b
 
 # 3. Make sure Ollama is running
 curl http://localhost:11434/api/tags
+
+# 4. Start the tool
+python main.py
 ```
 
 ## Usage
 
 ### Quick Start
 
-Double-click `Start.bat`, or run from the command line:
+Double-click `启动.bat` (or `宝可梦翻译工具.exe` if using the release build), or run:
 
 ```bash
 python main.py
 ```
 
+On startup, the tool automatically checks your Python environment, dependencies,
+Ollama service, and the required model. If Ollama is not running, it will offer to
+launch it for you (Ollama Desktop App is preferred, with `ollama serve` as fallback).
+
 You will see the menu:
 
 ```
 1. Translate
-2. Check (untranslated / symbol mismatch / special lines)
+2. Re-translate untranslated content
 3. Excel to terminology
 4. Switch input file
+5. Re-translate after terminology update
+6. Settings
+7. Re-check environment
 0. Exit
 ```
 
 ### Create Desktop Shortcut (Optional)
 
-Double-click `Create Desktop Shortcut.vbs`
-
+Double-click `创建桌面快捷方式.vbs` (Create Desktop Shortcut.vbs).
+A shortcut named *Pokémon Fan Game Translation Tool* will be created on your desktop.
 
 ### Translation Workflow
 
-1. Select `1` → a file dialog opens to choose the `.txt` file to translate
+1. Select `1` → choose source/target languages → a file dialog opens to pick the `.txt` file
 2. Wait for translation to finish; output is written to `<filename>_translated.txt`
-3. Open `reports/check_report.txt` and fix issues line by line as reported
-4. If problems remain, select `2` to run the check again
+3. A check report is generated next to the output file: `<filename>_translated_report.txt`
+4. If problems remain, select `2` to auto re-translate the untranslated lines, or fix manually
+
+### Re-translate Untranslated Content (Menu 2)
+
+Runs a fresh check on the output file, then:
+
+- Auto re-translates lines marked as **Untranslated** or **Suspected untranslated**
+- Only reports **Symbol mismatch** and **Special lines** — these are not auto-fixed
+  (symbol mismatches usually mean the model dropped a control code; retrying rarely helps)
+
+Only the affected cache entries are deleted, so re-translation is fast.
 
 ### Terminology List
 
@@ -75,7 +116,19 @@ You can also use mine:
 | 1 | Bulbasaur | 妙蛙种子 |
 | 2 | Ivysaur | 妙蛙草 |
 
-Select menu `3` → choose the Excel file in the dialog → choose source/target languages → `term_dict.py` is generated automatically.
+Select menu `3` → choose the Excel file → choose source/target languages → `term_dict.py` is generated automatically.
+
+### Re-translate After Adding New Terms (Menu 5)
+
+After editing `term_dict.py` (or regenerating from Excel):
+
+1. Select `5`
+2. The tool compares the current terminology list against the last snapshot
+3. Newly added terms are identified; sentences containing them are located in the cache
+4. Those cache entries are deleted and re-translated with the new terminology
+
+The first time you run menu `5`, it records the current terminology list as the baseline.
+Every subsequent run compares against it.
 
 ### Input File Format
 
@@ -94,20 +147,100 @@ Text B
 
 ## Configuration
 
-Edit `config.py`:
+You can edit settings in three ways:
+
+**Method 1 — In-app menu (recommended)**
+
+Select `6` from the main menu. Enter the number of the setting you want to change:
+
+```
+  1. Ollama model         = qwen2.5:14b
+  2. Ollama URL           = http://localhost:11434/api/chat
+  3. Batch size           = 20
+  4. Temperature          = 0.2
+  ...
+ 20. Excel target column  = 简体中文
+```
+
+Changes take effect immediately — no restart needed.
+
+- **Running from source** → changes are written back to `config.py`
+- **Running from exe** → changes are saved in `user_config.json` next to the exe
+
+**Method 2 — Edit `config.py` directly (source mode)**
 
 ```python
-MODEL = "qwen2.5:14b"        # change model
-BATCH_SIZE  = 20             # lines per batch
+MODEL = "qwen2.5:14b"        # model name
+BATCH_SIZE = 20              # lines per batch
 WRAP_CHARS_MIN = 15          # lower wrap limit
 WRAP_CHARS_MAX = 17          # upper wrap limit
 ```
+
+**Method 3 — Edit `user_config.json` (exe mode)**
+
+Create a `user_config.json` file next to the exe with any keys you want to override:
+
+```json
+{
+  "MODEL": "qwen2.5:7b",
+  "BATCH_SIZE": 15
+}
+```
+
+Restart the exe to apply.
 
 ## Logging
 
 - Console: `INFO` level
 - File: `logs/translate_YYYYMMDD.log` (includes `DEBUG`)
-- Debug mode: `set DEBUG_PH=1 && python main.py`
+- Debug mode: `set DEBUG_PH=1 && python main.py` (source) or `set DEBUG_PH=1 && 宝可梦翻译工具.exe`
+
+## Troubleshooting
+
+**Ollama is not running**
+
+The tool will try to launch it automatically. If that fails:
+
+1. Check the system tray for the Ollama icon (Desktop version runs in background)
+2. Run `ollama serve` manually and check its output
+3. Check whether port 11434 is occupied: `netstat -ano | findstr :11434`
+4. See the log: `logs/ollama_launch.log`
+
+**Model not installed**
+
+```
+ollama pull qwen2.5:14b
+```
+
+**Translation output contains raw English**
+
+Run menu `2` to auto re-translate, or open `<output>_report.txt` and fix manually.
+
+**Placeholder lost**
+
+The tool retries and falls back automatically. If a line still fails, it is reported in the check report. Fix it manually or add the term to your terminology list.
+
+**exe throws `FileNotFoundError: config.py`**
+
+Make sure you are using the latest release. The tool uses `user_config.json` in exe mode.
+
+**Double-clicking the exe flashes and closes**
+
+Open a Command Prompt in the exe folder and run it manually to see the error:
+
+```cmd
+宝可梦翻译工具.exe
+```
+
+## Building the exe
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --name "宝可梦翻译工具" --icon=start.ico ^
+    --hidden-import openpyxl --hidden-import tkinter main.py
+```
+
+Then copy `start.ico` next to the produced exe in `dist\`.
 
 ## License
 

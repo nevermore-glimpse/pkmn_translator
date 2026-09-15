@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""三个核心功能的实现：翻译 / 检查 / Excel 转术语表。"""
+"""四个核心功能的实现：翻译 / 检查 / Excel 转术语表 / 术语更新后重翻。"""
 import json
 import os
 import re
@@ -15,7 +15,63 @@ from translator import OllamaClient, translate_with_retry
 
 log = get_logger("commands")
 
+# ================================================================
+# 常用语言列表（序号选择用）
+# ================================================================
+LANG_OPTIONS = [
+    "英文",
+    "简体中文",
+    "繁体中文",
+    "日文",
+    "韩文",
+    "西班牙文",
+    "法文",
+    "德文",
+    "意大利文"
+]
 
+# ================================================================
+# 报告路径：写到翻译文件同目录
+# ================================================================
+def _report_path():
+    """
+    返回检查报告路径：与输出文件同目录，名字为 <输出名>_report.txt
+    例：intl_translated.txt → intl_translated_report.txt
+    """
+    out = config.Runtime.output_file
+    d = os.path.dirname(out) or "."
+    base = os.path.splitext(os.path.basename(out))[0]
+    return os.path.join(d, f"{base}_report.txt")
+
+def _pick_language(prompt, default_key, exclude=None):
+    """
+    交互式语言选择。
+    返回选中的语言字符串，或 None 表示取消。
+    """
+    print(f"\n{prompt}")
+    for i, lang in enumerate(LANG_OPTIONS, 1):
+        mark = ""
+        if lang == default_key:
+            mark = "   ← 上次使用"
+        if exclude and lang == exclude:
+            mark = "   (已被选为另一种语言)"
+        print(f"  {i:>2}. {lang}{mark}")
+    print(f"   0. 自定义（手动输入）")
+
+    hint = f"[{default_key}]" if default_key else "[回车跳过]"
+    raw = input(f"请选择 {hint}: ").strip()
+
+    if not raw:
+        return default_key or None
+    if raw == "0":
+        custom = input("请输入语言名（如 English / 日本語）：").strip()
+        return custom or None
+    if raw.isdigit():
+        idx = int(raw) - 1
+        if 0 <= idx < len(LANG_OPTIONS):
+            return LANG_OPTIONS[idx]
+    print("无效输入")
+    return None
 # ================================================================
 # 占位符兜底
 # ================================================================
@@ -30,42 +86,81 @@ def _force_restore(raw, maps):
 # ================================================================
 # 功能 1：翻译
 # ================================================================
-def cmd_translate():
+def cmd_translate(skip_picker=False):
     import filepicker
+    import settings
 
     log.info("=" * 50)
     log.info("开始翻译")
 
-    # ---------- 选定输入文件 ----------
-    src_path = config.Runtime.input_file
-
-    if not os.path.exists(src_path):
-        print(f"\n默认输入文件不存在：{src_path}")
-        picked = filepicker.pick_text_file(
-            initial_dir=config.BASE_DIR,
-            title="选择要翻译的文本文件",
-        )
-        if not picked:
+    # ---------- 选源语言 / 目标语言 ----------
+    if not skip_picker and getattr(config, "ASK_LANG_EACH_TIME", True):
+        src_lang = _pick_language("请选择【源语言】：", config.SOURCE_LANG)
+        if not src_lang:
             print("已取消")
             return
-        config.Runtime.set_input(picked)
+
+        tgt_lang = _pick_language("请选择【目标语言】：",
+                                  config.TARGET_LANG, exclude=src_lang)
+        if not tgt_lang:
+            print("已取消")
+            return
+
+        if src_lang == tgt_lang:
+            print(f"\n⚠ 源语言和目标语言相同（{src_lang}）")
+            if input("继续？(y/N): ").strip().lower() != "y":
+                return
+
+        # 写回 config.py + 热更新
+        settings.set_value("SOURCE_LANG", src_lang)
+        settings.set_value("TARGET_LANG", tgt_lang)
+
+        log.info("翻译方向：%s → %s", src_lang, tgt_lang)
+        print(f"\n  翻译方向：{src_lang} → {tgt_lang}")
+    else:
+        # 直接用 config 里的
+        print(f"\n  翻译方向：{config.SOURCE_LANG} → {config.TARGET_LANG}")
+
+    # ---------- 选定输入文件 ----------
+    if skip_picker:
+        src_path = config.Runtime.input_file
+        if not os.path.exists(src_path):
+            print(f"输入文件不存在：{src_path}")
+            log.error("输入文件不存在：%s", src_path)
+            return
+        print(f"\n输入文件：{src_path}")
+        print(f"输出文件：{config.Runtime.output_file}")
+        print(f"缓存文件：{config.Runtime.cache_file}")
+    else:
         src_path = config.Runtime.input_file
 
-    print(f"\n输入文件：{src_path}")
-    print(f"输出文件：{config.Runtime.output_file}")
-    print(f"缓存文件：{config.Runtime.cache_file}")
-
-    if input("是否另选文件？(y/N): ").strip().lower() == "y":
-        picked = filepicker.pick_text_file(
-            initial_dir=os.path.dirname(src_path),
-            title="选择文本文件",
-        )
-        if picked:
+        if not os.path.exists(src_path):
+            print(f"\n默认输入文件不存在：{src_path}")
+            picked = filepicker.pick_text_file(
+                initial_dir=config.BASE_DIR,
+                title="选择要翻译的文本文件",
+            )
+            if not picked:
+                print("已取消")
+                return
             config.Runtime.set_input(picked)
             src_path = config.Runtime.input_file
-            print(f"已切换 → {src_path}")
-            print(f"   输出：{config.Runtime.output_file}")
-            print(f"   缓存：{config.Runtime.cache_file}")
+
+        print(f"\n输入文件：{src_path}")
+        print(f"输出文件：{config.Runtime.output_file}")
+        print(f"缓存文件：{config.Runtime.cache_file}")
+
+        if input("是否另选文件？(y/N): ").strip().lower() == "y":
+            picked = filepicker.pick_text_file(
+                initial_dir=os.path.dirname(src_path),
+                title="选择文本文件",
+            )
+            if picked:
+                config.Runtime.set_input(picked)
+                src_path = config.Runtime.input_file
+                print(f"已切换 → {src_path}")
+                print(f"   输出：{config.Runtime.output_file}")
+                print(f"   缓存：{config.Runtime.cache_file}")
 
     if not os.path.exists(src_path):
         print(f"文件不存在：{src_path}")
@@ -220,36 +315,118 @@ def cmd_translate():
     try:
         out_lines, _ = P.read_file(config.Runtime.output_file,
                                    config.OUTPUT_ENCODING)
-        hits = checker.check(lines, out_lines, entries, special,
-                             config.CHECK_REPORT)
-        _print_summary(hits, config.CHECK_REPORT)
+        report_path = _report_path()
+        hits = checker.check(lines, out_lines, entries, special, report_path)
+        _print_summary(hits, report_path)
     except Exception as e:
         log.error("自动检查失败：%s", e)
         print(f"  自动检查失败（不影响翻译结果）：{e}")
 
 
 # ================================================================
-# 功能 2：检查
+# 内部：运行检查
 # ================================================================
-def cmd_check():
+def _run_check():
+    """跑一次检查，返回 hits 列表；失败返回 None。"""
     log.info("=" * 50)
     log.info("检查  %s", config.Runtime.output_file)
 
     if not os.path.exists(config.Runtime.input_file):
         print(f"缺少输入文件：{config.Runtime.input_file}")
-        return
+        return None
     if not os.path.exists(config.Runtime.output_file):
         print(f"缺少输出文件：{config.Runtime.output_file}（先跑一次翻译）")
-        return
+        return None
 
     src_lines, _ = P.read_file(config.Runtime.input_file, config.INPUT_ENCODING)
     out_lines, _ = P.read_file(config.Runtime.output_file, config.OUTPUT_ENCODING)
     entries, special = P.extract_entries(src_lines)
     log.info("待检查 %d 条  特殊 %d 条", len(entries), len(special))
 
-    hits = checker.check(src_lines, out_lines, entries, special,
-                         config.CHECK_REPORT)
-    _print_summary(hits, config.CHECK_REPORT)
+    report_path = _report_path()
+    hits = checker.check(src_lines, out_lines, entries, special, report_path)
+    _print_summary(hits, report_path)
+    return hits
+
+
+# ================================================================
+# 功能 2：重翻未翻译内容
+# ================================================================
+def cmd_retranslate_failed():
+    """
+    扫描输出文件，找出所有未翻译 / 疑似未翻译的句子，
+    从缓存删除对应条目后重新翻译。
+    行为类似菜单 5（术语更新后重翻），但筛选依据是检查报告而非术语表。
+    """
+    log.info("=" * 50)
+    log.info("重翻未翻译内容")
+
+    print("\n[重翻未翻译内容]")
+    print("-" * 55)
+
+    # ---------- 1. 先检查 ----------
+    hits = _run_check()
+    if hits is None:
+        return
+
+    if not hits:
+        print("\n✔ 没有发现问题，无需重翻")
+        return
+
+    # ---------- 2. 按类型分组 ----------
+    kinds_count = {}
+    for h in hits:
+        kinds_count[h['kind']] = kinds_count.get(h['kind'], 0) + 1
+    print("\n问题分布：")
+    for k, n in kinds_count.items():
+        print(f"  {k}: {n}")
+
+    target_kinds = {"未翻译", "疑似未翻译"}
+    to_retranslate = [h for h in hits if h['kind'] in target_kinds]
+    symbol_issues  = [h for h in hits if h['kind'] == '符号不匹配']
+    special_issues = [h for h in hits if h['kind'] == '特殊行']
+
+    # ---------- 3. 检查是否可重翻 ----------
+    if not to_retranslate:
+        print("\n没有【未翻译 / 疑似未翻译】的句子")
+        if symbol_issues:
+            print(f"  符号不匹配 {len(symbol_issues)} 处 —— 属于模型没保留控制码，")
+            print(f"    重翻大概率仍会失败，建议看报告手动修正")
+        if special_issues:
+            print(f"  特殊行 {len(special_issues)} 处 —— 属于未配对的文本行，")
+            print(f"    需要手动处理，请查看报告")
+        return
+
+    # ---------- 4. 列出待重翻 ----------
+    print(f"\n待重翻：{len(to_retranslate)} 条")
+    for h in to_retranslate[:10]:
+        print(f"  [{h['kind']}] 行 {h['line_no']}  {h['src'][:60]}")
+    if len(to_retranslate) > 10:
+        print(f"  … 其余 {len(to_retranslate) - 10} 条")
+
+    # ---------- 5. 确认 ----------
+    print(f"\n将从缓存中删除这 {len(to_retranslate)} 条原文，然后重新翻译。")
+    if input("确认？(Y/n): ").strip().lower() == "n":
+        print("已取消")
+        return
+
+    # ---------- 6. 清缓存 ----------
+    cache = Cache(config.Runtime.cache_file)
+    keys = {h['src'] for h in to_retranslate}   # h['src'] 已是 strip 过的原文
+
+    before = len(cache)
+    removed = cache.remove_many(keys)
+    cache.save(force=True)
+    log.info("缓存：%d → %d（删除 %d）", before, len(cache), removed)
+    print(f"✔ 已删除 {removed} 条缓存（原缓存 {before} 条）")
+
+    # ---------- 7. 重翻 ----------
+    if removed == 0:
+        print("\n⚠ 缓存里没有这些条目（可能上次翻译失败未入库）")
+        print("  直接重翻…")
+
+    print()
+    cmd_translate(skip_picker=True)
 
 
 def _print_summary(hits, report_path):
@@ -430,10 +607,149 @@ def cmd_switch_file():
 
 
 # ================================================================
+# 功能 5：术语更新后重翻
+# ================================================================
+def cmd_retranslate_terms():
+    """
+    对比术语表快照，找出新增术语 → 定位受影响的缓存 → 删除 → 重翻。
+    """
+    from term_sync import (
+        load_current_terms, load_snapshot, save_snapshot,
+        find_affected_cache, SNAPSHOT_FILE,
+    )
+
+    log.info("=" * 50)
+    log.info("术语更新后重翻")
+
+    print("\n[术语更新后重翻]")
+
+    # ---------- 加载当前术语表 ----------
+    current_terms = load_current_terms()
+    current_keys = set(current_terms.keys())
+
+    log.info("当前术语表：%d 条", len(current_keys))
+    print(f"当前术语表：{len(current_keys)} 条")
+
+    if not current_keys:
+        print("术语表为空或不存在，请先运行菜单 3 生成")
+        return
+
+    # ---------- 首次使用：只记录基准 ----------
+    old_keys = load_snapshot()
+    if old_keys is None:
+        print(f"\n未找到快照文件：{SNAPSHOT_FILE}")
+        print("首次使用本功能，需要先把当前术语表记录为基准。")
+        print("以后修改 term_dict.py 后再运行本功能，就能识别出新增术语。")
+        print(f"\n当前术语表：{len(current_keys)} 条")
+        ans = input("是否将当前术语表记录为基准？(Y/n): ").strip().lower()
+        if ans == "n":
+            print("已取消")
+            return
+        save_snapshot(current_keys)
+        print(f"✔ 已保存基准（{len(current_keys)} 条）")
+        print("\n以后的工作流：")
+        print("  1. 修改 term_dict.py（或重新从 Excel 生成）")
+        print("  2. 再次运行本功能")
+        print("  3. 系统自动找出新增术语、清缓存、重翻")
+        return
+
+    # ---------- 对比 ----------
+    added = sorted(current_keys - old_keys)
+    removed = sorted(old_keys - current_keys)
+
+    log.info("对比快照：新增 %d  删除 %d", len(added), len(removed))
+    print(f"\n对比快照：")
+    print(f"  上次基准：{len(old_keys)} 条")
+    print(f"  当前术语：{len(current_keys)} 条")
+    print(f"  新增：{len(added)} 条")
+    print(f"  删除：{len(removed)} 条")
+
+    if not added and not removed:
+        print("\n术语表没有变化，无需重翻")
+        return
+
+    if added:
+        print("\n新增术语（前 30 条）：")
+        for t in added[:30]:
+            print(f"  + {t}  →  {current_terms.get(t, '')}")
+        if len(added) > 30:
+            print(f"  … 其余 {len(added) - 30} 条")
+
+    if removed:
+        print("\n删除的术语（前 10 条）：")
+        for t in removed[:10]:
+            print(f"  - {t}")
+        if len(removed) > 10:
+            print(f"  … 其余 {len(removed) - 10} 条")
+
+    if not added:
+        # 只有删除，不影响已有译文，直接更新快照
+        print("\n没有新增术语，直接更新快照")
+        save_snapshot(current_keys)
+        return
+
+    # ---------- 找命中的缓存 ----------
+    cache = Cache(config.Runtime.cache_file)
+    print(f"\n当前缓存：{len(cache)} 条")
+    log.info("当前缓存：%d 条", len(cache))
+
+    hits = find_affected_cache(cache.data, added)
+    log.info("命中缓存：%d 条", len(hits))
+
+    if not hits:
+        print("没有缓存中的句子包含新增术语，无需重翻")
+        save_snapshot(current_keys)
+        return
+
+    # 按命中术语统计
+    from collections import Counter
+    by_term = Counter(term for _, term in hits)
+    print(f"\n命中缓存：{len(hits)} 条")
+    print("命中分布（前 10 个术语）：")
+    for term, n in by_term.most_common(10):
+        print(f"  {term}: {n} 条")
+
+    print("\n命中示例（前 10 条）：")
+    for key, term in hits[:10]:
+        print(f"  [{term}]  {key[:65]}")
+    if len(hits) > 10:
+        print(f"  … 其余 {len(hits) - 10} 条")
+
+    # ---------- 确认 ----------
+    print(f"\n将删除这 {len(hits)} 条缓存，然后重新翻译。")
+    if input("确认？(Y/n): ").strip().lower() == "n":
+        print("已取消（快照未更新）")
+        return
+
+    # ---------- 备份 + 清缓存 ----------
+    keys_to_remove = [k for k, _ in hits]
+    try:
+        import shutil
+        backup = config.Runtime.cache_file + ".bak"
+        shutil.copy2(config.Runtime.cache_file, backup)
+        log.info("缓存已备份：%s", backup)
+        print(f"  缓存已备份：{backup}")
+    except Exception as e:
+        log.warning("缓存备份失败：%s", e)
+
+    removed_n = cache.remove_many(keys_to_remove)
+    cache.save(force=True)
+    log.info("已删除缓存：%d 条", removed_n)
+    print(f"✔ 已删除 {removed_n} 条缓存")
+
+    # ---------- 更新快照 ----------
+    save_snapshot(current_keys)
+
+    # ---------- 直接开始重翻 ----------
+    print("\n开始重翻…")
+    cmd_translate(skip_picker=True)
+
+
+# ================================================================
 # 兼容：老菜单若还引用这些函数名
 # ================================================================
 def cmd_preview():
-    cmd_check()
+    _run_check()
 
 
 def cmd_cache_stats():

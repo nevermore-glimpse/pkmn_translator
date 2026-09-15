@@ -50,3 +50,13 @@ class Cache:
         os.replace(tmp, self.path)
         self._dirty = False
         log.debug("缓存已保存：%d 条", len(self.data))
+    def remove_many(self, keys):
+        """批量删除缓存条目，返回实际删除的数量。"""
+        n = 0
+        for k in keys:
+            if k in self.data:
+                del self.data[k]
+                n += 1
+        if n:
+            self._dirty = True
+        return n

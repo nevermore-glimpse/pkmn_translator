@@ -1,19 +1,25 @@
-' 在桌面创建"宝可梦翻译工具"快捷方式
 Option Explicit
 
 Dim fso, shell, scriptDir, desktop, lnkPath, target, iconPath
-
 Set fso   = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 desktop   = shell.SpecialFolders("Desktop")
-lnkPath   = desktop & "\宝可梦翻译工具.lnk"
-target    = scriptDir & "\启动.bat"
+lnkPath   = desktop & "\PkmnTranslator.lnk"
 iconPath  = scriptDir & "\start.ico"
 
-If Not fso.FileExists(target) Then
-    MsgBox "未找到 启动.bat：" & target, 16, "错误"
+' ������ exe���˻� bat
+If fso.FileExists(scriptDir & "\PkmnTranslator.exe") Then
+    target = scriptDir & "\PkmnTranslator.exe"
+ElseIf fso.FileExists(scriptDir & "\�����η��빤��.exe") Then
+    target = scriptDir & "\�����η��빤��.exe"
+ElseIf fso.FileExists(scriptDir & "\Start.bat") Then
+    target = scriptDir & "\Start.bat"
+ElseIf fso.FileExists(scriptDir & "\������Start��.bat") Then
+    target = scriptDir & "\������Start��.bat"
+Else
+    MsgBox "No exe or bat found in: " & scriptDir, 16, "Error"
     WScript.Quit 1
 End If
 
@@ -21,11 +27,11 @@ Dim lnk
 Set lnk = shell.CreateShortcut(lnkPath)
 lnk.TargetPath       = target
 lnk.WorkingDirectory = scriptDir
-lnk.Description      = "宝可梦同人游戏翻译工具"
+lnk.Description      = "Pokemon Fan Game Translation Tool"
 lnk.WindowStyle      = 1
 If fso.FileExists(iconPath) Then
     lnk.IconLocation = iconPath
 End If
 lnk.Save
 
-MsgBox "已在桌面创建快捷方式：" & vbCrLf & lnkPath, 64, "完成"
+MsgBox "Shortcut created: " & lnkPath, 64, "Done"

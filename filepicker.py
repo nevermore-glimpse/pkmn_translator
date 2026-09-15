@@ -6,8 +6,8 @@
 若无 tkinter 则退化为命令行输入。
 """
 import os
-import sys
 
+import config
 from logger import get_logger
 
 log = get_logger("filepicker")
@@ -20,8 +20,16 @@ except Exception:
     _HAS_TK = False
 
 
+def _initial_dir(initial_dir):
+    """统一处理初始目录：优先用户传入，其次 BASE_DIR，最后 cwd。"""
+    if initial_dir and os.path.isdir(initial_dir):
+        return initial_dir
+    if os.path.isdir(config.BASE_DIR):
+        return config.BASE_DIR
+    return os.getcwd()
+
+
 def _disable_root_icon():
-    """隐藏 tk 主窗口，只弹对话框。"""
     root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
@@ -37,7 +45,7 @@ def pick_text_file(initial_dir=None, title="选择文本文件"):
         root = _disable_root_icon()
         path = filedialog.askopenfilename(
             title=title,
-            initialdir=initial_dir or os.getcwd(),
+            initialdir=_initial_dir(initial_dir),
             filetypes=[
                 ("文本文件", "*.txt"),
                 ("所有文件", "*.*"),
@@ -59,7 +67,7 @@ def pick_excel_file(initial_dir=None):
         root = _disable_root_icon()
         path = filedialog.askopenfilename(
             title="选择 Excel 文件",
-            initialdir=initial_dir or os.getcwd(),
+            initialdir=_initial_dir(initial_dir),
             filetypes=[
                 ("Excel 文件", "*.xlsx *.xlsm"),
                 ("所有文件", "*.*"),
