@@ -1,4 +1,4 @@
-' åœ¨æ¡Œé¢åˆ›å»º"å®å¯æ¢¦ç¿»è¯‘å·¥å…·"å¿«æ·æ–¹å¼
+' ÔÚ×ÀÃæ´´½¨"±¦¿ÉÃÎ·­Òë¹¤¾ß"¿ì½İ·½Ê½
 Option Explicit
 
 Dim fso, shell, scriptDir, desktop, lnkPath, target, iconPath
@@ -8,12 +8,12 @@ Set shell = CreateObject("WScript.Shell")
 
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 desktop   = shell.SpecialFolders("Desktop")
-lnkPath   = desktop & "\å®å¯æ¢¦ç¿»è¯‘å·¥å…·.lnk"
-target    = scriptDir & "\å¯åŠ¨.bat"
+lnkPath   = desktop & "\±¦¿ÉÃÎ·­Òë¹¤¾ß.lnk"
+target    = scriptDir & "\Æô¶¯£¨Start£©.bat"
 iconPath  = scriptDir & "\start.ico"
 
 If Not fso.FileExists(target) Then
-    MsgBox "æœªæ‰¾åˆ° å¯åŠ¨.batï¼š" & target, 16, "é”™è¯¯"
+    MsgBox "Î´ÕÒµ½ Æô¶¯£¨Start£©.bat£º" & target, 16, "´íÎó"
     WScript.Quit 1
 End If
 
@@ -21,11 +21,11 @@ Dim lnk
 Set lnk = shell.CreateShortcut(lnkPath)
 lnk.TargetPath       = target
 lnk.WorkingDirectory = scriptDir
-lnk.Description      = "å®å¯æ¢¦åŒäººæ¸¸æˆç¿»è¯‘å·¥å…·"
+lnk.Description      = "±¦¿ÉÃÎÍ¬ÈËÓÎÏ··­Òë¹¤¾ß"
 lnk.WindowStyle      = 1
 If fso.FileExists(iconPath) Then
     lnk.IconLocation = iconPath
 End If
 lnk.Save
 
-MsgBox "å·²åœ¨æ¡Œé¢åˆ›å»ºå¿«æ·æ–¹å¼ï¼š" & vbCrLf & lnkPath, 64, "å®Œæˆ"
+MsgBox "ÒÑÔÚ×ÀÃæ´´½¨¿ì½İ·½Ê½£º" & vbCrLf & lnkPath, 64, "Íê³É"
