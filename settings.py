@@ -27,7 +27,7 @@ EDITABLE = [
     ("THINK",             "无推理模式",        "bool",  "True/False"),
     ("BATCH_RETRIES",     "整批重试次数",      "int",   ""),
     ("SINGLE_RETRIES",    "单条重试次数",      "int",   ""),
-    ("SOURCE_LANG",       "源语言",            "str",   "如 英语"),
+    ("SOURCE_LANG",       "源语言",            "str",   "如 英文"),
     ("TARGET_LANG",       "目标语言",          "str",   "如 简体中文"),
     ("REWRAP_ENABLE",     "启用换行重排",      "bool",  ""),
     ("WRAP_CHARS_MIN",    "换行下限(字)",      "int",   ""),
@@ -35,6 +35,7 @@ EDITABLE = [
     ("WRAP_PUNCT",        "句末标点",          "str",   "如 。！？!?"),
     ("WRAP_DOTS",         "连续点换行阈值",    "int",   "如 3"),
     ("APPLY_TERMS",       "启用术语替换",      "bool",  ""),
+    ("ASK_LANG_EACH_TIME", "每次询问语言", "bool", "True/False"),
     ("EXCEL_SOURCE_LANG", "Excel 源语言列",    "str",   ""),
     ("EXCEL_TARGET_LANG", "Excel 目标语言列",  "str",   ""),
 ]

@@ -21,7 +21,7 @@ OUTPUT_FILE  = os.path.join(BASE_DIR, "intl_translated.txt")
 CACHE_FILE   = os.path.join(BASE_DIR, "intl_cache.json")
 TERM_FILE    = os.path.join(BASE_DIR, "term_dict.py")
 REPORT_DIR   = os.path.join(BASE_DIR, "reports")
-EXCEL_FILE   = os.path.join(BASE_DIR, "术语表.xlsx")
+EXCEL_FILE   = os.path.join(BASE_DIR, "术语表（Glossary）.xlsx")
 
 # ---------- 检查报告 ----------
 CHECK_REPORT = os.path.join(REPORT_DIR, "check_report.txt")
@@ -59,14 +59,14 @@ INPUT_ENCODING  = "utf-8-sig"
 OUTPUT_ENCODING = "utf-8-sig"
 
 OLLAMA_URL  = "http://localhost:11434/api/chat"
-MODEL       = "qwen2.5:3b"
+MODEL       = "qwen2.5:7b"
 TIMEOUT     = 600
 NUM_CTX     = 8192
 NUM_PREDICT = 4096
 TEMPERATURE = 0.2
-THINK       = False
+THINK       = True
 
-SOURCE_LANG     = "英语"
+SOURCE_LANG     = "西班牙文"
 TARGET_LANG     = "简体中文"
 BATCH_SIZE      = 20
 BATCH_RETRIES   = 2
@@ -80,6 +80,7 @@ WRAP_PUNCT     = "。！？!?"
 WRAP_DOTS      = 3
 
 APPLY_TERMS = True
+ASK_LANG_EACH_TIME = False    # 每次翻译前询问语言；False 则直接用上次的
 
-EXCEL_SOURCE_LANG = "英文"
+EXCEL_SOURCE_LANG = "西班牙文"
 EXCEL_TARGET_LANG = "简体中文"

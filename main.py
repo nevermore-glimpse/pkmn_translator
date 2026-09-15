@@ -27,7 +27,7 @@ BANNER = """\
   输出文件：{output}
 --------------------------------------------------------
   1. 翻译
-  2. 检查（未翻译 / 符号不匹配 / 特殊行）
+  2. 重翻未翻译内容
   3. Excel 转术语表
   4. 切换输入文件
   5. 术语更新后重翻
@@ -110,7 +110,7 @@ def main():
             if choice == "1":
                 commands.cmd_translate()
             elif choice == "2":
-                commands.cmd_check()
+                commands.cmd_retranslate_failed()
             elif choice == "3":
                 commands.cmd_build_terms()
             elif choice == "4":

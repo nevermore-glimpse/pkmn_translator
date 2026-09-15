@@ -15,7 +15,63 @@ from translator import OllamaClient, translate_with_retry
 
 log = get_logger("commands")
 
+# ================================================================
+# 常用语言列表（序号选择用）
+# ================================================================
+LANG_OPTIONS = [
+    "英文",
+    "简体中文",
+    "繁体中文",
+    "日文",
+    "韩文",
+    "西班牙文",
+    "法文",
+    "德文",
+    "意大利文"
+]
 
+# ================================================================
+# 报告路径：写到翻译文件同目录
+# ================================================================
+def _report_path():
+    """
+    返回检查报告路径：与输出文件同目录，名字为 <输出名>_report.txt
+    例：intl_translated.txt → intl_translated_report.txt
+    """
+    out = config.Runtime.output_file
+    d = os.path.dirname(out) or "."
+    base = os.path.splitext(os.path.basename(out))[0]
+    return os.path.join(d, f"{base}_report.txt")
+
+def _pick_language(prompt, default_key, exclude=None):
+    """
+    交互式语言选择。
+    返回选中的语言字符串，或 None 表示取消。
+    """
+    print(f"\n{prompt}")
+    for i, lang in enumerate(LANG_OPTIONS, 1):
+        mark = ""
+        if lang == default_key:
+            mark = "   ← 上次使用"
+        if exclude and lang == exclude:
+            mark = "   (已被选为另一种语言)"
+        print(f"  {i:>2}. {lang}{mark}")
+    print(f"   0. 自定义（手动输入）")
+
+    hint = f"[{default_key}]" if default_key else "[回车跳过]"
+    raw = input(f"请选择 {hint}: ").strip()
+
+    if not raw:
+        return default_key or None
+    if raw == "0":
+        custom = input("请输入语言名（如 English / 日本語）：").strip()
+        return custom or None
+    if raw.isdigit():
+        idx = int(raw) - 1
+        if 0 <= idx < len(LANG_OPTIONS):
+            return LANG_OPTIONS[idx]
+    print("无效输入")
+    return None
 # ================================================================
 # 占位符兜底
 # ================================================================
@@ -31,14 +87,39 @@ def _force_restore(raw, maps):
 # 功能 1：翻译
 # ================================================================
 def cmd_translate(skip_picker=False):
-    """
-    skip_picker=True 时不弹窗、不询问，直接用 Runtime 里记录的
-    输入/输出/缓存路径。供「术语更新后重翻」等内部调用。
-    """
     import filepicker
+    import settings
 
     log.info("=" * 50)
     log.info("开始翻译")
+
+    # ---------- 选源语言 / 目标语言 ----------
+    if not skip_picker and getattr(config, "ASK_LANG_EACH_TIME", True):
+        src_lang = _pick_language("请选择【源语言】：", config.SOURCE_LANG)
+        if not src_lang:
+            print("已取消")
+            return
+
+        tgt_lang = _pick_language("请选择【目标语言】：",
+                                  config.TARGET_LANG, exclude=src_lang)
+        if not tgt_lang:
+            print("已取消")
+            return
+
+        if src_lang == tgt_lang:
+            print(f"\n⚠ 源语言和目标语言相同（{src_lang}）")
+            if input("继续？(y/N): ").strip().lower() != "y":
+                return
+
+        # 写回 config.py + 热更新
+        settings.set_value("SOURCE_LANG", src_lang)
+        settings.set_value("TARGET_LANG", tgt_lang)
+
+        log.info("翻译方向：%s → %s", src_lang, tgt_lang)
+        print(f"\n  翻译方向：{src_lang} → {tgt_lang}")
+    else:
+        # 直接用 config 里的
+        print(f"\n  翻译方向：{config.SOURCE_LANG} → {config.TARGET_LANG}")
 
     # ---------- 选定输入文件 ----------
     if skip_picker:
@@ -234,36 +315,118 @@ def cmd_translate(skip_picker=False):
     try:
         out_lines, _ = P.read_file(config.Runtime.output_file,
                                    config.OUTPUT_ENCODING)
-        hits = checker.check(lines, out_lines, entries, special,
-                             config.CHECK_REPORT)
-        _print_summary(hits, config.CHECK_REPORT)
+        report_path = _report_path()
+        hits = checker.check(lines, out_lines, entries, special, report_path)
+        _print_summary(hits, report_path)
     except Exception as e:
         log.error("自动检查失败：%s", e)
         print(f"  自动检查失败（不影响翻译结果）：{e}")
 
 
 # ================================================================
-# 功能 2：检查
+# 内部：运行检查
 # ================================================================
-def cmd_check():
+def _run_check():
+    """跑一次检查，返回 hits 列表；失败返回 None。"""
     log.info("=" * 50)
     log.info("检查  %s", config.Runtime.output_file)
 
     if not os.path.exists(config.Runtime.input_file):
         print(f"缺少输入文件：{config.Runtime.input_file}")
-        return
+        return None
     if not os.path.exists(config.Runtime.output_file):
         print(f"缺少输出文件：{config.Runtime.output_file}（先跑一次翻译）")
-        return
+        return None
 
     src_lines, _ = P.read_file(config.Runtime.input_file, config.INPUT_ENCODING)
     out_lines, _ = P.read_file(config.Runtime.output_file, config.OUTPUT_ENCODING)
     entries, special = P.extract_entries(src_lines)
     log.info("待检查 %d 条  特殊 %d 条", len(entries), len(special))
 
-    hits = checker.check(src_lines, out_lines, entries, special,
-                         config.CHECK_REPORT)
-    _print_summary(hits, config.CHECK_REPORT)
+    report_path = _report_path()
+    hits = checker.check(src_lines, out_lines, entries, special, report_path)
+    _print_summary(hits, report_path)
+    return hits
+
+
+# ================================================================
+# 功能 2：重翻未翻译内容
+# ================================================================
+def cmd_retranslate_failed():
+    """
+    扫描输出文件，找出所有未翻译 / 疑似未翻译的句子，
+    从缓存删除对应条目后重新翻译。
+    行为类似菜单 5（术语更新后重翻），但筛选依据是检查报告而非术语表。
+    """
+    log.info("=" * 50)
+    log.info("重翻未翻译内容")
+
+    print("\n[重翻未翻译内容]")
+    print("-" * 55)
+
+    # ---------- 1. 先检查 ----------
+    hits = _run_check()
+    if hits is None:
+        return
+
+    if not hits:
+        print("\n✔ 没有发现问题，无需重翻")
+        return
+
+    # ---------- 2. 按类型分组 ----------
+    kinds_count = {}
+    for h in hits:
+        kinds_count[h['kind']] = kinds_count.get(h['kind'], 0) + 1
+    print("\n问题分布：")
+    for k, n in kinds_count.items():
+        print(f"  {k}: {n}")
+
+    target_kinds = {"未翻译", "疑似未翻译"}
+    to_retranslate = [h for h in hits if h['kind'] in target_kinds]
+    symbol_issues  = [h for h in hits if h['kind'] == '符号不匹配']
+    special_issues = [h for h in hits if h['kind'] == '特殊行']
+
+    # ---------- 3. 检查是否可重翻 ----------
+    if not to_retranslate:
+        print("\n没有【未翻译 / 疑似未翻译】的句子")
+        if symbol_issues:
+            print(f"  符号不匹配 {len(symbol_issues)} 处 —— 属于模型没保留控制码，")
+            print(f"    重翻大概率仍会失败，建议看报告手动修正")
+        if special_issues:
+            print(f"  特殊行 {len(special_issues)} 处 —— 属于未配对的文本行，")
+            print(f"    需要手动处理，请查看报告")
+        return
+
+    # ---------- 4. 列出待重翻 ----------
+    print(f"\n待重翻：{len(to_retranslate)} 条")
+    for h in to_retranslate[:10]:
+        print(f"  [{h['kind']}] 行 {h['line_no']}  {h['src'][:60]}")
+    if len(to_retranslate) > 10:
+        print(f"  … 其余 {len(to_retranslate) - 10} 条")
+
+    # ---------- 5. 确认 ----------
+    print(f"\n将从缓存中删除这 {len(to_retranslate)} 条原文，然后重新翻译。")
+    if input("确认？(Y/n): ").strip().lower() == "n":
+        print("已取消")
+        return
+
+    # ---------- 6. 清缓存 ----------
+    cache = Cache(config.Runtime.cache_file)
+    keys = {h['src'] for h in to_retranslate}   # h['src'] 已是 strip 过的原文
+
+    before = len(cache)
+    removed = cache.remove_many(keys)
+    cache.save(force=True)
+    log.info("缓存：%d → %d（删除 %d）", before, len(cache), removed)
+    print(f"✔ 已删除 {removed} 条缓存（原缓存 {before} 条）")
+
+    # ---------- 7. 重翻 ----------
+    if removed == 0:
+        print("\n⚠ 缓存里没有这些条目（可能上次翻译失败未入库）")
+        print("  直接重翻…")
+
+    print()
+    cmd_translate(skip_picker=True)
 
 
 def _print_summary(hits, report_path):
