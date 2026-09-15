@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""三个核心功能的实现：翻译 / 检查 / Excel 转术语表。"""
+"""四个核心功能的实现：翻译 / 检查 / Excel 转术语表 / 术语更新后重翻。"""
 import json
 import os
 import re
@@ -30,42 +30,56 @@ def _force_restore(raw, maps):
 # ================================================================
 # 功能 1：翻译
 # ================================================================
-def cmd_translate():
+def cmd_translate(skip_picker=False):
+    """
+    skip_picker=True 时不弹窗、不询问，直接用 Runtime 里记录的
+    输入/输出/缓存路径。供「术语更新后重翻」等内部调用。
+    """
     import filepicker
 
     log.info("=" * 50)
     log.info("开始翻译")
 
     # ---------- 选定输入文件 ----------
-    src_path = config.Runtime.input_file
-
-    if not os.path.exists(src_path):
-        print(f"\n默认输入文件不存在：{src_path}")
-        picked = filepicker.pick_text_file(
-            initial_dir=config.BASE_DIR,
-            title="选择要翻译的文本文件",
-        )
-        if not picked:
-            print("已取消")
+    if skip_picker:
+        src_path = config.Runtime.input_file
+        if not os.path.exists(src_path):
+            print(f"输入文件不存在：{src_path}")
+            log.error("输入文件不存在：%s", src_path)
             return
-        config.Runtime.set_input(picked)
+        print(f"\n输入文件：{src_path}")
+        print(f"输出文件：{config.Runtime.output_file}")
+        print(f"缓存文件：{config.Runtime.cache_file}")
+    else:
         src_path = config.Runtime.input_file
 
-    print(f"\n输入文件：{src_path}")
-    print(f"输出文件：{config.Runtime.output_file}")
-    print(f"缓存文件：{config.Runtime.cache_file}")
-
-    if input("是否另选文件？(y/N): ").strip().lower() == "y":
-        picked = filepicker.pick_text_file(
-            initial_dir=os.path.dirname(src_path),
-            title="选择文本文件",
-        )
-        if picked:
+        if not os.path.exists(src_path):
+            print(f"\n默认输入文件不存在：{src_path}")
+            picked = filepicker.pick_text_file(
+                initial_dir=config.BASE_DIR,
+                title="选择要翻译的文本文件",
+            )
+            if not picked:
+                print("已取消")
+                return
             config.Runtime.set_input(picked)
             src_path = config.Runtime.input_file
-            print(f"已切换 → {src_path}")
-            print(f"   输出：{config.Runtime.output_file}")
-            print(f"   缓存：{config.Runtime.cache_file}")
+
+        print(f"\n输入文件：{src_path}")
+        print(f"输出文件：{config.Runtime.output_file}")
+        print(f"缓存文件：{config.Runtime.cache_file}")
+
+        if input("是否另选文件？(y/N): ").strip().lower() == "y":
+            picked = filepicker.pick_text_file(
+                initial_dir=os.path.dirname(src_path),
+                title="选择文本文件",
+            )
+            if picked:
+                config.Runtime.set_input(picked)
+                src_path = config.Runtime.input_file
+                print(f"已切换 → {src_path}")
+                print(f"   输出：{config.Runtime.output_file}")
+                print(f"   缓存：{config.Runtime.cache_file}")
 
     if not os.path.exists(src_path):
         print(f"文件不存在：{src_path}")
@@ -427,6 +441,145 @@ def cmd_switch_file():
     print(f"   输入：{config.Runtime.input_file}")
     print(f"   输出：{config.Runtime.output_file}")
     print(f"   缓存：{config.Runtime.cache_file}")
+
+
+# ================================================================
+# 功能 5：术语更新后重翻
+# ================================================================
+def cmd_retranslate_terms():
+    """
+    对比术语表快照，找出新增术语 → 定位受影响的缓存 → 删除 → 重翻。
+    """
+    from term_sync import (
+        load_current_terms, load_snapshot, save_snapshot,
+        find_affected_cache, SNAPSHOT_FILE,
+    )
+
+    log.info("=" * 50)
+    log.info("术语更新后重翻")
+
+    print("\n[术语更新后重翻]")
+
+    # ---------- 加载当前术语表 ----------
+    current_terms = load_current_terms()
+    current_keys = set(current_terms.keys())
+
+    log.info("当前术语表：%d 条", len(current_keys))
+    print(f"当前术语表：{len(current_keys)} 条")
+
+    if not current_keys:
+        print("术语表为空或不存在，请先运行菜单 3 生成")
+        return
+
+    # ---------- 首次使用：只记录基准 ----------
+    old_keys = load_snapshot()
+    if old_keys is None:
+        print(f"\n未找到快照文件：{SNAPSHOT_FILE}")
+        print("首次使用本功能，需要先把当前术语表记录为基准。")
+        print("以后修改 term_dict.py 后再运行本功能，就能识别出新增术语。")
+        print(f"\n当前术语表：{len(current_keys)} 条")
+        ans = input("是否将当前术语表记录为基准？(Y/n): ").strip().lower()
+        if ans == "n":
+            print("已取消")
+            return
+        save_snapshot(current_keys)
+        print(f"✔ 已保存基准（{len(current_keys)} 条）")
+        print("\n以后的工作流：")
+        print("  1. 修改 term_dict.py（或重新从 Excel 生成）")
+        print("  2. 再次运行本功能")
+        print("  3. 系统自动找出新增术语、清缓存、重翻")
+        return
+
+    # ---------- 对比 ----------
+    added = sorted(current_keys - old_keys)
+    removed = sorted(old_keys - current_keys)
+
+    log.info("对比快照：新增 %d  删除 %d", len(added), len(removed))
+    print(f"\n对比快照：")
+    print(f"  上次基准：{len(old_keys)} 条")
+    print(f"  当前术语：{len(current_keys)} 条")
+    print(f"  新增：{len(added)} 条")
+    print(f"  删除：{len(removed)} 条")
+
+    if not added and not removed:
+        print("\n术语表没有变化，无需重翻")
+        return
+
+    if added:
+        print("\n新增术语（前 30 条）：")
+        for t in added[:30]:
+            print(f"  + {t}  →  {current_terms.get(t, '')}")
+        if len(added) > 30:
+            print(f"  … 其余 {len(added) - 30} 条")
+
+    if removed:
+        print("\n删除的术语（前 10 条）：")
+        for t in removed[:10]:
+            print(f"  - {t}")
+        if len(removed) > 10:
+            print(f"  … 其余 {len(removed) - 10} 条")
+
+    if not added:
+        # 只有删除，不影响已有译文，直接更新快照
+        print("\n没有新增术语，直接更新快照")
+        save_snapshot(current_keys)
+        return
+
+    # ---------- 找命中的缓存 ----------
+    cache = Cache(config.Runtime.cache_file)
+    print(f"\n当前缓存：{len(cache)} 条")
+    log.info("当前缓存：%d 条", len(cache))
+
+    hits = find_affected_cache(cache.data, added)
+    log.info("命中缓存：%d 条", len(hits))
+
+    if not hits:
+        print("没有缓存中的句子包含新增术语，无需重翻")
+        save_snapshot(current_keys)
+        return
+
+    # 按命中术语统计
+    from collections import Counter
+    by_term = Counter(term for _, term in hits)
+    print(f"\n命中缓存：{len(hits)} 条")
+    print("命中分布（前 10 个术语）：")
+    for term, n in by_term.most_common(10):
+        print(f"  {term}: {n} 条")
+
+    print("\n命中示例（前 10 条）：")
+    for key, term in hits[:10]:
+        print(f"  [{term}]  {key[:65]}")
+    if len(hits) > 10:
+        print(f"  … 其余 {len(hits) - 10} 条")
+
+    # ---------- 确认 ----------
+    print(f"\n将删除这 {len(hits)} 条缓存，然后重新翻译。")
+    if input("确认？(Y/n): ").strip().lower() == "n":
+        print("已取消（快照未更新）")
+        return
+
+    # ---------- 备份 + 清缓存 ----------
+    keys_to_remove = [k for k, _ in hits]
+    try:
+        import shutil
+        backup = config.Runtime.cache_file + ".bak"
+        shutil.copy2(config.Runtime.cache_file, backup)
+        log.info("缓存已备份：%s", backup)
+        print(f"  缓存已备份：{backup}")
+    except Exception as e:
+        log.warning("缓存备份失败：%s", e)
+
+    removed_n = cache.remove_many(keys_to_remove)
+    cache.save(force=True)
+    log.info("已删除缓存：%d 条", removed_n)
+    print(f"✔ 已删除 {removed_n} 条缓存")
+
+    # ---------- 更新快照 ----------
+    save_snapshot(current_keys)
+
+    # ---------- 直接开始重翻 ----------
+    print("\n开始重翻…")
+    cmd_translate(skip_picker=True)
 
 
 # ================================================================

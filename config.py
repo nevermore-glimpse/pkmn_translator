@@ -59,7 +59,7 @@ INPUT_ENCODING  = "utf-8-sig"
 OUTPUT_ENCODING = "utf-8-sig"
 
 OLLAMA_URL  = "http://localhost:11434/api/chat"
-MODEL       = "qwen2.5:7b"
+MODEL       = "qwen2.5:3b"
 TIMEOUT     = 600
 NUM_CTX     = 8192
 NUM_PREDICT = 4096
