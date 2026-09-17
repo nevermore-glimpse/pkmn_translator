@@ -749,7 +749,7 @@ def cmd_retranslate_terms():
 # 兼容：老菜单若还引用这些函数名
 # ================================================================
 def cmd_preview():
-    cmd_check()
+    _run_check()
 
 
 def cmd_cache_stats():

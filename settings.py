@@ -1,18 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-设置管理：读取 / 修改 config.py 里的可编辑项。
-- 直接改 config.py 源文件（持久化）
-- 改完 setattr 到 config 模块（当前会话立即生效，不需重启）
+设置管理：读取 / 修改配置。
+
+  · 源码运行：直接读写 config.py
+  · exe 运行：读写 user_config.json（config.py 已被编译进 exe）
+两种情况都会 setattr 到 config 模块，实现当前会话立即生效。
 """
+import json
 import os
 import re
+import sys
 
 import config
 from logger import get_logger
 
 log = get_logger("settings")
 
+# 运行模式判断
+IS_FROZEN = getattr(sys, "frozen", False)
+
+# 源码模式下 config.py 的路径
 CONFIG_PATH = os.path.join(config.BASE_DIR, "config.py")
+
+# exe 模式下用户配置的路径
+USER_CONFIG_PATH = config.USER_CONFIG_FILE
 
 
 # key, 显示名, 类型, 说明
@@ -27,7 +38,7 @@ EDITABLE = [
     ("THINK",             "无推理模式",        "bool",  "True/False"),
     ("BATCH_RETRIES",     "整批重试次数",      "int",   ""),
     ("SINGLE_RETRIES",    "单条重试次数",      "int",   ""),
-    ("SOURCE_LANG",       "源语言",            "str",   "如 英文"),
+    ("SOURCE_LANG",       "源语言",            "str",   "如 英语"),
     ("TARGET_LANG",       "目标语言",          "str",   "如 简体中文"),
     ("REWRAP_ENABLE",     "启用换行重排",      "bool",  ""),
     ("WRAP_CHARS_MIN",    "换行下限(字)",      "int",   ""),
@@ -35,14 +46,13 @@ EDITABLE = [
     ("WRAP_PUNCT",        "句末标点",          "str",   "如 。！？!?"),
     ("WRAP_DOTS",         "连续点换行阈值",    "int",   "如 3"),
     ("APPLY_TERMS",       "启用术语替换",      "bool",  ""),
-    ("ASK_LANG_EACH_TIME", "每次询问语言", "bool", "True/False"),
     ("EXCEL_SOURCE_LANG", "Excel 源语言列",    "str",   ""),
     ("EXCEL_TARGET_LANG", "Excel 目标语言列",  "str",   ""),
 ]
 
 
 # ================================================================
-# 读写 config.py
+# 读
 # ================================================================
 def _read_source():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -70,18 +80,49 @@ def _strip_quotes(v):
     return v
 
 
+def _load_user_overrides():
+    """exe 模式下读取 user_config.json。"""
+    if not os.path.exists(USER_CONFIG_PATH):
+        return {}
+    try:
+        with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log.warning("user_config.json 读取失败：%s", e)
+        return {}
+
+
+def _save_user_overrides(data):
+    tmp = USER_CONFIG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, USER_CONFIG_PATH)
+
+
 def get_all():
-    """返回 {key: 显示值}（已去引号）。"""
-    text = _read_source()
+    """返回 {key: 显示值}。"""
     out = {}
-    for key, *_ in EDITABLE:
-        m = _pattern(key).search(text)
-        out[key] = _strip_quotes(m.group(2)) if m else "（未找到）"
+
+    if IS_FROZEN:
+        # exe 模式：读 config 模块属性
+        for key, *_ in EDITABLE:
+            v = getattr(config, key, None)
+            out[key] = str(v) if v is not None else "（未找到）"
+    else:
+        # 源码模式：解析 config.py 文本
+        text = _read_source()
+        for key, *_ in EDITABLE:
+            m = _pattern(key).search(text)
+            out[key] = _strip_quotes(m.group(2)) if m else "（未找到）"
+
     return out
 
 
+# ================================================================
+# 写
+# ================================================================
 def _format_value(typ, new_value):
-    """把用户输入转成 Python 字面量文本 + 实际值对象。"""
+    """把用户输入转成 (字面量文本, 实际值对象)。"""
     if typ == "int":
         v = int(new_value)
         return str(v), v
@@ -100,9 +141,28 @@ def _format_value(typ, new_value):
     return f'"{escaped}"', v
 
 
+def _set_in_source(key, literal):
+    """源码模式：把值写进 config.py。"""
+    text = _read_source()
+    pat = _pattern(key)
+    if not pat.search(text):
+        return False
+    new_text = pat.sub(lambda m: m.group(1) + literal + m.group(3),
+                       text, count=1)
+    _write_source(new_text)
+    return True
+
+
+def _set_in_user_config(key, value_obj):
+    """exe 模式：把值写进 user_config.json。"""
+    data = _load_user_overrides()
+    data[key] = value_obj
+    _save_user_overrides(data)
+
+
 def set_value(key, new_value):
     """
-    修改 config.py 中 key 的值。
+    修改配置。
     返回 (ok, msg, value_obj)，value_obj 供调用方 setattr 热更新。
     """
     meta = next(((k, n, t, d) for k, n, t, d in EDITABLE if k == key), None)
@@ -116,14 +176,15 @@ def set_value(key, new_value):
     except ValueError as e:
         return False, f"格式错误：{e}", None
 
-    text = _read_source()
-    pat = _pattern(key)
-    if not pat.search(text):
-        return False, f"未在 config.py 中找到 {key}", None
-
-    new_text = pat.sub(lambda m: m.group(1) + literal + m.group(3),
-                       text, count=1)
-    _write_source(new_text)
+    try:
+        if IS_FROZEN:
+            _set_in_user_config(key, value_obj)
+        else:
+            if not _set_in_source(key, literal):
+                return False, f"未在 config.py 中找到 {key}", None
+    except Exception as e:
+        log.error("写入配置失败：%s", e)
+        return False, f"写入失败：{e}", None
 
     # 热更新当前会话
     try:
@@ -139,11 +200,12 @@ def set_value(key, new_value):
 # 交互式菜单
 # ================================================================
 def show_menu():
+    mode = "exe" if IS_FROZEN else "源码"
     while True:
         current = get_all()
         print()
         print("=" * 62)
-        print("  设置（输入序号修改，0 返回主菜单）")
+        print(f"  设置（{mode} 模式）  输入序号修改，0 返回主菜单")
         print("=" * 62)
         for i, (key, name, typ, desc) in enumerate(EDITABLE, 1):
             val = current.get(key, "?")
@@ -176,4 +238,6 @@ def show_menu():
         if not ok:
             print(f"✘ {msg}")
             continue
-        print(f"✔ 已更新：{key} = {msg}  （已写回 config.py，当前会话立即生效）")
+
+        where = "user_config.json" if IS_FROZEN else "config.py"
+        print(f"✔ 已更新：{key} = {msg}  （已写回 {where}，当前会话立即生效）")

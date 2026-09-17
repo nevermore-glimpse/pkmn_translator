@@ -320,7 +320,7 @@ def char_width(c):
 def auto_wrap(text, max_width=None):
     if not text:
         return text
-    max_width = max_width or config.MAX_LINE_WIDTH
+    max_width = max_width
 
     tokens = []
     def _protect(m):
@@ -378,6 +378,4 @@ def finalize(text, maps):
     text = restore(text, maps)
     if config.REWRAP_ENABLE:
         text = rewrap(text)
-    elif config.AUTO_WRAP:
-        text = auto_wrap(text)
     return text
