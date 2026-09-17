@@ -84,3 +84,10 @@ ASK_LANG_EACH_TIME = False    # 每次翻译前询问语言；False 则直接用
 
 EXCEL_SOURCE_LANG = "西班牙文"
 EXCEL_TARGET_LANG = "简体中文"
+
+# 图标文件：始终指向 BASE_DIR 下的 start.ico
+ICON_FILE = os.path.join(BASE_DIR, "start.ico")
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)   # exe 所在目录
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
