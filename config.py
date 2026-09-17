@@ -90,7 +90,7 @@ TIMEOUT     = 600
 NUM_CTX     = 8192
 NUM_PREDICT = 4096
 TEMPERATURE = 0.2
-THINK       = True
+THINK       = False
 
 # ---------- 翻译策略 ----------
 SOURCE_LANG      = "西班牙文"
