@@ -27,27 +27,37 @@ USER_CONFIG_PATH = config.USER_CONFIG_FILE
 
 
 # key, 显示名, 类型, 说明
+# 顺序对应菜单里显示的序号
 EDITABLE = [
-    ("MODEL",             "Ollama 模型名",     "str",   "如 qwen2.5:14b"),
-    ("OLLAMA_URL",        "Ollama 服务地址",   "str",   ""),
-    ("BATCH_SIZE",        "每批条数",          "int",   "建议 10-30"),
-    ("TEMPERATURE",       "采样温度",          "float", "0.0-1.0"),
-    ("TIMEOUT",           "请求超时(秒)",      "float", ""),
-    ("NUM_CTX",           "上下文长度",        "int",   ""),
-    ("NUM_PREDICT",       "最大生成 token",    "int",   ""),
-    ("THINK",             "无推理模式",        "bool",  "True/False"),
-    ("BATCH_RETRIES",     "整批重试次数",      "int",   ""),
-    ("SINGLE_RETRIES",    "单条重试次数",      "int",   ""),
-    ("SOURCE_LANG",       "源语言",            "str",   "如 英语"),
-    ("TARGET_LANG",       "目标语言",          "str",   "如 简体中文"),
-    ("REWRAP_ENABLE",     "启用换行重排",      "bool",  ""),
-    ("WRAP_CHARS_MIN",    "换行下限(字)",      "int",   ""),
-    ("WRAP_CHARS_MAX",    "换行上限(字)",      "int",   ""),
-    ("WRAP_PUNCT",        "句末标点",          "str",   "如 。！？!?"),
-    ("WRAP_DOTS",         "连续点换行阈值",    "int",   "如 3"),
-    ("APPLY_TERMS",       "启用术语替换",      "bool",  ""),
-    ("EXCEL_SOURCE_LANG", "Excel 源语言列",    "str",   ""),
-    ("EXCEL_TARGET_LANG", "Excel 目标语言列",  "str",   ""),
+    # ---------- Ollama 连接 ----------
+    ("MODEL",              "Ollama 模型名",     "str",   "如 qwen2.5:14b"),
+    ("OLLAMA_URL",         "Ollama 服务地址",   "str",   ""),
+    ("TIMEOUT",            "请求超时(秒)",      "float", ""),
+    ("NUM_CTX",            "上下文长度",        "int",   ""),
+    ("NUM_PREDICT",        "最大生成 token",    "int",   ""),
+    ("TEMPERATURE",        "采样温度",          "float", "0.0-1.0"),
+    ("THINK",              "推理模式",        "bool",  "True/False"),
+
+    # ---------- 翻译策略 ----------
+    ("BATCH_SIZE",         "每批条数",          "int",   "建议 10-30"),
+    ("BATCH_RETRIES",      "整批重试次数",      "int",   ""),
+    ("SINGLE_RETRIES",     "单条重试次数",      "int",   ""),
+    ("CACHE_SAVE_EVERY",   "缓存保存间隔",      "int",   "每 N 批保存一次"),
+    ("SOURCE_LANG",        "源语言",            "str",   "如 英语 / 西班牙文"),
+    ("TARGET_LANG",        "目标语言",          "str",   "如 简体中文"),
+    ("ASK_LANG_EACH_TIME", "每次询问语言",      "bool",  "翻译前是否弹语言选择"),
+
+    # ---------- 换行重排 ----------
+    ("REWRAP_ENABLE",      "启用换行重排",      "bool",  ""),
+    ("WRAP_CHARS_MIN",     "换行下限(字)",      "int",   ""),
+    ("WRAP_CHARS_MAX",     "换行上限(字)",      "int",   ""),
+    ("WRAP_PUNCT",         "句末标点",          "str",   "如 。！？!?"),
+    ("WRAP_DOTS",          "连续点换行阈值",    "int",   "如 3"),
+
+    # ---------- 术语与 Excel ----------
+    ("APPLY_TERMS",        "启用术语替换",      "bool",  ""),
+    ("EXCEL_SOURCE_LANG",  "Excel 源语言列",    "str",   ""),
+    ("EXCEL_TARGET_LANG",  "Excel 目标语言列",  "str",   ""),
 ]
 
 

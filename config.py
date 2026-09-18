@@ -109,7 +109,7 @@ WRAP_DOTS      = 3
 
 # ---------- 术语 ----------
 APPLY_TERMS        = True
-ASK_LANG_EACH_TIME = False
+ASK_LANG_EACH_TIME = True
 
 # ---------- Excel ----------
 EXCEL_SOURCE_LANG = "西班牙文"
