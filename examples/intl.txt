@@ -1,11 +1,191 @@
-[map1]
-Hello, \PN!\nI can see you calling me over there!
-Hello, \PN!\nI can see you calling me over there!
-Come over and talk to me.
-Come over and talk to me.
-
-[map2]
-\bHey man, you want Fly?
-\bHey man, you want Fly?
-\bTake it, it's yours.
-\bTake it, it's yours.
+[Map0]
+¿Hasta qué hora quieres dormir?\hm
+¿Hasta qué hora quieres dormir?\hm
+¡Hora de disfrutar de la mañana!
+¡Hora de disfrutar de la mañana!
+¡Hora de disfrutar de la tarde!
+¡Hora de disfrutar de la tarde!
+¡Hora de disfrutar de la noche!
+¡Hora de disfrutar de la noche!
+\tg[Fátima]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
+\tg[Fátima]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
+\tg[Dante]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
+\tg[Dante]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
+\tg[Owen]¿Quieres que te asista sobre la marcha?\nParticiparé contigo en batallas dobles.
+\tg[Owen]¿Quieres que te asista sobre la marcha?\nParticiparé contigo en batallas dobles.
+\tg[Owen]Perfecto, ¡lucharemos juntos!
+\tg[Owen]Perfecto, ¡lucharemos juntos!
+\tg[Owen]Entendido, avísame si necesitas que te eche un cable.
+\tg[Owen]Entendido, avísame si necesitas que te eche un cable.
+\tg[Owen]Curaré a tus Pokémon sobre la marcha y Helioptile y yo estaremos a tu lado en combate.\n¡Juntos no habrá quien nos venza!
+\tg[Owen]Curaré a tus Pokémon sobre la marcha y Helioptile y yo estaremos a tu lado en combate.\n¡Juntos no habrá quien nos venza!
+\tg[Elliot]Q-qué frío.\n¡Salgamos de aquí cuanto antes!
+\tg[Elliot]Q-qué frío.\n¡Salgamos de aquí cuanto antes!
+\tg[Jeremiah]¿Estás bien, \PN?\NSigamos adelante.
+\tg[Jeremiah]¿Estás bien, \PN?\NSigamos adelante.
+\tg[Teresa]Voy curando a tus Pokémon.\nNo te preocupes.
+\tg[Teresa]Voy curando a tus Pokémon.\nNo te preocupes.
+\tg[¿Owen?]\..\..\..\n\..\..\..
+\tg[¿Owen?]\..\..\..\n\..\..\..
+\tg[¿Owen?]¿Todo bien?\nContinuemos.
+\tg[¿Owen?]¿Todo bien?\nContinuemos.
+\tg[Lionel, el Campeón de Galar]¡Soy el Campeón de Galar!\n¡Mi personalidad se basa en ser el Campeón de Galar, y soy el Campeón y tengo un Charizard!
+\tg[Lionel, el Campeón de Galar]¡Soy el Campeón de Galar!\n¡Mi personalidad se basa en ser el Campeón de Galar, y soy el Campeón y tengo un Charizard!
+Anuncios...
+Anuncios...
+\w[1]<ar>\ts[]\wu\wtnp[5]PA: \v[50] ps</ar>
+\w[1]<ar>\ts[]\wu\wtnp[5]PA: \v[50] ps</ar>
+\w[1]<ar>\ts[]\wu\wtnp[5]\v[67]\v[68]ps</ar>
+\w[1]<ar>\ts[]\wu\wtnp[5]\v[67]\v[68]ps</ar>
+"La única forma de hacer un amigo es convertirse en uno."
+"La única forma de hacer un amigo es convertirse en uno."
+Esta Losa parece reforzar la Defensa general de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+Esta Losa parece reforzar la Defensa general de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+¡Has obtenido el poder de esta Losa Unión!
+¡Has obtenido el poder de esta Losa Unión!
+Esta Losa tiene unos extraños grabados inscritos.
+Esta Losa tiene unos extraños grabados inscritos.
+"Todo es posible cuando tienes al compañero indicado a tu lado."
+"Todo es posible cuando tienes al compañero indicado a tu lado."
+Esta Losa parece reforzar el Ataque general de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+Esta Losa parece reforzar el Ataque general de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+"Dos almas siempre juntas en espíritu."
+"Dos almas siempre juntas en espíritu."
+Esta Losa parece reforzar la Defensa Especial de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+Esta Losa parece reforzar la Defensa Especial de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+"Los verdaderos compañeros se separan en la distancia, pero nunca en el corazón."
+"Los verdaderos compañeros se separan en la distancia, pero nunca en el corazón."
+Esta Losa parece reforzar la Velocidad de tu equipo siempre, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+Esta Losa parece reforzar la Velocidad de tu equipo siempre, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+"Mejor caminar a oscuras con un compañero que solo en la luz."
+"Mejor caminar a oscuras con un compañero que solo en la luz."
+Esta Losa parece reforzar el Ataque Especial de tu equipo siempre, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+Esta Losa parece reforzar el Ataque Especial de tu equipo siempre, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+\tg[Enfermera]¡Hola!\n¿Quieres curar a tus Pokémon?
+\tg[Enfermera]¡Hola!\n¿Quieres curar a tus Pokémon?
+\tg[Enfermera]Tu Pokémon podría estar infectado de PokéRus.
+\tg[Enfermera]Tu Pokémon podría estar infectado de PokéRus.
+\tg[Enfermera]Se conoce poco sobre el PokéRus, solo que se trata de una forma de vida microscópica que ataca a los Pokémon.
+\tg[Enfermera]Se conoce poco sobre el PokéRus, solo que se trata de una forma de vida microscópica que ataca a los Pokémon.
+\tg[Enfermera]Mientras están infectados, los Pokémon pueden crecer excepcionalmente bien.
+\tg[Enfermera]Mientras están infectados, los Pokémon pueden crecer excepcionalmente bien.
+\tg[Enfermera]Gracias por esperar, aquí tienes. \n¡Hasta otra!
+\tg[Enfermera]Gracias por esperar, aquí tienes. \n¡Hasta otra!
+\tg[Enfermera]¡Hola!\n¿Cómo estás?
+\tg[Enfermera]¡Hola!\n¿Cómo estás?
+\tg[Enfermera]Agradezco mucho que los clientes se paren a hablar conmigo.\n¡La mayoría pasan mi diálogo a toda pastilla!
+\tg[Enfermera]Agradezco mucho que los clientes se paren a hablar conmigo.\n¡La mayoría pasan mi diálogo a toda pastilla!
+\tg[Enfermera]Estoy segura de que a mis compañeras de otros Centros Pokémon les pasa igual.\n¡Habla con ellas si puedes, por favor!
+\tg[Enfermera]Estoy segura de que a mis compañeras de otros Centros Pokémon les pasa igual.\n¡Habla con ellas si puedes, por favor!
+\tg[Enfermera]¡Hola!\nEres un entrenador nuevo, ¿eh?
+\tg[Enfermera]¡Hola!\nEres un entrenador nuevo, ¿eh?
+\tg[Enfermera]¡Hola!\nEres una entrenadora nueva, ¿eh?
+\tg[Enfermera]¡Hola!\nEres una entrenadora nueva, ¿eh?
+\tg[Enfermera]Ten, esto es para ti. \n¡Recuerda que debes mantener a tus Pokémon sanos en todo momento!
+\tg[Enfermera]Ten, esto es para ti. \n¡Recuerda que debes mantener a tus Pokémon sanos en todo momento!
+\tg[Enfermera]Recuperaré la salud de tus Pokémon ahora mismo.
+\tg[Enfermera]Recuperaré la salud de tus Pokémon ahora mismo.
+\tg[Enfermera]Gracias por esperar, aquí tienes. \n¡Hasta otra, y ten más cuidado la próxima vez!
+\tg[Enfermera]Gracias por esperar, aquí tienes. \n¡Hasta otra, y ten más cuidado la próxima vez!
+\tg[Recluta]Oye, tú.\nTu entrenador no parece tener muchas luces, ¿no?
+\tg[Recluta]Oye, tú.\nTu entrenador no parece tener muchas luces, ¿no?
+\tg[Recluta]Oye, tú.\nTu entrenadora no parece tener muchas luces, ¿no?
+\tg[Recluta]Oye, tú.\nTu entrenadora no parece tener muchas luces, ¿no?
+\tg[Recluta]Igual debería hacer algo.\nEmpiezo a sentirme mal\..\..\..
+\tg[Recluta]Igual debería hacer algo.\nEmpiezo a sentirme mal\..\..\..
+\tg[Recluta]Sé que es un intruso y tal, pero si se queda así para siempre\..\..\..\nDía tras día, sin parar de girar\..\..\..
+\tg[Recluta]Sé que es un intruso y tal, pero si se queda así para siempre\..\..\..\nDía tras día, sin parar de girar\..\..\..
+\tg[Recluta]Sé que es una intrusa y tal, pero si se queda así para siempre\..\..\..\nDía tras día, sin parar de girar\..\..\..
+\tg[Recluta]Sé que es una intrusa y tal, pero si se queda así para siempre\..\..\..\nDía tras día, sin parar de girar\..\..\..
+\tg[Recluta]Agh, da igual.\n¡Ahora te saco de ahí!
+\tg[Recluta]Agh, da igual.\n¡Ahora te saco de ahí!
+Qué mareo\..\..\..
+Qué mareo\..\..\..
+\tg[Recluta]Pues sí, definitivamente es retrasado.\nLo siento muchísimo por ti.
+\tg[Recluta]Pues sí, definitivamente es retrasado.\nLo siento muchísimo por ti.
+\tg[Recluta]Pues sí, definitivamente es retrasada.\nLo siento muchísimo por ti.
+\tg[Recluta]Pues sí, definitivamente es retrasada.\nLo siento muchísimo por ti.
+\tg[Recluta]En fin.\nTendré que sacarle de ahí.
+\tg[Recluta]En fin.\nTendré que sacarle de ahí.
+\tg[Recluta]En fin.\nTendré que sacarla de ahí.
+\tg[Recluta]En fin.\nTendré que sacarla de ahí.
+Una máquina expendedora.\n¿Qué podría comprar?
+Una máquina expendedora.\n¿Qué podría comprar?
+No hay espacio en la bolsa.
+No hay espacio en la bolsa.
+No tengo suficiente dinero.
+No tengo suficiente dinero.
+No puedo usar la máquina desde aquí.
+No puedo usar la máquina desde aquí.
+\tg[Elgyem]Oh, eres tú.\n¿Qué tal, Onamuh?
+\tg[Elgyem]Oh, eres tú.\n¿Qué tal, Onamuh?
+\tg[Elgyem]Yo aquí, bien.\nSentado viendo pasar el tiempo.
+\tg[Elgyem]Yo aquí, bien.\nSentado viendo pasar el tiempo.
+¡Parece un árbol perfecto para untarlo con miel!
+¡Parece un árbol perfecto para untarlo con miel!
+¿Echo miel en el árbol y espero a que venga un Pokémon?
+¿Echo miel en el árbol y espero a que venga un Pokémon?
+\PN unta la miel en la corteza del árbol...
+\PN unta la miel en la corteza del árbol...
+¡Tras un par de horas, un Pokémon salvaje aparece!
+¡Tras un par de horas, un Pokémon salvaje aparece!
+Desgraciadamente, no tengo ninguna...
+Desgraciadamente, no tengo ninguna...
+No se me ocurre nada que decir en esta situación...
+No se me ocurre nada que decir en esta situación...
+\tg[¿Owen?]Prohibidos, he dicho.
+\tg[¿Owen?]Prohibidos, he dicho.
+Ya que la papelera está a la inversa, debería llamarse "arelepap".
+Ya que la papelera está a la inversa, debería llamarse "arelepap". 
+\tg[¿Owen?]Ah, no.\nProhibidos los chistes de papeleras mientras yo esté aquí.
+\tg[¿Owen?]Ah, no.\nProhibidos los chistes de papeleras mientras yo esté aquí.
+Dios, otra vez tú.\nEspero que no me hagas perder mucho el tiempo.
+Dios, otra vez tú.\nEspero que no me hagas perder mucho el tiempo.
+Nadie que te importe.\n¿Tienes códigos o no?
+Nadie que te importe.\n¿Tienes códigos o no?
+Códigos que hacen cosas, sí.\nCómo los obtengas no es problema mío.
+Códigos que hacen cosas, sí.\nCómo los obtengas no es problema mío.
+¿Los tienes o no?\nNo tengo todo el día.
+¿Los tienes o no?\nNo tengo todo el día.
+Pues piérdete.
+Pues piérdete.
+Espera...\n¿No tienes un Repartir Exp.?
+Espera...\n¿No tienes un Repartir Exp.?
+Ten, toma uno.
+Ten, toma uno.
+¡Has completado una misión!
+¡Has completado una misión!
+Evaluate Pokédex
+Evaluate Pokédex
+Más opciones
+Más opciones
+No quiero dormir
+No quiero dormir
+Luchar en pareja
+Luchar en pareja
+Luchar a solas
+Luchar a solas
+Ver figuras sala
+Ver figuras sala
+Sí
+Sí
+Curar
+Curar
+Hablar
+Hablar
+Nada
+Nada
+Agua (600$)
+Agua (600$)
+Refresco (800$)
+Refresco (800$)
+Limonada (1100$)
+Limonada (1100$)
+¿Hay Pokémon por aquí?
+¿Hay Pokémon por aquí?
+Nada, nos vemos
+Nada, nos vemos
+¿Y tú eres...?
+¿Y tú eres...?
+¿Códigos?
+¿Códigos?

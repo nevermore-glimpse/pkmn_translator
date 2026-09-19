@@ -48,6 +48,45 @@ _USER_TEMPLATE = r"""请把下面每一行翻译成{tgt}。每行格式为 <编�
 
 
 class OllamaClient:
+    def chat_raw(self, messages, temperature=0.1, num_predict=1500):
+        """
+        通用对话接口（用于术语提取等非翻译任务）。
+        返回模型输出的原始字符串。
+        """
+        payload = {
+            "model": config.MODEL,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_ctx": config.NUM_CTX,
+                "num_predict": num_predict,
+            },
+        }
+        if config.THINK is False and self._think_supported:
+            payload["think"] = False
+
+        try:
+            resp = self.session.post(config.OLLAMA_URL, json=payload,
+                                     timeout=config.TIMEOUT)
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            body = e.response.text[:200] if e.response is not None else ""
+            if self._think_supported and (
+                "think" in body.lower() or "unknown field" in body.lower()
+            ):
+                self._think_supported = False
+                payload.pop("think", None)
+                resp = self.session.post(config.OLLAMA_URL, json=payload,
+                                         timeout=config.TIMEOUT)
+                resp.raise_for_status()
+            else:
+                raise
+
+        data = resp.json()
+        raw = (data.get("message") or {}).get("content", "")
+        raw = re.sub(r" thinking.*?", "", raw, flags=re.DOTALL)
+        return raw
     def __init__(self):
         self.session = requests.Session()
         self.system_prompt = (SYSTEM_PROMPT

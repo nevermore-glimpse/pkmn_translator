@@ -15,21 +15,31 @@ from logger import get_logger
 
 log = get_logger("processor")
 
-# ---------------- 匹配规则 ----------------
-# 控制码：\b  \n  \N  \c  \v[1]  \wt[10]  \PN  \ts[3] 等
-#   ① \ + 全大写字母（\PN \HM \TM）
-#   ② \ + 小写字母 + 紧跟 [（\wt[ \v[ \ts[）
-#   ③ \ + 单个字母（\b \n \c \i \l \g \w \v）
+# ================================================================
+# 控制码匹配（已知名单优先，避免贪婪吃首字母）
+#
+#   优先级 1：带参数的控制码，要求紧跟 [（如 \tg[Owen] \v[50] \wt[10]）
+#   优先级 2：无参数的多字母控制码（\PN \wu）
+#   优先级 3：无参数的单字母控制码（\N \n \b \c \g \w \l \i \v）
+#
+# 关键点：\N 后面无论跟什么字母都只吃 \N 两个字符，
+#         \NSigamos → 匹配 \N，保留 Sigamos
+# ================================================================
 CTRL_RE = re.compile(
     r'\\'
     r'(?:'
-      r'[A-Z]+'
-      r'|[a-z]+(?=\[)'
-      r'|[A-Za-z]'
+      # 优先级 1：带参数
+      r'(?:wtnp|wt|tg|ts|v|c|w)(?=\[)(?:\[[^\]]*\])?'
+      r'|'
+      # 优先级 2：无参数多字母（长的在前）
+      r'(?:PN|wu)'
+      r'|'
+      # 优先级 3：无参数单字母
+      r'[Nnbcgwlvi]'
     r')'
-    r'(?:\[[^\]]*\])?'
 )
-
+# 用于检测 protect() 后残留的未识别控制码
+LEFTOVER_CTRL_RE = re.compile(r'\\[A-Za-z]+')
 # 方括号标签：[Haya] [Player] [Map155] 等
 TAG_RE   = re.compile(r'\[[^\]]*\]')
 
@@ -42,7 +52,8 @@ _PH_R_DEFAULT = "@"
 
 # 冲突检测：原文含 @数字@ 时切换为 ⟦ ⟧
 _PH_COLLISION_RE = re.compile(r'@\d+@')
-
+# 说话人标签：\tg[Owen]  \tg[Fátima]  \tg[Lionel, el Campeón de Galar]
+SPEAKER_TAG_RE = re.compile(r'\\tg\[([^\]]*)\]')
 
 # ================================================================
 # 保护 / 还原
@@ -62,7 +73,27 @@ def protect(text):
     if _PH_COLLISION_RE.search(text):
         left, right = "⟦", "⟧"
         log.debug("检测到原文含 @数字@，切换占位符为 ⟦ ⟧")
+    def _p_speaker(m):
+        """
+        \tg[Owen] → @N@@M@Owen@K@ （三个占位符：\\tg[  /  ]）
+        \tg[ 和 ] 被保护，Owen 保持明文送模型翻译。
+        """
+        name = m.group(1).strip()
 
+        def _mk(orig):
+            tok = f"{left}{counter[0]}{right}"
+            counter[0] += 1
+            maps.append({
+                "token": tok,
+                "original": orig,
+                "added_left": False,
+                "added_right": False,
+            })
+            return tok
+
+        lb = _mk("\\tg[")     # 保护 \tg[
+        rb = _mk("]")         # 保护 ]
+        return lb + name + rb
     def _p(m):
         token = f"{left}{counter[0]}{right}"
         counter[0] += 1
@@ -84,11 +115,31 @@ def protect(text):
 
         return ("" if had_left else " ") + token + ("" if had_right else " ")
 
+    text = SPEAKER_TAG_RE.sub(_p_speaker, text)
     text = CTRL_RE.sub(_p, text)
     text = TAG_RE.sub(_p, text)
     text = BRACE_RE.sub(_p, text)
     return text, maps
 
+def detect_unknown_ctrl(safe_text):
+    """
+    在 protect() 处理后的文本中，找出未被 CTRL_RE 识别的控制码。
+
+    原理：protect() 会把已知控制码都替换成 @N@ 占位符，
+    如果 safe_text 里还有 \\字母 残留，就是名单外的。
+
+    返回 [(token, context), ...]
+    """
+    if not safe_text:
+        return []
+    results = []
+    for m in LEFTOVER_CTRL_RE.finditer(safe_text):
+        token = m.group(0)
+        s = max(0, m.start() - 30)
+        e = min(len(safe_text), m.end() + 30)
+        ctx = safe_text[s:e]
+        results.append((token, ctx))
+    return results
 
 def _left_right_of(maps):
     if not maps:
@@ -175,14 +226,23 @@ def verify(text, maps):
 
 
 # ================================================================
-# 术语表
+# 术语表（优化版：合并成一次正则匹配）
+#   _TERMS      : [(原文, 译文), ...] 按长度降序，保留给外部查询用
+#   _TERM_MAP   : {原文: 译文} 用于 lambda 内查表
+#   _COMBINED_RE: 4419 个词合并成的单个正则
 # ================================================================
 _TERMS = []
+_TERM_MAP = {}
+_COMBINED_RE = None
 
 
 def load_terms():
-    global _TERMS
+    global _TERMS, _TERM_MAP, _COMBINED_RE
+
     _TERMS = []
+    _TERM_MAP = {}
+    _COMBINED_RE = None
+
     if not config.APPLY_TERMS:
         log.info("术语替换已关闭（APPLY_TERMS=False）")
         return
@@ -205,25 +265,51 @@ def load_terms():
             skipped_short += 1
             continue
         good.append((k, v))
+
+    # ★ 按长度降序：长的在前，正则交替匹配时优先命中长词
     good.sort(key=lambda x: -len(x[0]))
     _TERMS = good
+    _TERM_MAP = dict(good)
+
+    # ★ 关键优化：把 N 个词合并成一个正则
+    if good:
+        word_chars = r'\w\u00C0-\u024F'
+        alternation = '|'.join(re.escape(k) for k, _ in good)
+        pattern = (r'(?<![' + word_chars + r'])('
+                   + alternation +
+                   r')(?![' + word_chars + r'])')
+        try:
+            _COMBINED_RE = re.compile(pattern)
+        except re.error as e:
+            log.error("术语表合并正则失败：%s（将退化为逐条匹配）", e)
+            _COMBINED_RE = None
+
     log.info("术语表加载：%d 条（跳过短词 %d 条）",
              len(_TERMS), skipped_short)
 
 
 def apply_terms(text):
-    if not _TERMS:
+    """一次扫描完成所有术语替换。"""
+    if not _COMBINED_RE:
+        # 兜底：正则编译失败时退化为逐条替换
+        if not _TERMS:
+            return text
+        word_chars = r'\w\u00C0-\u024F'
+        for en, zh in _TERMS:
+            try:
+                pat = re.compile(r'(?<![' + word_chars + r'])' +
+                                 re.escape(en) +
+                                 r'(?![' + word_chars + r'])')
+                text = pat.sub(lambda m, z=zh: z, text)
+            except re.error:
+                text = text.replace(en, zh)
         return text
-    word_chars = r'\w\u00C0-\u024F'
-    for en, zh in _TERMS:
-        try:
-            pat = re.compile(r'(?<![' + word_chars + r'])' +
-                             re.escape(en) +
-                             r'(?![' + word_chars + r'])')
-            text = pat.sub(lambda m, z=zh: z, text)   # ★ lambda 防转义
-        except re.error:
-            text = text.replace(en, zh)
-    return text
+
+    # 主路径：一次 sub 完成全部替换
+    return _COMBINED_RE.sub(
+        lambda m: _TERM_MAP.get(m.group(1), m.group(1)),
+        text,
+    )
 
 
 # ================================================================

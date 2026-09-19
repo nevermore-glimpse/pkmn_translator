@@ -43,6 +43,49 @@ def _report_path():
     base = os.path.splitext(os.path.basename(out))[0]
     return os.path.join(d, f"{base}_report.txt")
 
+# ================================================================
+# 未识别控制码报告
+# ================================================================
+def _unknown_ctrl_report_path():
+    """与输入文件同目录，名为 <输入名>_unknown_ctrl.txt"""
+    inp = config.Runtime.input_file
+    d = os.path.dirname(inp) or "."
+    base = os.path.splitext(os.path.basename(inp))[0]
+    return os.path.join(d, f"{base}_unknown_ctrl.txt")
+
+
+def _write_unknown_ctrl_report(hits, report_path):
+    """
+    hits: [(token, original, context), ...]
+    """
+    from collections import defaultdict
+
+    grouped = defaultdict(list)
+    for token, orig, ctx in hits:
+        grouped[token].append((orig, ctx))
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("# 未识别控制码报告\n")
+        f.write(f"# 共 {len(grouped)} 种，{len(hits)} 次\n")
+        f.write("#\n")
+        f.write("# 这些控制码不在 processor.py 的 CTRL_RE 名单中，\n")
+        f.write("# 可能被模型误翻或丢失。请手工确认是否要加入名单。\n")
+        f.write("# 加入方式（processor.py 顶部 CTRL_RE）：\n")
+        f.write("#   带参数：加到  (?:wtnp|wt|tg|...)(?=\\[)  那一组\n")
+        f.write("#   无参数：加到  (?:PN|wu|HM|...)           那一组\n")
+        f.write("=" * 70 + "\n\n")
+
+        for token, items in sorted(grouped.items(),
+                                    key=lambda x: (-len(x[1]), x[0])):
+            f.write(f"[{token}]  出现 {len(items)} 次\n")
+            for orig, ctx in items[:3]:
+                f.write(f"  原文：  {orig[:100]}\n")
+                f.write(f"  上下文：{ctx[:100]}\n")
+            if len(items) > 3:
+                f.write(f"  … 其余 {len(items) - 3} 次省略\n")
+            f.write("\n")
+
+    return report_path
 def _pick_language(prompt, default_key, exclude=None):
     """
     交互式语言选择。
@@ -92,7 +135,7 @@ def cmd_translate(skip_picker=False):
 
     log.info("=" * 50)
     log.info("开始翻译")
-
+    unknown_ctrl_hits = []
     # ---------- 选源语言 / 目标语言 ----------
     if not skip_picker and getattr(config, "ASK_LANG_EACH_TIME", True):
         src_lang = _pick_language("请选择【源语言】：", config.SOURCE_LANG)
@@ -215,6 +258,9 @@ def cmd_translate(skip_picker=False):
                 safe, maps = PR.prepare(txt)
                 batch.append((k, safe))
                 maps_dict[k] = maps
+                # ★ 检测未识别控制码
+                for token, ctx in PR.detect_unknown_ctrl(safe):
+                    unknown_ctrl_hits.append((token, txt, ctx))
 
             log.info("[批 %d] 开始  %d 条", bi, len(batch))
             for k, txt in enumerate(batch_texts):
@@ -282,7 +328,33 @@ def cmd_translate(skip_picker=False):
                 log.debug("[批 %d][%d] 最终译文=%r", bi, k, final)
                 cache.put(src, final)
                 ok += 1
+            # ---------- 自动术语提取 ----------
+            if getattr(config, "AUTO_EXTRACT_TERMS", True):
+                every = max(1, getattr(config, "AUTO_EXTRACT_EVERY", 1))
+                if bi % every == 0:
+                    pairs_for_extract = []
+                    for k, src in enumerate(batch_texts):
+                        raw = result.get(k)
+                        if not raw:
+                            continue
+                        # 用最终译文（已还原保护）
+                        final = PR.finalize(raw, maps_dict[k])
+                        pairs_for_extract.append((src, final))
 
+                    if pairs_for_extract:
+                        print(f"\n  [术语提取] 从本批 {len(pairs_for_extract)} 条中提取…")
+                        try:
+                            import auto_terms
+                            added = auto_terms.process_batch(
+                                client, pairs_for_extract, PR
+                            )
+                            if added:
+                                print(f"  [术语提取] 新增 {added} 条，已应用到后续批次")
+                            else:
+                                print(f"  [术语提取] 无新增")
+                        except Exception as e:
+                            log.warning("术语提取失败：%s", e)
+                            print(f"  [术语提取] 失败：{e}")
             cache.save()
             done += len(batch_texts)
             elapsed = time.time() - t0
@@ -321,6 +393,28 @@ def cmd_translate(skip_picker=False):
     except Exception as e:
         log.error("自动检查失败：%s", e)
         print(f"  自动检查失败（不影响翻译结果）：{e}")
+    # ---------- 未识别控制码报告 ----------
+    if unknown_ctrl_hits:
+        try:
+            uc_path = _unknown_ctrl_report_path()
+            _write_unknown_ctrl_report(unknown_ctrl_hits, uc_path)
+
+            # 按类型统计
+            from collections import Counter
+            kinds = Counter(t for t, _, _ in unknown_ctrl_hits)
+
+            print(f"\n⚠ 检测到未识别控制码：")
+            for tok, n in kinds.most_common(10):
+                print(f"    {tok}  × {n}")
+            if len(kinds) > 10:
+                print(f"    … 其余 {len(kinds) - 10} 种省略")
+            print(f"  报告：{uc_path}")
+            print(f"  建议：把上述控制码加入 processor.py 的 CTRL_RE 或报告给工具作者")
+
+            log.warning("未识别控制码 %d 种 / %d 次 → %s",
+                        len(kinds), len(unknown_ctrl_hits), uc_path)
+        except Exception as e:
+            log.error("写未识别控制码报告失败：%s", e)
 
 
 # ================================================================
