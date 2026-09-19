@@ -87,8 +87,8 @@ OUTPUT_ENCODING = "utf-8-sig"
 OLLAMA_URL  = "http://localhost:11434/api/chat"
 MODEL       = "qwen2.5:7b"
 TIMEOUT     = 600
-NUM_CTX     = 8192
-NUM_PREDICT = 4096
+NUM_CTX     = 4096
+NUM_PREDICT = 2048
 TEMPERATURE = 0.2
 THINK       = False
 
@@ -111,6 +111,10 @@ WRAP_DOTS      = 3
 APPLY_TERMS        = True
 ASK_LANG_EACH_TIME = True
 
+# ---------- 自动术语提取 ----------
+AUTO_EXTRACT_TERMS    = True    # 翻译时自动提取专有名词
+AUTO_EXTRACT_EVERY    = 1       # 每 N 批提取一次（1 = 每批都提）
+AUTO_EXTRACT_MIN_LEN  = 3       # 术语最短长度（过滤单字母/双字母）
 # ---------- Excel ----------
 EXCEL_SOURCE_LANG = "西班牙文"
 EXCEL_TARGET_LANG = "简体中文"

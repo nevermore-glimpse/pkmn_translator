@@ -58,6 +58,9 @@ EDITABLE = [
     ("APPLY_TERMS",        "启用术语替换",      "bool",  ""),
     ("EXCEL_SOURCE_LANG",  "Excel 源语言列",    "str",   ""),
     ("EXCEL_TARGET_LANG",  "Excel 目标语言列",  "str",   ""),
+    ("AUTO_EXTRACT_TERMS", "自动提取术语", "bool", "翻译时提取专有名词"),
+    ("AUTO_EXTRACT_EVERY", "提取间隔(批)", "int", "每 N 批提取一次"),
+    ("AUTO_EXTRACT_MIN_LEN", "术语最短长度", "int", "")
 ]
 
 
