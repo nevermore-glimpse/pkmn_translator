@@ -136,6 +136,7 @@ def cmd_translate(skip_picker=False):
     log.info("=" * 50)
     log.info("开始翻译")
     unknown_ctrl_hits = []
+    failed = []          # ★ 提到函数级作用域，供后面 checker 使用
     # ---------- 选源语言 / 目标语言 ----------
     if not skip_picker and getattr(config, "ASK_LANG_EACH_TIME", True):
         src_lang = _pick_language("请选择【源语言】：", config.SOURCE_LANG)
@@ -245,7 +246,7 @@ def cmd_translate(skip_picker=False):
     # ---------- 批量翻译 ----------
     if todo:
         client = OllamaClient()
-        done, failed = 0, []
+        done = 0
         t0 = time.time()
         total = len(todo)
 
@@ -292,7 +293,7 @@ def cmd_translate(skip_picker=False):
                 raw = result.get(k)
                 if not raw:
                     log.warning("[批 %d][%d] 无返回：%r", bi, k, src)
-                    failed.append(src)
+                    failed.append({'src': src, 'reason': '模型无返回'})
                     continue
 
                 log.debug("[批 %d][%d] 模型原文=%r", bi, k, raw)
@@ -322,7 +323,7 @@ def cmd_translate(skip_picker=False):
                     ok_final, _ = PR.verify(raw, maps)
                     if not ok_final:
                         log.error("[批 %d][%d] 占位符仍失败，保留原文", bi, k)
-                        failed.append(src)
+                        failed.append({'src': src, 'reason': '占位符丢失无法恢复'})
                         continue
 
                 final = PR.finalize(raw, maps, breaks_dict.get(k))
@@ -368,7 +369,7 @@ def cmd_translate(skip_picker=False):
             log.warning("失败 %d 条", len(failed))
             print(f"\n[失败] {len(failed)} 条未翻译：")
             for t in failed[:10]:
-                print(f"    {t[:70]}")
+                print(f"    {t['src'][:70]}   （{t['reason']}）")
             if len(failed) > 10:
                 print(f"    … 其余 {len(failed) - 10} 条省略")
 
@@ -389,7 +390,8 @@ def cmd_translate(skip_picker=False):
         out_lines, _ = P.read_file(config.Runtime.output_file,
                                    config.OUTPUT_ENCODING)
         report_path = _report_path()
-        hits = checker.check(lines, out_lines, entries, special, report_path)
+        hits = checker.check(lines, out_lines, entries, special, report_path,
+                             translate_failed=failed)
         _print_summary(hits, report_path)
     except Exception as e:
         log.error("自动检查失败：%s", e)
@@ -485,7 +487,7 @@ def cmd_retranslate_failed():
     for k, n in kinds_count.items():
         print(f"  {k}: {n}")
 
-    target_kinds = {"未翻译", "疑似未翻译"}
+    target_kinds = {"未翻译", "疑似未翻译", "译文残留控制码", "翻译失败"}
     to_retranslate = [h for h in hits if h['kind'] in target_kinds]
     symbol_issues  = [h for h in hits if h['kind'] == '符号不匹配']
     special_issues = [h for h in hits if h['kind'] == '特殊行']
@@ -537,7 +539,8 @@ def _print_summary(hits, report_path):
     from collections import Counter
     c = Counter(h['kind'] for h in hits)
     print(f"  共 {len(hits)} 处问题：")
-    for k in ('未翻译', '疑似未翻译', '符号不匹配', '特殊行'):
+    for k in ('翻译失败', '未翻译', '疑似未翻译',
+              '符号不匹配', '译文残留控制码', '特殊行'):
         if c.get(k):
             print(f"    {k}: {c[k]}")
     print(f"  报告：{report_path}")

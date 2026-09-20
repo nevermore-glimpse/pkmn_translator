@@ -89,7 +89,7 @@ MODEL       = "qwen2.5:7b"
 TIMEOUT     = 600
 NUM_CTX     = 4096
 NUM_PREDICT = 2048
-TEMPERATURE = 0.2
+TEMPERATURE = 0.35
 THINK       = False
 
 # ---------- 翻译策略 ----------

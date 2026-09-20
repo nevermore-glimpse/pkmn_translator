@@ -40,6 +40,7 @@ intl_cache.json
 *.xlsm
 term_dict.py
 .private/
+打包程序.bat
 
 # ---------- 系统 ----------
 .DS_Store
