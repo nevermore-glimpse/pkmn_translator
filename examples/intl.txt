@@ -1,12 +1,6 @@
 [Map0]
 ¿Hasta qué hora quieres dormir?\hm
 ¿Hasta qué hora quieres dormir?\hm
-¡Hora de disfrutar de la mañana!
-¡Hora de disfrutar de la mañana!
-¡Hora de disfrutar de la tarde!
-¡Hora de disfrutar de la tarde!
-¡Hora de disfrutar de la noche!
-¡Hora de disfrutar de la noche!
 \tg[Fátima]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
 \tg[Fátima]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
 \tg[Dante]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
@@ -31,8 +25,6 @@
 \tg[¿Owen?]¿Todo bien?\nContinuemos.
 \tg[Lionel, el Campeón de Galar]¡Soy el Campeón de Galar!\n¡Mi personalidad se basa en ser el Campeón de Galar, y soy el Campeón y tengo un Charizard!
 \tg[Lionel, el Campeón de Galar]¡Soy el Campeón de Galar!\n¡Mi personalidad se basa en ser el Campeón de Galar, y soy el Campeón y tengo un Charizard!
-Anuncios...
-Anuncios...
 \w[1]<ar>\ts[]\wu\wtnp[5]PA: \v[50] ps</ar>
 \w[1]<ar>\ts[]\wu\wtnp[5]PA: \v[50] ps</ar>
 \w[1]<ar>\ts[]\wu\wtnp[5]\v[67]\v[68]ps</ar>
@@ -99,8 +91,6 @@ Esta Losa parece reforzar el Ataque Especial de tu equipo siempre, pero se perde
 \tg[Recluta]Sé que es una intrusa y tal, pero si se queda así para siempre\..\..\..\nDía tras día, sin parar de girar\..\..\..
 \tg[Recluta]Agh, da igual.\n¡Ahora te saco de ahí!
 \tg[Recluta]Agh, da igual.\n¡Ahora te saco de ahí!
-Qué mareo\..\..\..
-Qué mareo\..\..\..
 \tg[Recluta]Pues sí, definitivamente es retrasado.\nLo siento muchísimo por ti.
 \tg[Recluta]Pues sí, definitivamente es retrasado.\nLo siento muchísimo por ti.
 \tg[Recluta]Pues sí, definitivamente es retrasada.\nLo siento muchísimo por ti.
@@ -147,45 +137,5 @@ Códigos que hacen cosas, sí.\nCómo los obtengas no es problema mío.
 Códigos que hacen cosas, sí.\nCómo los obtengas no es problema mío.
 ¿Los tienes o no?\nNo tengo todo el día.
 ¿Los tienes o no?\nNo tengo todo el día.
-Pues piérdete.
-Pues piérdete.
 Espera...\n¿No tienes un Repartir Exp.?
 Espera...\n¿No tienes un Repartir Exp.?
-Ten, toma uno.
-Ten, toma uno.
-¡Has completado una misión!
-¡Has completado una misión!
-Evaluate Pokédex
-Evaluate Pokédex
-Más opciones
-Más opciones
-No quiero dormir
-No quiero dormir
-Luchar en pareja
-Luchar en pareja
-Luchar a solas
-Luchar a solas
-Ver figuras sala
-Ver figuras sala
-Sí
-Sí
-Curar
-Curar
-Hablar
-Hablar
-Nada
-Nada
-Agua (600$)
-Agua (600$)
-Refresco (800$)
-Refresco (800$)
-Limonada (1100$)
-Limonada (1100$)
-¿Hay Pokémon por aquí?
-¿Hay Pokémon por aquí?
-Nada, nos vemos
-Nada, nos vemos
-¿Y tú eres...?
-¿Y tú eres...?
-¿Códigos?
-¿Códigos?
