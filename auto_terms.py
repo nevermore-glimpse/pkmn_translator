@@ -295,7 +295,7 @@ def merge_into_term_dict(new_terms):
         log.debug("所有候选术语均已存在（按原文判断），未新增")
         return 0
 
-    log.info("准备写入 %d 条新术语：%s",
+    log.debug("准备写入 %d 条新术语：%s",
              len(to_add),
              ", ".join(list(to_add.keys())[:10])
              + (" …" if len(to_add) > 10 else ""))
