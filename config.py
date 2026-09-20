@@ -89,7 +89,7 @@ MODEL       = "qwen2.5:7b"
 TIMEOUT     = 600
 NUM_CTX     = 4096
 NUM_PREDICT = 2048
-TEMPERATURE = 0.2
+TEMPERATURE = 0.35
 THINK       = False
 
 # ---------- 翻译策略 ----------
@@ -126,7 +126,7 @@ EXCEL_TARGET_LANG = "简体中文"
 #   exe 运行：settings.py 写 user_config.json，这里读它覆盖默认值
 # ================================================================
 USER_CONFIG_FILE = os.path.join(BASE_DIR, "user_config.json")
-SNAPSHOT_INITIALIZED = True
+SNAPSHOT_INITIALIZED = False
 
 if os.path.exists(USER_CONFIG_FILE):
     try:

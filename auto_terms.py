@@ -20,13 +20,12 @@ log = get_logger("auto_terms")
 # 提取 prompt
 # ================================================================
 EXTRACT_SYSTEM = """你是宝可梦游戏术语提取助手。
-从用户给出的「原文 / 译文」句子对中，判断句子各自使用的语言并识别出其中的专有名词，输出双语对照字典。
+从用户给出的「原文 / 译文」句子对中，判断句子各自使用的语言并识别出其中的专有名词，输出双语对照字典，绝对不要提取句子。
 
 【必须提取的类型】
 1. 训练家 / NPC 名字，包括方括号里的名字：
    - 输入 \\tg[Fátima] → 提取 Fátima
    - 输入 [Owen] → 提取 Owen
-   - 输入 [Lionel, el Campeón de Galar] → 提取整段 "Lionel, el Campeón de Galar"
 2. 宝可梦名称：Pikachu、Helioptile、Charizard、Elgyem
 3. 地名 / 城镇 / 道路 / 地区：Pallet Town、Route 1、Galar
 4. 道具名称：Poké Ball、Potion、Repartir Exp.
@@ -42,6 +41,7 @@ EXTRACT_SYSTEM = """你是宝可梦游戏术语提取助手。
 - 普通日常名词：pokemon、ball、house、town、man、woman、boy、girl、day、time
 - 纯数字、时间、货币符号
 - 已经是中文的内容
+- 绝对不要提取句子
 
 【输出格式】
 只输出一个 JSON 对象，不要任何解释，不要 markdown 代码块：
@@ -49,7 +49,7 @@ EXTRACT_SYSTEM = """你是宝可梦游戏术语提取助手。
 
 【严格要求】
 - 译文必须是对应的中文翻译，绝对不能直接复制原文
-- 如果某个专有名词在译文中**没有对应翻译**（仍是原样），**按照自己的理解翻译它**
+- 如果某个专有名词在译文中**没有对应翻译**（仍是原样），**保留原样**
 - 如果没有找到任何专有名词，输出：{}
 
 【示例】
@@ -295,7 +295,7 @@ def merge_into_term_dict(new_terms):
         log.debug("所有候选术语均已存在（按原文判断），未新增")
         return 0
 
-    log.info("准备写入 %d 条新术语：%s",
+    log.debug("准备写入 %d 条新术语：%s",
              len(to_add),
              ", ".join(list(to_add.keys())[:10])
              + (" …" if len(to_add) > 10 else ""))
