@@ -3,7 +3,7 @@
 翻译过程中自动提取专有名词，写入 term_dict.py 顶部。
 
 用法（由 commands.cmd_translate 调用）：
-    auto_terms.process_batch(client, pairs)
+    auto_terms.process_batch(client, pairs, processor_module)
        pairs = [(原文, 译文), ...]
 """
 import json
@@ -24,7 +24,7 @@ EXTRACT_SYSTEM = """你是宝可梦游戏术语提取助手。
 
 【必须提取的类型】
 1. 训练家 / NPC 名字，包括方括号里的名字：
-   - 输入 \tg[Fátima] → 提取 Fátima
+   - 输入 \\tg[Fátima] → 提取 Fátima
    - 输入 [Owen] → 提取 Owen
    - 输入 [Lionel, el Campeón de Galar] → 提取整段 "Lionel, el Campeón de Galar"
 2. 宝可梦名称：Pikachu、Helioptile、Charizard、Elgyem
@@ -49,7 +49,7 @@ EXTRACT_SYSTEM = """你是宝可梦游戏术语提取助手。
 
 【严格要求】
 - 译文必须是对应的中文翻译，绝对不能直接复制原文
-- 如果某个专有名词在译文中**没有对应翻译**（仍是原样），**不要输出它**
+- 如果某个专有名词在译文中**没有对应翻译**（仍是原样），**按照自己的理解翻译它**
 - 如果没有找到任何专有名词，输出：{}
 
 【示例】
@@ -63,21 +63,34 @@ EXTRACT_SYSTEM = """你是宝可梦游戏术语提取助手。
 {"Fátima": "法蒂玛", "Pallet Town": "真新镇", "Helioptile": "伞电蜥"}
 """
 
+
+# ================================================================
+# 文本清理
+# ================================================================
 # 清理：把控制码和方括号标签替换成可读形式
-_CLEAN_CTRL  = re.compile(r'\\[A-Za-z]+(?:\[[^\]]*\])?')
-_CLEAN_TAG   = re.compile(r'\[([^\]]*)\]')
+_CLEAN_CTRL = re.compile(r'\\[A-Za-z]+(?:\[[^\]]*\])?')
+_CLEAN_TAG  = re.compile(r'\[([^\]]*)\]')
 
 
 def _clean_for_extract(text):
-    # 控制码 → [名字]
-    def _ctrl(m):
-        return f"[{m.group(0)[1:]}]"     # \tg[Fátima] → [tg[Fátima]] 太乱
-    # 其实简单点：直接删掉纯控制码，保留方括号内容
-    text = re.sub(r'\\(?:n|N)', ' ', text)                # \n \N → 空格
+    """
+    把控制码转成可读形式，方便模型识别术语：
+      \\tg[Fátima]  → [Fátima]
+      \\n \\N        → 空格
+      \\PN          → 删掉
+    """
+    if not text:
+        return ""
+    # \n \N → 空格
+    text = re.sub(r'\\(?:n|N)', ' ', text)
+    # \tg[Fátima] → [Fátima]
     text = re.sub(r'\\[A-Za-z]+\[([^\]]*)\]',
-                  lambda m: f"[{m.group(1)}]", text)      # \tg[Fátima] → [Fátima]
-    text = re.sub(r'\\[A-Za-z]+', '', text)              # 剩下的 \PN → 删掉
+                  lambda m: f"[{m.group(1)}]", text)
+    # 剩下的 \PN 之类直接删掉
+    text = re.sub(r'\\[A-Za-z]+', '', text)
     return text
+
+
 # ================================================================
 # JSON 解析（容错）
 # ================================================================
@@ -114,9 +127,8 @@ def _parse_json(raw):
 
 
 # ================================================================
-# 提取
+# 从句子对提取
 # ================================================================
-
 def extract_from_pairs(client, pairs):
     """
     pairs: [(原文, 译文), ...]
@@ -125,7 +137,6 @@ def extract_from_pairs(client, pairs):
     if not pairs:
         return {}
 
-    # 清理译文里的 \n \N
     clean_pairs = []
     for s, t in pairs:
         s = _clean_for_extract((s or "").strip())
@@ -171,6 +182,15 @@ AUTO_START = "    # @@AUTO_TERMS_START@@"
 AUTO_END   = "    # @@AUTO_TERMS_END@@"
 
 
+def _normalize_key(s):
+    """
+    归一化原文 key，用于存在性比较。
+    规则：去首尾空白 + 全部转小写。
+    这样 Owen / owen / "  Owen " 会被视为同一个术语。
+    """
+    return s.strip().lower()
+
+
 def _validate(terms, min_len):
     """过滤掉不合格的术语。"""
     result = {}
@@ -184,6 +204,9 @@ def _validate(terms, min_len):
         if not k or not v or k == v:
             continue
         if "\\" in k or "[" in k or "]" in k:
+            continue
+        # 译文必须含中文（过滤 "Owen": " Owen" 这种未翻译的情况）
+        if not re.search(r'[\u4e00-\u9fff]', v):
             continue
         result[k] = v
     return result
@@ -206,7 +229,14 @@ def _load_existing_terms(path):
 def merge_into_term_dict(new_terms):
     """
     把新术语合并到 term_dict.py 顶部的 AUTO 块。
-    已存在的跳过；返回实际添加的条数。
+
+    判断规则（按需求定义）：
+      · 只以「原文」作为判断条件
+      · 原文归一化后（去空格 + 小写）在术语表中已存在 → 跳过
+      · 译文（value）不影响判断，即使译文不同也不覆盖已有条目
+      · 若译文存在差异 → 输出警告日志，但仍保留原有译文
+
+    返回实际新增的条数。
     """
     if not new_terms:
         return 0
@@ -214,17 +244,66 @@ def merge_into_term_dict(new_terms):
     min_len = getattr(config, "AUTO_EXTRACT_MIN_LEN", 3)
     new_terms = _validate(new_terms, min_len)
     if not new_terms:
+        log.debug("候选术语未通过校验，全部丢弃")
         return 0
 
+    # ---------- 加载已有术语，构建归一化索引 ----------
     existing = _load_existing_terms(config.TERM_FILE)
+    # {归一化 key: (原始 key, 原始译文)}
+    existing_index = {
+        _normalize_key(k): (k, v) for k, v in existing.items()
+    }
 
-    # 过滤已存在的（区分大小写）
-    to_add = {k: v for k, v in new_terms.items() if k not in existing}
+    log.debug("已有术语 %d 条（归一化后 %d 个 key）",
+              len(existing), len(existing_index))
+
+    # ---------- 按原文过滤 ----------
+    to_add = {}
+    skipped_same = []          # 完全一样，安静跳过
+    skipped_diff = []          # 原文相同但译文不同，需要警告
+
+    for k, v in new_terms.items():
+        norm = _normalize_key(k)
+        if norm in existing_index:
+            old_k, old_v = existing_index[norm]
+            if old_v == v:
+                skipped_same.append(k)
+            else:
+                skipped_diff.append((k, old_v, v))
+            continue
+        to_add[k] = v
+
+    # ---------- 输出跳过日志 ----------
+    if skipped_same:
+        log.info("跳过已存在术语 %d 条：%s",
+                 len(skipped_same),
+                 ", ".join(skipped_same[:10])
+                 + (f" …" if len(skipped_same) > 10 else ""))
+
+    # ---------- 译文差异警告 ----------
+    if skipped_diff:
+        log.warning("=" * 60)
+        log.warning("检测到 %d 条术语「原文相同但译文不同」：", len(skipped_diff))
+        for k, old_v, new_v in skipped_diff:
+            log.warning("  原文：%s", k)
+            log.warning("    已有译文：%s  （保留）", old_v)
+            log.warning("    本次译文：%s", new_v)
+        log.warning("  如需更新译文，请手动编辑 term_dict.py")
+        log.warning("=" * 60)
+
     if not to_add:
+        log.debug("所有候选术语均已存在（按原文判断），未新增")
         return 0
 
-    # 写文件
+    log.info("准备写入 %d 条新术语：%s",
+             len(to_add),
+             ", ".join(list(to_add.keys())[:10])
+             + (" …" if len(to_add) > 10 else ""))
+
+    # ---------- 写文件 ----------
     path = config.TERM_FILE
+
+    # 情况 A：文件不存在，从头创建
     if not os.path.exists(path):
         content = (
             "# -*- coding: utf-8 -*-\n"
@@ -242,10 +321,10 @@ def merge_into_term_dict(new_terms):
         _atomic_write(path, content)
         return len(to_add)
 
+    # 情况 B：文件已存在，插入到 AUTO 块
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
 
-    # 构造要插入的行
     insert_lines = "".join(
         f"    {json.dumps(k, ensure_ascii=False)}: "
         f"{json.dumps(v, ensure_ascii=False)},\n"
