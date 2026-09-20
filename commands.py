@@ -253,11 +253,12 @@ def cmd_translate(skip_picker=False):
             bi = start // config.BATCH_SIZE + 1
             batch_texts = todo[start:start + config.BATCH_SIZE]
 
-            batch, maps_dict = [], {}
+            batch, maps_dict, breaks_dict = [], {}, {}
             for k, txt in enumerate(batch_texts):
-                safe, maps = PR.prepare(txt)
+                safe, maps, breaks = PR.prepare(txt)      # ★ 三个返回值
                 batch.append((k, safe))
                 maps_dict[k] = maps
+                breaks_dict[k] = breaks
                 # ★ 检测未识别控制码
                 for token, ctx in PR.detect_unknown_ctrl(safe):
                     unknown_ctrl_hits.append((token, txt, ctx))
@@ -324,7 +325,7 @@ def cmd_translate(skip_picker=False):
                         failed.append(src)
                         continue
 
-                final = PR.finalize(raw, maps)
+                final = PR.finalize(raw, maps, breaks_dict.get(k))
                 log.debug("[批 %d][%d] 最终译文=%r", bi, k, final)
                 cache.put(src, final)
                 ok += 1
@@ -415,6 +416,15 @@ def cmd_translate(skip_picker=False):
                         len(kinds), len(unknown_ctrl_hits), uc_path)
         except Exception as e:
             log.error("写未识别控制码报告失败：%s", e)
+    # ---------- 自动建立术语表快照 ----------
+    try:
+        import term_sync as TS
+        current_terms = TS.load_current_terms()
+        if current_terms:
+            TS.save_snapshot(current_terms)
+            log.info("术语表快照已更新：%d 条", len(current_terms))
+    except Exception as e:
+        log.warning("建立术语表快照失败：%s", e)
 
 
 # ================================================================

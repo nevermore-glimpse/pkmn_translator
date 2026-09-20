@@ -233,14 +233,37 @@ def verify(text, maps):
 # ================================================================
 _TERMS = []
 _TERM_MAP = {}
+_TERM_MAP_LOWER = {}
 _COMBINED_RE = None
 
+def _check_case_conflicts(terms):
+    """
+    检测术语表里是否有大小写不同但译文不同的词。
+    例如：
+        "Owen": "欧文"
+        "OWEN": "OWEN"
+    这种会导致小写索引冲突，取后者。此时输出警告。
+    """
+    lower_map = {}
+    conflicts = []
+    for k, v in terms:
+        lk = k.lower()
+        if lk in lower_map and lower_map[lk] != v:
+            conflicts.append((k, lower_map[lk], v))
+        lower_map[lk] = v
+
+    if conflicts:
+        log.warning("检测到 %d 组大小写冲突的术语：", len(conflicts))
+        for k, v1, v2 in conflicts[:10]:
+            log.warning("  %s  →  已有 %r，新值 %r（取新值）", k, v1, v2)
+        if len(conflicts) > 10:
+            log.warning("  … 其余 %d 组省略", len(conflicts) - 10)
 
 def load_terms():
-    global _TERMS, _TERM_MAP, _COMBINED_RE
-
+    global _TERMS, _TERM_MAP, _TERM_MAP_LOWER, _COMBINED_RE
     _TERMS = []
     _TERM_MAP = {}
+    _TERM_MAP_LOWER = {}          # ★ 加这个
     _COMBINED_RE = None
 
     if not config.APPLY_TERMS:
@@ -271,7 +294,7 @@ def load_terms():
     _TERMS = good
     _TERM_MAP = dict(good)
 
-    # ★ 关键优化：把 N 个词合并成一个正则
+    # ★ 关键优化：把 N 个词合并成一个正则，大小写不敏感
     if good:
         word_chars = r'\w\u00C0-\u024F'
         alternation = '|'.join(re.escape(k) for k, _ in good)
@@ -279,17 +302,24 @@ def load_terms():
                    + alternation +
                    r')(?![' + word_chars + r'])')
         try:
-            _COMBINED_RE = re.compile(pattern)
+            # ★ re.IGNORECASE：Pokérus / PokéRus / POKÉRUS 都能匹配
+            _COMBINED_RE = re.compile(pattern, re.IGNORECASE)
         except re.error as e:
             log.error("术语表合并正则失败：%s（将退化为逐条匹配）", e)
             _COMBINED_RE = None
 
-    log.info("术语表加载：%d 条（跳过短词 %d 条）",
+    # ★ 小写索引，供 IGNORECASE 匹配后查表用
+    _TERM_MAP_LOWER = {k.lower(): v for k, v in good}
+
+    # ★ 检测大小写冲突（同一个词有多种大小写但译文不同）
+    _check_case_conflicts(good)
+
+    log.info("术语表加载：%d 条（跳过短词 %d 条，大小写不敏感）",
              len(_TERMS), skipped_short)
 
 
 def apply_terms(text):
-    """一次扫描完成所有术语替换。"""
+    """一次扫描完成所有术语替换（大小写不敏感）。"""
     if not _COMBINED_RE:
         # 兜底：正则编译失败时退化为逐条替换
         if not _TERMS:
@@ -297,20 +327,121 @@ def apply_terms(text):
         word_chars = r'\w\u00C0-\u024F'
         for en, zh in _TERMS:
             try:
-                pat = re.compile(r'(?<![' + word_chars + r'])' +
-                                 re.escape(en) +
-                                 r'(?![' + word_chars + r'])')
+                pat = re.compile(
+                    r'(?<![' + word_chars + r'])' +
+                    re.escape(en) +
+                    r'(?![' + word_chars + r'])',
+                    re.IGNORECASE,        # ★ 这里也加
+                )
                 text = pat.sub(lambda m, z=zh: z, text)
             except re.error:
                 text = text.replace(en, zh)
         return text
 
     # 主路径：一次 sub 完成全部替换
-    return _COMBINED_RE.sub(
-        lambda m: _TERM_MAP.get(m.group(1), m.group(1)),
-        text,
-    )
+    def _replace(m):
+        matched = m.group(1)
+        # 先按原样查，再按小写查
+        if matched in _TERM_MAP:
+            return _TERM_MAP[matched]
+        return _TERM_MAP_LOWER.get(matched.lower(), matched)
 
+    return _COMBINED_RE.sub(_replace, text)
+
+# ================================================================
+# 按原文换行位置对齐译文
+# ================================================================
+_PUNCT_SET = set(".!?。！？")
+
+
+def analyze_breaks(text):
+    """
+    分析原文，返回 [bool, ...]：
+      每个"标点单元"后是否紧跟 \\n。
+
+    标点单元定义：
+      · 单个 . ! ? 。 ！ ？         → 一次
+      · 连续 2 个以上半角点（.. ... ......） → 整体算一次
+    """
+    if not text:
+        return []
+    result = []
+    n = len(text)
+    i = 0
+    while i < n:
+        ch = text[i]
+
+        # 连续点：2 个及以上作为一组
+        if ch == '.':
+            j = i
+            while j < n and text[j] == '.':
+                j += 1
+            if j - i >= 2:
+                has_break = (j + 1 < n and
+                             text[j] == '\\' and
+                             text[j + 1] == 'n')
+                result.append(has_break)
+                i = j
+                continue
+            # 单个点 → 落到下面按普通标点处理
+
+        # 单个标点
+        if ch in _PUNCT_SET:
+            has_break = (i + 2 < n and
+                         text[i + 1] == '\\' and
+                         text[i + 2] == 'n')
+            result.append(has_break)
+        i += 1
+    return result
+
+
+def apply_breaks(text, breaks):
+    """
+    按 breaks 列表，在译文对应位置的标点后补加 \\n。
+
+    连续点处理方式与 analyze_breaks 保持一致：
+      · 译文里的连续 2+ 个点 → 作为一个单元
+      · 若对应原文位置有换行 → 加 \\n
+    """
+    if not text or not breaks:
+        return text
+
+    result = []
+    idx = 0
+    n = len(text)
+    i = 0
+    while i < n:
+        ch = text[i]
+
+        # 连续点：2 个及以上作为一组
+        if ch == '.':
+            j = i
+            while j < n and text[j] == '.':
+                j += 1
+            if j - i >= 2:
+                result.append(text[i:j])
+                if idx < len(breaks) and breaks[idx]:
+                    already = (j + 1 < n and
+                               text[j] == '\\' and
+                               text[j + 1] == 'n')
+                    if not already:
+                        result.append('\\n')
+                idx += 1
+                i = j
+                continue
+
+        # 单个标点
+        result.append(ch)
+        if ch in _PUNCT_SET:
+            if idx < len(breaks) and breaks[idx]:
+                already = (i + 2 < n and
+                           text[i + 1] == '\\' and
+                           text[i + 2] == 'n')
+                if not already:
+                    result.append('\\n')
+            idx += 1
+        i += 1
+    return ''.join(result)
 
 # ================================================================
 # 换行重排
@@ -318,70 +449,67 @@ def apply_terms(text):
 _CTRL_FOR_REWRAP = re.compile(r'\\[A-Za-z]+(?:\[[^\]]*\])?|@\d+@|⟦\d+⟧')
 
 
-def rewrap(text, min_chars=None, max_chars=None, punct=None):
+def rewrap(text, min_chars=None, max_chars=None, punct=None, min_gap=None):
     """
     翻译后重新分行：
+
       · 累计 max_chars 个字符 → 强制换行
       · 累计 ≥ min_chars → 往后看 1 个字符，是软断点就换行
-      · 遇到句末标点（。！？!?）→ 立即换行并清零
-      · 遇到 ≥ WRAP_DOTS 个连续的点（如 ......）→ 整体输出后换行
-      · 控制码（\\N \\wt[10] \\PN 等）原样输出，不计入、不触发换行
+      · 控制码原样输出，不计入、不触发换行
+      · 遇到 \\n 视为换行边界，重置计数
+      · 文本末尾不追加 \\n
+       若需要按原文换行位置对齐，由 apply_breaks 处理。
     """
     if not text:
         return text
     min_chars = min_chars if min_chars is not None else config.WRAP_CHARS_MIN
     max_chars = max_chars if max_chars is not None else config.WRAP_CHARS_MAX
-    punct     = punct     if punct     is not None else config.WRAP_PUNCT
-    punct_set = set(punct) if punct else set()
-    dots_min  = getattr(config, "WRAP_DOTS", 3)
+    min_gap   = min_gap   if min_gap   is not None else getattr(config, "WRAP_MIN_GAP", 10)
 
     soft_punct = set("，、；：,;: 　")
+    soft_threshold = max(min_chars, min_gap)
 
     parts = []
     count = 0
     i, n = 0, len(text)
 
     while i < n:
-        # 控制码：原样输出
+        # 控制码：原样输出，不计数、不触发换行
         m = _CTRL_FOR_REWRAP.match(text, i)
         if m:
-            parts.append(m.group(0))
+            token = m.group(0)
+            parts.append(token)
             i = m.end()
+            if token == '\\n':
+                count = 0
             continue
 
-        # 连续点：... / ...... / ...... 等
+        # 连续点：作为一个整体加入，只累计字数，不主动换行
         if text[i] == '.':
             j = i
             while j < n and text[j] == '.':
                 j += 1
-            if j - i >= dots_min:
-                dots = text[i:j]
-                parts.append(dots)
+            dots = text[i:j]
+            parts.append(dots)
+            count += (j - i)
+            i = j
+            # 若累计超过 max_chars，在此处强制换行
+            if count >= max_chars:
                 parts.append("\\n")
                 count = 0
-                i = j
-                continue
-            # 少于 dots_min 的点，作为普通字符走下面的逻辑
+            continue
 
         ch = text[i]
         parts.append(ch)
         count += 1
         i += 1
 
-        # ① 句末标点：立即换行
-        if ch in punct_set:
-            parts.append("\\n")
-            count = 0
-            continue
-
-        # ② 达到上限：强制换行
         if count >= max_chars:
             parts.append("\\n")
             count = 0
             continue
 
-        # ③ 区间 [min_chars, max_chars)：看下一字符是否是软断点
-        if count >= min_chars and i < n:
+        if count >= soft_threshold and i < n:
             next_ch = text[i]
             if next_ch in soft_punct:
                 parts.append("\\n")
@@ -393,75 +521,23 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None):
     return s
 
 # ================================================================
-# 自动换行（旧版，按显示宽度，默认关闭）
-# ================================================================
-def char_width(c):
-    o = ord(c)
-    if 0x4E00 <= o <= 0x9FFF:  return 1.0
-    if 0x3000 <= o <= 0x303F:  return 1.0
-    if 0xFF00 <= o <= 0xFFEF:  return 1.0
-    return 0.5
-
-
-def auto_wrap(text, max_width=None):
-    if not text:
-        return text
-    max_width = max_width
-
-    tokens = []
-    def _protect(m):
-        tokens.append((f"\x00{len(tokens)}\x00", m.group(0)))
-        return tokens[-1][0]
-
-    protected = re.compile(r'@\d+@|⟦\d+⟧').sub(_protect, text)
-
-    items = []
-    i = 0
-    while i < len(protected):
-        if protected[i] == "\x00":
-            j = protected.find("\x00", i + 1)
-            if j == -1:
-                items.append((protected[i], 0.0)); i += 1; continue
-            items.append((protected[i:j + 1], 0.0)); i = j + 1
-        else:
-            items.append((protected[i], char_width(protected[i]))); i += 1
-
-    break_chars = set("。！？，、；：!?.,;:）)】」』》”’")
-    lines, cur, cur_w = [], [], 0.0
-    for item, w in items:
-        if cur_w + w > max_width and cur:
-            bp = -1
-            for k in range(len(cur) - 1, max(0, len(cur) - 15) - 1, -1):
-                if cur[k][0] in break_chars:
-                    bp = k + 1; break
-            if bp > 0:
-                lines.append("".join(x for x, _ in cur[:bp]).rstrip())
-                cur = cur[bp:]
-            else:
-                lines.append("".join(x for x, _ in cur).rstrip())
-                cur = []
-            cur_w = sum(x[1] for x in cur)
-        cur.append((item, w)); cur_w += w
-    if cur:
-        lines.append("".join(x for x, _ in cur).rstrip())
-
-    result = "\\n".join(lines)
-    for tok, orig in tokens:
-        result = result.replace(tok, orig)
-    return result
-
-
-# ================================================================
 # 一步到位
 # ================================================================
 def prepare(text):
+    """返回 (safe_text, maps, breaks)。"""
+    breaks = analyze_breaks(text)
     safe, maps = protect(text)
     safe = apply_terms(safe)
-    return safe, maps
+    return safe, maps, breaks
 
-
-def finalize(text, maps):
+def finalize(text, maps, breaks=None):
+    """
+    还原占位符 → 按原文换行位置补 \\n → 字数重排。
+    breaks 来自 prepare() 的第三个返回值。
+    """
     text = restore(text, maps)
+    if breaks:
+        text = apply_breaks(text, breaks)
     if config.REWRAP_ENABLE:
         text = rewrap(text)
     return text

@@ -30,11 +30,11 @@ https://space.bilibili.com/3546602748775226?spm_id_from=333.1007.0.0
   输入文件：{input}
   输出文件：{output}
 --------------------------------------------------------------------
-  1. 翻译
+  1. 翻译（术语匹配大小写不敏感）
   2. 重翻未翻译内容
   3. Excel 转术语表
   4. 切换输入文件
-  5. 术语更新后重翻
+  5. 术语更新后重翻相关句子
   6. 设置
   7. 重新检查环境
   0. 退出
@@ -78,6 +78,32 @@ def _startup_checks():
         print(f"  修复：ollama pull {config.MODEL}")
         input("按回车继续...")
 
+def _ensure_snapshot_once():
+    """
+    首次启动时建立术语表快照，并把 SNAPSHOT_INITIALIZED 置为 True。
+    之后启动就不再自动重建。
+    """
+    if getattr(config, "SNAPSHOT_INITIALIZED", False):
+        return
+
+    try:
+        import term_sync as TS
+        import settings
+
+        terms = TS.load_current_terms()
+        if terms:
+            TS.save_snapshot(terms)
+            log.info("首次启动：已建立术语表快照（%d 条）", len(terms))
+        else:
+            log.info("首次启动：术语表为空，跳过快照")
+
+        # 无论有没有术语，都置为 True，避免每次启动都重试
+        ok = settings.set_internal("SNAPSHOT_INITIALIZED", True)
+        if not ok:
+            log.warning("无法持久化 SNAPSHOT_INITIALIZED 标志")
+    except Exception as e:
+        log.warning("建立初始快照失败：%s", e)
+
 
 def main():
     os.makedirs(config.BASE_DIR, exist_ok=True)
@@ -94,6 +120,8 @@ def main():
     except Exception as e:
         log.error("术语表加载失败：%s", e)
 
+    # ★ 首次启动建立快照
+    _ensure_snapshot_once()
     # ---------- 主循环 ----------
     while True:
         print(BANNER.format(

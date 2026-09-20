@@ -31,17 +31,17 @@ USER_CONFIG_PATH = config.USER_CONFIG_FILE
 EDITABLE = [
     # ---------- Ollama 连接 ----------
     ("MODEL",              "Ollama 模型名",     "str",   "如 qwen2.5:14b"),
-    ("OLLAMA_URL",         "Ollama 服务地址",   "str",   ""),
-    ("TIMEOUT",            "请求超时(秒)",      "float", ""),
-    ("NUM_CTX",            "上下文长度",        "int",   ""),
-    ("NUM_PREDICT",        "最大生成 token",    "int",   ""),
+    ("OLLAMA_URL",         "Ollama 服务地址",   "str",   "一般不动"),
+    ("TIMEOUT",            "请求超时(秒)",      "float", "限制模型输出时间（超时直接断开）"),
+    ("NUM_CTX",            "上下文长度",        "int",   "越大关联性越强"),
+    ("NUM_PREDICT",        "最大生成 token",    "int",   "限制模型输出上限（超限直接断开）"),
     ("TEMPERATURE",        "采样温度",          "float", "0.0-1.0"),
     ("THINK",              "推理模式",        "bool",  "True/False"),
 
     # ---------- 翻译策略 ----------
     ("BATCH_SIZE",         "每批条数",          "int",   "建议 10-30"),
-    ("BATCH_RETRIES",      "整批重试次数",      "int",   ""),
-    ("SINGLE_RETRIES",     "单条重试次数",      "int",   ""),
+    ("BATCH_RETRIES",      "整批重试次数",      "int",   "失败时重试"),
+    ("SINGLE_RETRIES",     "单条重试次数",      "int",   "失败时重新"),
     ("CACHE_SAVE_EVERY",   "缓存保存间隔",      "int",   "每 N 批保存一次"),
     ("SOURCE_LANG",        "源语言",            "str",   "如 英语 / 西班牙文"),
     ("TARGET_LANG",        "目标语言",          "str",   "如 简体中文"),
@@ -51,8 +51,7 @@ EDITABLE = [
     ("REWRAP_ENABLE",      "启用换行重排",      "bool",  ""),
     ("WRAP_CHARS_MIN",     "换行下限(字)",      "int",   ""),
     ("WRAP_CHARS_MAX",     "换行上限(字)",      "int",   ""),
-    ("WRAP_PUNCT",         "句末标点",          "str",   "如 。！？!?"),
-    ("WRAP_DOTS",          "连续点换行阈值",    "int",   "如 3"),
+    ("WRAP_MIN_GAP",       "换行最小间隔(字)",  "int",   "换行后至少 N 字才换"),  # ★ 新增
 
     # ---------- 术语与 Excel ----------
     ("APPLY_TERMS",        "启用术语替换",      "bool",  ""),
@@ -254,3 +253,44 @@ def show_menu():
 
         where = "user_config.json" if IS_FROZEN else "config.py"
         print(f"✔ 已更新：{key} = {msg}  （已写回 {where}，当前会话立即生效）")
+
+def set_internal(key, value):
+    """
+    写回配置项，但不暴露在菜单里。
+    用于内部标志位（如 SNAPSHOT_INITIALIZED）。
+    不做类型校验，直接按 Python 值写入。
+    """
+    try:
+        if isinstance(value, bool):
+            literal = "True" if value else "False"
+            value_obj = value
+        elif isinstance(value, int):
+            literal = str(value)
+            value_obj = value
+        elif isinstance(value, float):
+            literal = str(value)
+            value_obj = value
+        else:
+            v = str(value)
+            escaped = v.replace("\\", "\\\\").replace('"', '\\"')
+            literal = f'"{escaped}"'
+            value_obj = v
+
+        if IS_FROZEN:
+            _set_in_user_config(key, value_obj)
+        else:
+            if not _set_in_source(key, literal):
+                log.warning("set_internal：config.py 中未找到 %s", key)
+                return False
+
+        # 热更新当前会话
+        try:
+            setattr(config, key, value_obj)
+        except Exception as e:
+            log.warning("setattr(%s) 失败：%s", key, e)
+
+        log.info("内部配置已更新：%s = %s", key, literal)
+        return True
+    except Exception as e:
+        log.warning("set_internal(%s) 失败：%s", key, e)
+        return False

@@ -273,12 +273,12 @@ def merge_into_term_dict(new_terms):
             continue
         to_add[k] = v
 
-    # ---------- 输出跳过日志 ----------
+    # ---------- 输出跳过日志（DEBUG 级） ----------
     if skipped_same:
-        log.info("跳过已存在术语 %d 条：%s",
-                 len(skipped_same),
-                 ", ".join(skipped_same[:10])
-                 + (f" …" if len(skipped_same) > 10 else ""))
+        log.debug("跳过已存在术语 %d 条：%s",
+                  len(skipped_same),
+                  ", ".join(skipped_same[:10])
+                  + (f" …" if len(skipped_same) > 10 else ""))
 
     # ---------- 译文差异警告 ----------
     if skipped_diff:
@@ -376,7 +376,7 @@ def process_batch(client, pairs, processor_module):
         log.debug("本批未提取到术语")
         return 0
 
-    log.info("本批提取到候选术语 %d 条", len(terms))
+    log.debug("本批提取到候选术语 %d 条", len(terms))
 
     added = merge_into_term_dict(terms)
     if added:
