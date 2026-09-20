@@ -705,94 +705,118 @@ def cmd_switch_file():
 # ================================================================
 def cmd_retranslate_terms():
     """
-    对比术语表快照，找出新增术语 → 定位受影响的缓存 → 删除 → 重翻。
+    对比术语表快照，找出：
+      · 新增的术语          → 清缓存重翻
+      · 译文被修改的术语    → 清缓存重翻
+      · 删除的术语          → 只更新快照（已有译文不受影响）
     """
-    from term_sync import (
-        load_current_terms, load_snapshot, save_snapshot,
-        find_affected_cache, SNAPSHOT_FILE,
-    )
+    import term_sync as TS
 
     log.info("=" * 50)
     log.info("术语更新后重翻")
 
     print("\n[术语更新后重翻]")
+    print("-" * 55)
 
-    # ---------- 加载当前术语表 ----------
-    current_terms = load_current_terms()
-    current_keys = set(current_terms.keys())
+    # ---------- 1. 加载当前术语 ----------
+    current_terms = TS.load_current_terms()
+    log.info("当前术语表：%d 条", len(current_terms))
+    print(f"当前术语表：{len(current_terms)} 条")
 
-    log.info("当前术语表：%d 条", len(current_keys))
-    print(f"当前术语表：{len(current_keys)} 条")
-
-    if not current_keys:
+    if not current_terms:
         print("术语表为空或不存在，请先运行菜单 3 生成")
         return
 
-    # ---------- 首次使用：只记录基准 ----------
-    old_keys = load_snapshot()
-    if old_keys is None:
-        print(f"\n未找到快照文件：{SNAPSHOT_FILE}")
+    # ---------- 2. 首次使用：只记录基准 ----------
+    if not TS.snapshot_exists():
+        print(f"\n未找到快照文件：{TS.SNAPSHOT_FILE}")
         print("首次使用本功能，需要先把当前术语表记录为基准。")
-        print("以后修改 term_dict.py 后再运行本功能，就能识别出新增术语。")
-        print(f"\n当前术语表：{len(current_keys)} 条")
+        print("以后修改 term_dict.py 后再运行本功能，就能识别出变化。")
+        print(f"\n当前术语表：{len(current_terms)} 条")
         ans = input("是否将当前术语表记录为基准？(Y/n): ").strip().lower()
         if ans == "n":
             print("已取消")
             return
-        save_snapshot(current_keys)
-        print(f"✔ 已保存基准（{len(current_keys)} 条）")
+        TS.save_snapshot(current_terms)
+        print(f"✔ 已保存基准（{len(current_terms)} 条）")
         print("\n以后的工作流：")
-        print("  1. 修改 term_dict.py（或重新从 Excel 生成）")
-        print("  2. 再次运行本功能")
-        print("  3. 系统自动找出新增术语、清缓存、重翻")
+        print("  1. 修改 term_dict.py（增删术语或改译文）")
+        print("  2. 运行本功能")
+        print("  3. 系统自动找出变化、清缓存、重翻")
         return
 
-    # ---------- 对比 ----------
-    added = sorted(current_keys - old_keys)
-    removed = sorted(old_keys - current_keys)
+    # ---------- 3. 对比 ----------
+    added, removed, modified, old_was_keyonly = TS.diff_terms()
 
-    log.info("对比快照：新增 %d  删除 %d", len(added), len(removed))
+    if added is None:
+        print("快照读取失败，无法对比")
+        return
+
+    log.info("对比快照：新增 %d  删除 %d  修改 %d",
+             len(added), len(removed), len(modified))
     print(f"\n对比快照：")
-    print(f"  上次基准：{len(old_keys)} 条")
-    print(f"  当前术语：{len(current_keys)} 条")
-    print(f"  新增：{len(added)} 条")
-    print(f"  删除：{len(removed)} 条")
+    print(f"  当前术语：{len(current_terms)} 条")
+    print(f"  新增：    {len(added)} 条")
+    print(f"  删除：    {len(removed)} 条")
+    if old_was_keyonly:
+        print(f"  修改：    （旧快照无 value，无法判断）")
+    else:
+        print(f"  修改：    {len(modified)} 条")
 
-    if not added and not removed:
+    if old_was_keyonly:
+        print("\n⚠ 检测到旧版快照（只存了 key 没存 value），")
+        print("  无法识别译文修改。本次运行后会自动升级快照格式，")
+        print("  下次就能检测译文变化了。")
+
+    if not added and not removed and not modified:
         print("\n术语表没有变化，无需重翻")
         return
 
+    # ---------- 4. 展示变化 ----------
     if added:
-        print("\n新增术语（前 30 条）：")
-        for t in added[:30]:
+        print(f"\n【新增术语】（前 20 条）：")
+        for t in added[:20]:
             print(f"  + {t}  →  {current_terms.get(t, '')}")
-        if len(added) > 30:
-            print(f"  … 其余 {len(added) - 30} 条")
+        if len(added) > 20:
+            print(f"  … 其余 {len(added) - 20} 条")
+
+    if modified and not old_was_keyonly:
+        print(f"\n【译文修改】（前 20 条）：")
+        old_snapshot = TS.load_snapshot() or {}
+        old_index = {k.strip().lower(): v for k, v in old_snapshot.items()}
+        for t in modified[:20]:
+            old_v = old_index.get(t.strip().lower(), "?")
+            new_v = current_terms.get(t, "?")
+            print(f"  ~ {t}")
+            print(f"      旧：{old_v}")
+            print(f"      新：{new_v}")
+        if len(modified) > 20:
+            print(f"  … 其余 {len(modified) - 20} 条")
 
     if removed:
-        print("\n删除的术语（前 10 条）：")
+        print(f"\n【删除的术语】（前 10 条）：")
         for t in removed[:10]:
             print(f"  - {t}")
         if len(removed) > 10:
             print(f"  … 其余 {len(removed) - 10} 条")
+        print("  （删除的术语不影响已有译文，只更新快照）")
 
-    if not added:
-        # 只有删除，不影响已有译文，直接更新快照
-        print("\n没有新增术语，直接更新快照")
-        save_snapshot(current_keys)
+    # ---------- 5. 找命中的缓存 ----------
+    affected_terms = list(added) + list(modified)
+    if not affected_terms:
+        print("\n没有需要重翻的内容（只有删除），直接更新快照")
+        TS.save_snapshot(current_terms)
         return
 
-    # ---------- 找命中的缓存 ----------
     cache = Cache(config.Runtime.cache_file)
     print(f"\n当前缓存：{len(cache)} 条")
-    log.info("当前缓存：%d 条", len(cache))
 
-    hits = find_affected_cache(cache.data, added)
+    hits = TS.find_affected_cache(cache.data, affected_terms)
     log.info("命中缓存：%d 条", len(hits))
 
     if not hits:
-        print("没有缓存中的句子包含新增术语，无需重翻")
-        save_snapshot(current_keys)
+        print("没有缓存中的句子包含这些术语，无需重翻")
+        TS.save_snapshot(current_terms)
         return
 
     # 按命中术语统计
@@ -809,35 +833,25 @@ def cmd_retranslate_terms():
     if len(hits) > 10:
         print(f"  … 其余 {len(hits) - 10} 条")
 
-    # ---------- 确认 ----------
+    # ---------- 6. 确认 ----------
     print(f"\n将删除这 {len(hits)} 条缓存，然后重新翻译。")
     if input("确认？(Y/n): ").strip().lower() == "n":
         print("已取消（快照未更新）")
         return
 
-    # ---------- 备份 + 清缓存 ----------
+    # ---------- 7. 清缓存 ----------
     keys_to_remove = [k for k, _ in hits]
-    try:
-        import shutil
-        backup = config.Runtime.cache_file + ".bak"
-        shutil.copy2(config.Runtime.cache_file, backup)
-        log.info("缓存已备份：%s", backup)
-        print(f"  缓存已备份：{backup}")
-    except Exception as e:
-        log.warning("缓存备份失败：%s", e)
-
     removed_n = cache.remove_many(keys_to_remove)
     cache.save(force=True)
     log.info("已删除缓存：%d 条", removed_n)
     print(f"✔ 已删除 {removed_n} 条缓存")
 
-    # ---------- 更新快照 ----------
-    save_snapshot(current_keys)
+    # ---------- 8. 更新快照 ----------
+    TS.save_snapshot(current_terms)
 
-    # ---------- 直接开始重翻 ----------
+    # ---------- 9. 开始重翻 ----------
     print("\n开始重翻…")
     cmd_translate(skip_picker=True)
-
 
 # ================================================================
 # 兼容：老菜单若还引用这些函数名
