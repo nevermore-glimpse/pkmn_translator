@@ -487,7 +487,8 @@ def cmd_retranslate_failed():
     for k, n in kinds_count.items():
         print(f"  {k}: {n}")
 
-    target_kinds = {"未翻译", "疑似未翻译", "译文残留控制码", "翻译失败"}
+    target_kinds = {"未翻译", "疑似未翻译", "译文残留控制码",
+                    "译文残留占位符", "翻译失败"}
     to_retranslate = [h for h in hits if h['kind'] in target_kinds]
     symbol_issues  = [h for h in hits if h['kind'] == '符号不匹配']
     special_issues = [h for h in hits if h['kind'] == '特殊行']
@@ -540,7 +541,7 @@ def _print_summary(hits, report_path):
     c = Counter(h['kind'] for h in hits)
     print(f"  共 {len(hits)} 处问题：")
     for k in ('翻译失败', '未翻译', '疑似未翻译',
-              '符号不匹配', '译文残留控制码', '特殊行'):
+              '符号不匹配', '译文残留控制码', '译文残留占位符', '特殊行'):
         if c.get(k):
             print(f"    {k}: {c[k]}")
     print(f"  报告：{report_path}")
