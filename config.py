@@ -125,7 +125,7 @@ EXCEL_TARGET_LANG = "简体中文"
 #   exe 运行：settings.py 写 user_config.json，这里读它覆盖默认值
 # ================================================================
 USER_CONFIG_FILE = os.path.join(BASE_DIR, "user_config.json")
-SNAPSHOT_INITIALIZED = True
+SNAPSHOT_INITIALIZED = False
 
 if os.path.exists(USER_CONFIG_FILE):
     try:
