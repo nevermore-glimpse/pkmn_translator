@@ -318,36 +318,46 @@ def load_terms():
              len(_TERMS), skipped_short)
 
 
+def find_terms(text):
+    """
+    找出 text 中命中的术语，返回 [(原文, 译文), ...]（去重，保持出现顺序）。
+    大小写不敏感。
+    """
+    if not _COMBINED_RE or not text:
+        return []
+
+    seen = set()
+    result = []
+    for m in _COMBINED_RE.finditer(text):
+        matched = m.group(1)
+        dst = _TERM_MAP.get(matched)
+        if dst is None:
+            dst = _TERM_MAP_LOWER.get(matched.lower())
+        if not dst:
+            continue
+        key = matched.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((matched, dst))
+    return result
+
 def apply_terms(text):
-    """一次扫描完成所有术语替换（大小写不敏感）。"""
-    if not _COMBINED_RE:
-        # 兜底：正则编译失败时退化为逐条替换
-        if not _TERMS:
-            return text
-        word_chars = r'\w\u00C0-\u024F'
-        for en, zh in _TERMS:
-            try:
-                pat = re.compile(
-                    r'(?<![' + word_chars + r'])' +
-                    re.escape(en) +
-                    r'(?![' + word_chars + r'])',
-                    re.IGNORECASE,        # ★ 这里也加
-                )
-                text = pat.sub(lambda m, z=zh: z, text)
-            except re.error:
-                text = text.replace(en, zh)
+    """
+    术语兜底替换：把 text 里命中的术语原文替换为术语表译文。
+    大小写不敏感。用于每批翻译后的兜底修正。
+    """
+    if not _COMBINED_RE or not text:
         return text
 
-    # 主路径：一次 sub 完成全部替换
     def _replace(m):
         matched = m.group(1)
-        # 先按原样查，再按小写查
-        if matched in _TERM_MAP:
-            return _TERM_MAP[matched]
-        return _TERM_MAP_LOWER.get(matched.lower(), matched)
+        dst = _TERM_MAP.get(matched)
+        if dst is None:
+            dst = _TERM_MAP_LOWER.get(matched.lower())
+        return dst if dst else matched
 
     return _COMBINED_RE.sub(_replace, text)
-
 # ================================================================
 # 按原文换行位置对齐译文
 # ================================================================
@@ -524,11 +534,14 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None, min_gap=None):
 # 一步到位
 # ================================================================
 def prepare(text):
-    """返回 (safe_text, maps, breaks)。"""
+    """
+    返回 (safe_text, maps, breaks, hit_terms)。
+      hit_terms: [(原文, 译文), ...]  文本中命中的术语，交由 prompt 参考
+    """
     breaks = analyze_breaks(text)
     safe, maps = protect(text)
-    safe = apply_terms(safe)
-    return safe, maps, breaks
+    hit_terms = find_terms(safe)
+    return safe, maps, breaks, hit_terms
 
 def finalize(text, maps, breaks=None):
     """
