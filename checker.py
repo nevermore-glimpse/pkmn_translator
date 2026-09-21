@@ -89,7 +89,7 @@ def _find_leftover_placeholder(text):
 # 主检查
 # ================================================================
 def check(src_lines, out_lines, entries, special, report_path,
-          translate_failed=None):
+          extra_hits=None):
     """
     返回 hits 列表并写入报告。
 
@@ -105,10 +105,10 @@ def check(src_lines, out_lines, entries, special, report_path,
         if key and key not in src_to_line:
             src_to_line[key] = ln
 
-    # 已作为"翻译失败"报告的 src，避免常规检查重复
+    # 已单独报告过的 src，避免常规检查重复
     failed_srcs = set()
-    if translate_failed:
-        for item in translate_failed:
+    if extra_hits:
+        for item in extra_hits:
             s = (item.get('src') or '').strip()
             if s:
                 failed_srcs.add(s)
@@ -204,16 +204,17 @@ def check(src_lines, out_lines, entries, special, report_path,
             })
 
     # ---------- ⑦ 翻译失败 ----------
-    if translate_failed:
-        for item in translate_failed:
+    if extra_hits:
+        for item in extra_hits:
             src = (item.get('src') or '').strip()
-            reason = item.get('reason') or '翻译过程中失败'
+            kind = item.get('kind') or '翻译失败'
+            detail = item.get('detail') or item.get('reason') or '翻译过程中问题'
             dst = item.get('dst', '') or ''
-            line_no = src_to_line.get(src, -1)
+            line_no = item.get('line_no', src_to_line.get(src, -1))
             hits.append({
-                'line_no': line_no, 'kind': '翻译失败',
+                'line_no': line_no, 'kind': kind,
                 'src': src, 'dst': dst,
-                'detail': reason,
+                'detail': detail,
             })
 
     # ---------- 写报告 ----------

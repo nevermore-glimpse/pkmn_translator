@@ -119,11 +119,91 @@ def _pick_language(prompt, default_key, exclude=None):
 # 占位符兜底
 # ================================================================
 def _force_restore(raw, maps):
-    result = PR.restore(raw, maps)
-    _, missing = PR.verify(result, maps)
-    for token in missing:
-        result = result.rstrip() + " " + token
-    return result
+    """
+    兜底补回丢失的占位符。
+    在 raw 上（还带 @N@ 形式时）补全，最后统一 restore。
+
+    补回位置按占位符原文特征推断：
+      \\tg[ / [xxx 起始  → 句首
+      ] 说话人结束        → 紧跟名字（第一个标点/空格前）
+      \\n / \\N            → 最后一个句末标点后
+      其它                → 前/后 anchor 附近
+    """
+    if not maps:
+        return raw
+
+    missing = [item["token"] for item in maps if item["token"] not in raw]
+    if not missing:
+        return PR.restore(raw, maps)
+
+    missing_set = set(missing)
+    result = raw
+
+    for m_idx, item in enumerate(maps):
+        token = item["token"]
+        if token not in missing_set:
+            continue
+        original = item.get("original", "")
+
+        new_result = _insert_token_by_hint(
+            result, token, original, maps, m_idx, missing_set
+        )
+        if new_result is not None:
+            result = new_result
+        else:
+            result = result.rstrip() + " " + token
+        missing_set.discard(token)
+
+    return PR.restore(result, maps)
+
+
+def _insert_token_by_hint(text, token, original, maps, m_idx, missing_set):
+    """返回插入后的文本，或 None 表示无法判断。"""
+    if not original:
+        return None
+
+    # ① 说话人/标签起始：\tg[... 或 [xxx... → 句首
+    if original.startswith("\\tg["):
+        return token + text
+
+    # ② 说话人结束 ]
+    if original == "]":
+        # 优先：紧贴前一个 \tg[ 类型
+        for i in range(m_idx - 1, -1, -1):
+            prev_item = maps[i]
+            prev_orig = prev_item.get("original", "")
+            prev_token = prev_item["token"]
+            if prev_orig.startswith("\\tg[") and prev_token in text:
+                pos = text.find(prev_token) + len(prev_token)
+                return text[:pos] + token + text[pos:]
+        # 没有 anchor：名字结尾 = 第一个标点/空格前，否则句尾
+        for i, ch in enumerate(text):
+            if ch.isspace() or ch in "，。！？、；：!?,.;:":
+                return text[:i] + token + text[i:]
+        return text + token
+
+    # ③ 换行符 \n \N → 最后一个句末标点后
+    if original in ("\\n", "\\N"):
+        for i in range(len(text) - 1, -1, -1):
+            if text[i] in "。！？!?.":
+                return text[:i + 1] + token + text[i + 1:]
+        return text + token
+
+    # ④ 其它：找后 anchor，插到它前面
+    for i in range(m_idx + 1, len(maps)):
+        next_token = maps[i]["token"]
+        if next_token in text:
+            pos = text.find(next_token)
+            return text[:pos] + token + text[pos:]
+
+    # ⑤ 找前 anchor，插到它后面
+    for i in range(m_idx - 1, -1, -1):
+        prev_token = maps[i]["token"]
+        if prev_token in text:
+            pos = text.find(prev_token) + len(prev_token)
+            return text[:pos] + token + text[pos:]
+
+    return None
 
 
 # ================================================================
@@ -136,7 +216,8 @@ def cmd_translate(skip_picker=False):
     log.info("=" * 50)
     log.info("开始翻译")
     unknown_ctrl_hits = []
-    failed = []          # ★ 提到函数级作用域，供后面 checker 使用
+    failed = []
+    extra_hits = []        # ★ 术语冲突 / 占位符兜底 等
     # ---------- 选源语言 / 目标语言 ----------
     if not skip_picker and getattr(config, "ASK_LANG_EACH_TIME", True):
         src_lang = _pick_language("请选择【源语言】：", config.SOURCE_LANG)
@@ -255,21 +336,38 @@ def cmd_translate(skip_picker=False):
             batch_texts = todo[start:start + config.BATCH_SIZE]
 
             batch, maps_dict, breaks_dict = [], {}, {}
+            batch_terms = {}          # 收集模型内联返回的术语
+            hit_terms_all = {}        # 收集本批命中的术语（原文 → 译文）
+
             for k, txt in enumerate(batch_texts):
-                safe, maps, breaks = PR.prepare(txt)      # ★ 三个返回值
+                safe, maps, breaks, hit_terms = PR.prepare(txt)
                 batch.append((k, safe))
                 maps_dict[k] = maps
                 breaks_dict[k] = breaks
-                # ★ 检测未识别控制码
+
+                # 汇总命中术语
+                for src_term, dst_term in hit_terms:
+                    if src_term not in hit_terms_all:
+                        hit_terms_all[src_term] = dst_term
+
+                # 检测未识别控制码
                 for token, ctx in PR.detect_unknown_ctrl(safe):
                     unknown_ctrl_hits.append((token, txt, ctx))
+
+            # 传给模型的术语表
+            term_pairs_list = list(hit_terms_all.items())
+            if term_pairs_list:
+                log.debug("[批 %d] 命中术语 %d 条，随 prompt 发送",
+                          bi, len(term_pairs_list))
 
             log.info("[批 %d] 开始  %d 条", bi, len(batch))
             for k, txt in enumerate(batch_texts):
                 log.debug("[批 %d][%d] 原文=%r", bi, k, txt)
                 log.debug("[批 %d][%d] 送模型=%r", bi, k, batch[k][1])
 
-            result = translate_with_retry(client, batch)
+            result = translate_with_retry(client, batch,
+                                          terms_out=batch_terms,
+                                          term_pairs=term_pairs_list)
 
             # 整批缺行 → 单条重试
             missing = [(k, t) for k, t in batch
@@ -279,7 +377,9 @@ def cmd_translate(skip_picker=False):
             for k, safe in missing:
                 for attempt in range(config.SINGLE_RETRIES):
                     try:
-                        r = translate_with_retry(client, [(k, safe)])
+                        r = translate_with_retry(client, [(k, safe)],
+                                                 terms_out=batch_terms,
+                                                 term_pairs=term_pairs_list)
                         if k in r and r[k].strip():
                             result[k] = r[k]
                             break
@@ -307,7 +407,10 @@ def cmd_translate(skip_picker=False):
                     retried = False
                     for _ in range(config.SINGLE_RETRIES):
                         try:
-                            r = translate_with_retry(client, [(k, batch[k][1])])
+                            r = translate_with_retry(
+                                client, [(k, batch[k][1])],
+                                term_pairs=term_pairs_list,
+                            )
                             if k in r and r[k].strip():
                                 ok3, _ = PR.verify(r[k], maps)
                                 if ok3:
@@ -319,6 +422,13 @@ def cmd_translate(skip_picker=False):
                     if not retried:
                         raw = _force_restore(raw, maps)
                         log.info("[批 %d][%d] 占位符兜底补回", bi, k)
+                        # ★ 记录到 report，供用户审核
+                        extra_hits.append({
+                            'src': src,
+                            'kind': '占位符兜底',
+                            'dst': raw,
+                            'detail': f'占位符 {missing_ph} 丢失，已按位置特征补回',
+                        })
 
                     ok_final, _ = PR.verify(raw, maps)
                     if not ok_final:
@@ -330,33 +440,64 @@ def cmd_translate(skip_picker=False):
                 log.debug("[批 %d][%d] 最终译文=%r", bi, k, final)
                 cache.put(src, final)
                 ok += 1
-            # ---------- 自动术语提取 ----------
-            if getattr(config, "AUTO_EXTRACT_TERMS", True):
-                every = max(1, getattr(config, "AUTO_EXTRACT_EVERY", 1))
-                if bi % every == 0:
-                    pairs_for_extract = []
-                    for k, src in enumerate(batch_texts):
-                        raw = result.get(k)
-                        if not raw:
-                            continue
-                        # 用最终译文（已还原保护）
-                        final = PR.finalize(raw, maps_dict[k])
-                        pairs_for_extract.append((src, final))
+            # ---------- 术语合并（内联提取） ----------
+            if getattr(config, "AUTO_EXTRACT_TERMS", True) and batch_terms:
+                try:
+                    import auto_terms
+                    conflicts = []
+                    added = auto_terms.merge_from_translation(
+                        batch_terms, PR, conflicts_out=conflicts
+                    )
+                    if added:
+                        print(f"  [术语] 新增 {added} 条，已应用到后续批次")
 
-                    if pairs_for_extract:
-                        print(f"\n  [术语提取] 从本批 {len(pairs_for_extract)} 条中提取…")
-                        try:
-                            import auto_terms
-                            added = auto_terms.process_batch(
-                                client, pairs_for_extract, PR
+                    # ★ 把涉及冲突的句子加入 report
+                    if conflicts:
+                        conflict_keys = {c['src'].lower() for c in conflicts}
+                        for idx, terms in batch_terms.items():
+                            hit = any(
+                                k.lower() in conflict_keys
+                                for k in terms.keys()
                             )
-                            if added:
-                                print(f"  [术语提取] 新增 {added} 条，已应用到后续批次")
-                            else:
-                                print(f"  [术语提取] 无新增")
-                        except Exception as e:
-                            log.warning("术语提取失败：%s", e)
-                            print(f"  [术语提取] 失败：{e}")
+                            if not hit:
+                                continue
+                            if 0 <= idx < len(batch_texts):
+                                src_text = batch_texts[idx]
+                                conflict_info = next(
+                                    (c for c in conflicts
+                                     if c['src'].lower() in
+                                     {k.lower() for k in terms.keys()}),
+                                    None,
+                                )
+                                detail = (
+                                    f"术语冲突：{conflict_info['src']} "
+                                    f"已有 {conflict_info['old']}，"
+                                    f"模型返回 {conflict_info['new']}"
+                                    if conflict_info else "术语冲突"
+                                )
+                                extra_hits.append({
+                                    'src': src_text,
+                                    'kind': '术语冲突',
+                                    'dst': cache.get(src_text, ''),
+                                    'detail': detail,
+                                })
+                except Exception as e:
+                    log.warning("术语合并失败：%s", e)
+            # ---------- 术语兜底替换 ----------
+            if term_pairs_list:
+                fix_count = 0
+                for k, src in enumerate(batch_texts):
+                    old_final = cache.get(src)
+                    if not old_final:
+                        continue
+                    new_final = PR.apply_terms(old_final)
+                    if new_final != old_final:
+                        cache.put(src, new_final)
+                        fix_count += 1
+                        log.debug("[批 %d][%d] 术语兜底：%r → %r",
+                                  bi, k, old_final, new_final)
+                if fix_count:
+                    print(f"  [术语] 兜底替换 {fix_count} 条")
             cache.save()
             done += len(batch_texts)
             elapsed = time.time() - t0
@@ -390,8 +531,9 @@ def cmd_translate(skip_picker=False):
         out_lines, _ = P.read_file(config.Runtime.output_file,
                                    config.OUTPUT_ENCODING)
         report_path = _report_path()
+        all_extra = failed + extra_hits
         hits = checker.check(lines, out_lines, entries, special, report_path,
-                             translate_failed=failed)
+                             extra_hits=all_extra)
         _print_summary(hits, report_path)
     except Exception as e:
         log.error("自动检查失败：%s", e)
@@ -488,7 +630,7 @@ def cmd_retranslate_failed():
         print(f"  {k}: {n}")
 
     target_kinds = {"未翻译", "疑似未翻译", "译文残留控制码",
-                    "译文残留占位符", "翻译失败"}
+                    "译文残留占位符", "翻译失败", "占位符兜底","术语冲突"}
     to_retranslate = [h for h in hits if h['kind'] in target_kinds]
     symbol_issues  = [h for h in hits if h['kind'] == '符号不匹配']
     special_issues = [h for h in hits if h['kind'] == '特殊行']
@@ -540,7 +682,8 @@ def _print_summary(hits, report_path):
     from collections import Counter
     c = Counter(h['kind'] for h in hits)
     print(f"  共 {len(hits)} 处问题：")
-    for k in ('翻译失败', '未翻译', '疑似未翻译',
+    for k in ('翻译失败', '占位符兜底', '术语冲突',
+              '未翻译', '疑似未翻译',
               '符号不匹配', '译文残留控制码', '译文残留占位符', '特殊行'):
         if c.get(k):
             print(f"    {k}: {c[k]}")

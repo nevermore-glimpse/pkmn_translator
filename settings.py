@@ -35,7 +35,7 @@ EDITABLE = [
     ("TIMEOUT",            "请求超时(秒)",      "float", "限制模型输出时间（超时直接断开）"),
     ("NUM_CTX",            "上下文长度",        "int",   "越大关联性越强"),
     ("NUM_PREDICT",        "最大生成 token",    "int",   "限制模型输出上限（超限直接断开）"),
-    ("TEMPERATURE",        "采样温度",          "float", "0.0-1.0"),
+    ("TEMPERATURE",        "采样温度",          "float", "0.0-1.0,越大模型自由度越高"),
     ("THINK",              "推理模式",        "bool",  "True/False"),
 
     # ---------- 翻译策略 ----------
@@ -58,7 +58,6 @@ EDITABLE = [
     ("EXCEL_SOURCE_LANG",  "Excel 源语言列",    "str",   ""),
     ("EXCEL_TARGET_LANG",  "Excel 目标语言列",  "str",   ""),
     ("AUTO_EXTRACT_TERMS", "自动提取术语", "bool", "翻译时提取专有名词"),
-    ("AUTO_EXTRACT_EVERY", "提取间隔(批)", "int", "每 N 批提取一次"),
     ("AUTO_EXTRACT_MIN_LEN", "术语最短长度", "int", "")
 ]
 

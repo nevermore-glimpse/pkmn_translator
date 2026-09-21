@@ -85,17 +85,17 @@ OUTPUT_ENCODING = "utf-8-sig"
 
 # ---------- Ollama ----------
 OLLAMA_URL  = "http://localhost:11434/api/chat"
-MODEL       = "qwen2.5:7b"
+MODEL       = "qwen3.5:4b"
 TIMEOUT     = 600
 NUM_CTX     = 4096
-NUM_PREDICT = 2048
-TEMPERATURE = 0.35
+NUM_PREDICT = 1024
+TEMPERATURE = 0.25
 THINK       = False
 
 # ---------- 翻译策略 ----------
 SOURCE_LANG      = "西班牙文"
 TARGET_LANG      = "简体中文"
-BATCH_SIZE       = 20
+BATCH_SIZE       = 10
 BATCH_RETRIES    = 2
 SINGLE_RETRIES   = 3
 CACHE_SAVE_EVERY = 1
@@ -103,7 +103,7 @@ CACHE_SAVE_EVERY = 1
 # ---------- 换行重排 ----------
 REWRAP_ENABLE  = True
 WRAP_CHARS_MIN = 15
-WRAP_CHARS_MAX = 17
+WRAP_CHARS_MAX = 18
 WRAP_PUNCT     = "。！？!?"
 WRAP_DOTS      = 3
 WRAP_MIN_GAP   = 10    # ★ 新增：换行后至少 N 个字才能再次换行
@@ -114,7 +114,6 @@ ASK_LANG_EACH_TIME = True
 
 # ---------- 自动术语提取 ----------
 AUTO_EXTRACT_TERMS    = True    # 翻译时自动提取专有名词
-AUTO_EXTRACT_EVERY    = 1       # 每 N 批提取一次（1 = 每批都提）
 AUTO_EXTRACT_MIN_LEN  = 3       # 术语最短长度（过滤单字母/双字母）
 # ---------- Excel ----------
 EXCEL_SOURCE_LANG = "西班牙文"
@@ -126,7 +125,7 @@ EXCEL_TARGET_LANG = "简体中文"
 #   exe 运行：settings.py 写 user_config.json，这里读它覆盖默认值
 # ================================================================
 USER_CONFIG_FILE = os.path.join(BASE_DIR, "user_config.json")
-SNAPSHOT_INITIALIZED = False
+SNAPSHOT_INITIALIZED = True
 
 if os.path.exists(USER_CONFIG_FILE):
     try:
