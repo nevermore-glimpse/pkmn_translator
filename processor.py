@@ -139,8 +139,21 @@ def protect(text):
             ],
         })
 
-    # ④ 按位置排序
-    regions.sort(key=lambda r: r["start"])
+    # ④ 按位置排序（start 升序，同 start 时长者优先）
+    regions.sort(key=lambda r: (r["start"], -(r["end"] - r["start"])))
+
+    # ★ 去除重叠 region（保留先加入的、更长的）
+    #   重叠场景：CTRL_RE 的 \w[speech hgss 3] 与 TAG_RE 的 [speech hgss 3]
+    filtered = []
+    for r in regions:
+        overlaps = False
+        for existing in filtered:
+            if r["start"] < existing["end"] and r["end"] > existing["start"]:
+                overlaps = True
+                break
+        if not overlaps:
+            filtered.append(r)
+    regions = filtered
 
     # ⑤ 从左到右依次分配 token
     for region in regions:
@@ -532,7 +545,11 @@ def apply_breaks(text, breaks):
 # ================================================================
 # 换行重排
 # ================================================================
-_CTRL_FOR_REWRAP = re.compile(r'\\[A-Za-z]+(?:\[[^\]]*\])?|@\d+@|⟦\d+⟧')
+# 复用 CTRL_RE 的已知名单，避免贪婪匹配 \NABC 之类
+_CTRL_FOR_REWRAP = re.compile(
+    r'(?:' + CTRL_RE.pattern + r')'
+    r'|@\d+@|⟦\d+⟧'
+)
 
 
 def rewrap(text, min_chars=None, max_chars=None, punct=None, min_gap=None):
