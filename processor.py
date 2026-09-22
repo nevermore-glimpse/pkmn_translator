@@ -61,6 +61,8 @@ SPEAKER_TAG_RE = re.compile(r'\\tg\[([^\]]*)\]')
 def protect(text):
     """
     保护控制码、标签、占位符。返回 (安全文本, maps)。
+
+    ★ 占位符编号按文本从左到右的顺序分配，保证 @0@ @1@ @2@ ...
     """
     maps = []
     counter = [0]
@@ -73,53 +75,140 @@ def protect(text):
     if _PH_COLLISION_RE.search(text):
         left, right = "⟦", "⟧"
         log.debug("检测到原文含 @数字@，切换占位符为 ⟦ ⟧")
-    def _p_speaker(m):
-        """
-        \tg[Owen] → @N@@M@Owen@K@ （三个占位符：\\tg[  /  ]）
-        \tg[ 和 ] 被保护，Owen 保持明文送模型翻译。
-        """
-        name = m.group(1).strip()
 
-        def _mk(orig):
-            tok = f"{left}{counter[0]}{right}"
-            counter[0] += 1
-            maps.append({
-                "token": tok,
-                "original": orig,
-                "added_left": False,
-                "added_right": False,
-            })
-            return tok
-
-        lb = _mk("\\tg[")     # 保护 \tg[
-        rb = _mk("]")         # 保护 ]
-        return lb + name + rb
-    def _p(m):
-        token = f"{left}{counter[0]}{right}"
+    def _new_token():
+        tok = f"{left}{counter[0]}{right}"
         counter[0] += 1
+        return tok
 
-        s = m.string
-        start, end = m.start(), m.end()
-        prev_ch = s[start - 1] if start > 0 else ""
-        next_ch = s[end] if end < len(s) else ""
+    # ③ 收集所有待保护区域
+    #    每个 region 含 1..N 段，每段标记 protect=True 或 False
+    regions = []
+    speaker_ranges = []
 
+    # 说话人标签：\tg[Alba] → 拆成三段 \tg[ / Alba / ]
+    for m in SPEAKER_TAG_RE.finditer(text):
+        name = m.group(1).strip()
+        regions.append({
+            "start": m.start(),
+            "end":   m.end(),
+            "segments": [
+                {"protect": True,  "content": "\\tg[", "no_pad": True},
+                {"protect": False, "content": name},
+                {"protect": True,  "content": "]",    "no_pad": True},
+            ],
+        })
+        speaker_ranges.append((m.start(), m.end()))
+
+    def _in_speaker(s, e):
+        return any(s < se and e > ss for ss, se in speaker_ranges)
+
+    # 其它控制码
+    for m in CTRL_RE.finditer(text):
+        if _in_speaker(m.start(), m.end()):
+            continue
+        regions.append({
+            "start": m.start(),
+            "end":   m.end(),
+            "segments": [
+                {"protect": True, "content": m.group(0), "no_pad": False},
+            ],
+        })
+
+    # 方括号标签
+    for m in TAG_RE.finditer(text):
+        if _in_speaker(m.start(), m.end()):
+            continue
+        regions.append({
+            "start": m.start(),
+            "end":   m.end(),
+            "segments": [
+                {"protect": True, "content": m.group(0), "no_pad": False},
+            ],
+        })
+
+    # 花括号占位符
+    for m in BRACE_RE.finditer(text):
+        if _in_speaker(m.start(), m.end()):
+            continue
+        regions.append({
+            "start": m.start(),
+            "end":   m.end(),
+            "segments": [
+                {"protect": True, "content": m.group(0), "no_pad": False},
+            ],
+        })
+
+    # ④ 按位置排序（start 升序，同 start 时长者优先）
+    regions.sort(key=lambda r: (r["start"], -(r["end"] - r["start"])))
+
+    # ★ 去除重叠 region（保留先加入的、更长的）
+    #   重叠场景：CTRL_RE 的 \w[speech hgss 3] 与 TAG_RE 的 [speech hgss 3]
+    filtered = []
+    for r in regions:
+        overlaps = False
+        for existing in filtered:
+            if r["start"] < existing["end"] and r["end"] > existing["start"]:
+                overlaps = True
+                break
+        if not overlaps:
+            filtered.append(r)
+    regions = filtered
+
+    # ⑤ 从左到右依次分配 token
+    for region in regions:
+        s, e = region["start"], region["end"]
+        prev_ch = text[s - 1] if s > 0 else ""
+        next_ch = text[e] if e < len(text) else ""
         had_left  = (not prev_ch) or prev_ch.isspace()
         had_right = (not next_ch) or next_ch.isspace()
 
-        maps.append({
-            "token":       token,
-            "original":    m.group(0),
-            "added_left":  not had_left,
-            "added_right": not had_right,
-        })
+        new_segments = []
+        for seg in region["segments"]:
+            if not seg["protect"]:
+                new_segments.append({"protect": False,
+                                     "content": seg["content"]})
+                continue
 
-        return ("" if had_left else " ") + token + ("" if had_right else " ")
+            tok = _new_token()
+            if seg.get("no_pad"):
+                added_left = False
+                added_right = False
+            else:
+                added_left  = not had_left
+                added_right = not had_right
 
-    text = SPEAKER_TAG_RE.sub(_p_speaker, text)
-    text = CTRL_RE.sub(_p, text)
-    text = TAG_RE.sub(_p, text)
-    text = BRACE_RE.sub(_p, text)
-    return text, maps
+            maps.append({
+                "token":       tok,
+                "original":    seg["content"],
+                "added_left":  added_left,
+                "added_right": added_right,
+            })
+            new_segments.append({
+                "protect":     True,
+                "token":       tok,
+                "added_left":  added_left,
+                "added_right": added_right,
+            })
+        region["new_segments"] = new_segments
+
+    # ⑥ 从后往前替换，避免位置偏移
+    result = text
+    for region in reversed(regions):
+        parts = []
+        for seg in region["new_segments"]:
+            if seg["protect"]:
+                lpad = " " if seg["added_left"]  else ""
+                rpad = " " if seg["added_right"] else ""
+                parts.append(lpad + seg["token"] + rpad)
+            else:
+                parts.append(seg["content"])
+        replacement = "".join(parts)
+        result = (result[:region["start"]]
+                  + replacement
+                  + result[region["end"]:])
+
+    return result, maps
 
 def detect_unknown_ctrl(safe_text):
     """
@@ -456,7 +545,11 @@ def apply_breaks(text, breaks):
 # ================================================================
 # 换行重排
 # ================================================================
-_CTRL_FOR_REWRAP = re.compile(r'\\[A-Za-z]+(?:\[[^\]]*\])?|@\d+@|⟦\d+⟧')
+# 复用 CTRL_RE 的已知名单，避免贪婪匹配 \NABC 之类
+_CTRL_FOR_REWRAP = re.compile(
+    r'(?:' + CTRL_RE.pattern + r')'
+    r'|@\d+@|⟦\d+⟧'
+)
 
 
 def rewrap(text, min_chars=None, max_chars=None, punct=None, min_gap=None):
