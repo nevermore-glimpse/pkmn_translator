@@ -24,6 +24,33 @@ NUM_RE   = re.compile(r'^\s*\d+\s*$')
 def is_block(s):  return bool(BLOCK_RE.match(s))
 def is_number(s): return bool(NUM_RE.match(s))
 
+# 区块符模式判断
+_BLOCK_MAP_RE = re.compile(r'^\s*\[map\d+\]\s*$', re.IGNORECASE)
+_BLOCK_ANY_RE = re.compile(r'^\s*\[[^\]]+\]\s*$')
+
+
+def get_block_modes(lines):
+    """
+    遍历所有行，返回每行所属区块的换行模式。
+
+    规则：
+      · [map数字]      → "newline"（用 \\n 换行）
+      · [其它方括号内容] → "space"（用空格换行）
+      · 其它行          → 继承上一个区块模式
+      · 文件最开头无区块 → 默认 "newline"
+
+    返回 [mode_str, ...]，长度等于 len(lines)
+    """
+    modes = []
+    current = "newline"
+    for line in lines:
+        s = line.strip()
+        if _BLOCK_MAP_RE.match(s):
+            current = "newline"
+        elif _BLOCK_ANY_RE.match(s):
+            current = "space"
+        modes.append(current)
+    return modes
 
 def read_file(path, encoding="utf-8-sig"):
     """读文件，返回 (lines, newline)。保留原始换行风格。"""

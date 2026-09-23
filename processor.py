@@ -15,36 +15,72 @@ from logger import get_logger
 
 log = get_logger("processor")
 
+
 # ================================================================
-# 控制码匹配（已知名单优先，避免贪婪吃首字母）
-#
-#   优先级 1：带参数的控制码，要求紧跟 [（如 \tg[Owen] \v[50] \wt[10]）
-#   优先级 2：无参数的多字母控制码（\PN \wu）
-#   优先级 3：无参数的单字母控制码（\N \n \b \c \g \w \l \i \v）
-#
-# 关键点：\N 后面无论跟什么字母都只吃 \N 两个字符，
-#         \NSigamos → 匹配 \N，保留 Sigamos
+# 原子正则：所有可识别的控制码/标签/占位符
 # ================================================================
-CTRL_RE = re.compile(
+# ① 尖括号命令：
+#    · \wt<<[>>10<<]>>  \se<<[>>ItemGet<<]>>  （带反斜杠的命令）
+#    · \<<n>>  <<n>>  <<1>>  （裸尖括号，含换行符 <<n>>）
+#    用 (?!\[|\]) 排除 <<[>> 和 <<]>> 这两个成对标记
+_ANGLE_CMD_PAT = (
+    r'\\[A-Za-z]+<<\[>>.*?<<\]>>'      # 带参数：\命令<<[>>内容<<]>>
+    r'|'
+    r'\\?<<(?!\[|\])[^>]*>>'           # 裸尖括号：<<n>>  \<<n>>  <<1>>
+)
+
+# ② HTML 风格标签：<ar> </ar> <color=red>
+_HTML_TAG_PAT = r'</?[a-zA-Z][^>]*>'
+
+# ③ HTML 实体：&quot;  &amp;  &#39;  &#x27;
+_HTML_ENTITY_PAT = r'&(?:[a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);'
+
+# ③ 命令式控制码：\tg[Owen]  \v[50]  \wt[10]  \PN  \N  \n  \b  \c  \se  ...
+_CTRL_PAT = (
     r'\\'
     r'(?:'
-      # 优先级 1：带参数
-      r'(?:wtnp|wt|tg|ts|v|c|w)(?=\[)(?:\[[^\]]*\])?'
+      r'(?:wtnp|wt|tg|ts|v|c|w|se)(?=\[)(?:\[[^\]]*\])?'   # 带参数
       r'|'
-      # 优先级 2：无参数多字母（长的在前）
-      r'(?:PN|wu)'
+      r'(?:wtnp|wt|tg|PN|wu|HM|TM|se)'                      # 无参数多字母（长的在前）
       r'|'
-      # 优先级 3：无参数单字母
-      r'[Nnbcgwlvi]'
+      r'[Nnbcgwlvi]'                                        # 单字母
     r')'
 )
-# 用于检测 protect() 后残留的未识别控制码
-LEFTOVER_CTRL_RE = re.compile(r'\\[A-Za-z]+')
-# 方括号标签：[Haya] [Player] [Map155] 等
-TAG_RE   = re.compile(r'\[[^\]]*\]')
 
-# 花括号占位符：{1} {2} 等
-BRACE_RE = re.compile(r'\{[^}]*\}')
+# ④ 方括号标签
+_TAG_PAT   = r'\[[^\]]*\]'
+# ⑤ 花括号占位符
+_BRACE_PAT = r'\{[^}]*\}'
+
+# 各自独立的 re 对象
+ANGLE_CMD_RE = re.compile(_ANGLE_CMD_PAT)
+HTML_TAG_RE  = re.compile(_HTML_TAG_PAT)
+CTRL_RE      = re.compile(_CTRL_PAT)
+TAG_RE       = re.compile(_TAG_PAT)
+BRACE_RE     = re.compile(_BRACE_PAT)
+SPEAKER_TAG_RE = re.compile(r'\\tg\[([^\]]*)\]')
+
+# 未识别控制码检测（原始文本中残留的 \字母）
+LEFTOVER_CTRL_RE = re.compile(r'\\[A-Za-z]+')
+
+ALL_CTRL_RE = re.compile(
+    r'(?:'
+    + _ANGLE_CMD_PAT    + r'|'
+    + _CTRL_PAT         + r'|'
+    + _HTML_TAG_PAT     + r'|'
+    + _HTML_ENTITY_PAT
+    + r')'
+)
+
+_CTRL_FOR_REWRAP = re.compile(
+    r'(?:'
+    + _ANGLE_CMD_PAT    + r'|'
+    + _CTRL_PAT         + r'|'
+    + _HTML_TAG_PAT     + r'|'
+    + _HTML_ENTITY_PAT
+    + r')'
+    r'|@\d+@|⟦\d+⟧'
+)
 
 # 占位符包裹符
 _PH_L_DEFAULT = "@"
@@ -52,8 +88,37 @@ _PH_R_DEFAULT = "@"
 
 # 冲突检测：原文含 @数字@ 时切换为 ⟦ ⟧
 _PH_COLLISION_RE = re.compile(r'@\d+@')
-# 说话人标签：\tg[Owen]  \tg[Fátima]  \tg[Lionel, el Campeón de Galar]
-SPEAKER_TAG_RE = re.compile(r'\\tg\[([^\]]*)\]')
+
+
+# ================================================================
+# 句首控制码前缀：提取 / 剥离
+# ================================================================
+def split_prefix(text):
+    """
+    提取句子开头的连续控制码串（含 <<[>>...<<]>> 和 HTML 标签）。
+    返回 (prefix, body)：
+      prefix: 句首控制码串（如 '\\w[speech hgss 3]\\tg[???]'）；无则为 ""
+      body:   剩余正文
+    """
+    if not text:
+        return "", text
+
+    i, n = 0, len(text)
+    while i < n:
+        m = ALL_CTRL_RE.match(text, i)      # ★ 用统合正则
+        if not m:
+            break
+        i = m.end()
+
+    if i == 0:
+        return "", text
+    return text[:i], text[i:]
+
+
+def strip_prefix(text):
+    """剥离句首控制码，返回 body。"""
+    return split_prefix(text)[1]
+
 
 # ================================================================
 # 保护 / 还原
@@ -84,10 +149,63 @@ def protect(text):
     # ③ 收集所有待保护区域
     #    每个 region 含 1..N 段，每段标记 protect=True 或 False
     regions = []
-    speaker_ranges = []
 
-    # 说话人标签：\tg[Alba] → 拆成三段 \tg[ / Alba / ]
+    # ---------- ③.1 尖括号命令（优先级最高） ----------
+    angle_ranges = []
+    for m in ANGLE_CMD_RE.finditer(text):
+        regions.append({
+            "start": m.start(),
+            "end":   m.end(),
+            "segments": [
+                {"protect": True, "content": m.group(0), "no_pad": False},
+            ],
+        })
+        angle_ranges.append((m.start(), m.end()))
+
+    def _in_angle(s, e):
+        return any(s < se and e > ss for ss, se in angle_ranges)
+
+    # ---------- ③.2 HTML 风格标签 ----------
+    html_ranges = []
+    for m in HTML_TAG_RE.finditer(text):
+        if _in_angle(m.start(), m.end()):
+            continue
+        regions.append({
+            "start": m.start(),
+            "end":   m.end(),
+            "segments": [
+                {"protect": True, "content": m.group(0), "no_pad": False},
+            ],
+        })
+        html_ranges.append((m.start(), m.end()))
+
+    def _in_html(s, e):
+        return any(s < se and e > ss for ss, se in html_ranges)
+    # ---------- ③.2.5 HTML 实体 ----------
+    entity_ranges = []
+    for m in re.finditer(_HTML_ENTITY_PAT, text):
+        if _in_angle(m.start(), m.end()):
+            continue
+        if _in_html(m.start(), m.end()):
+            continue
+        regions.append({
+            "start": m.start(),
+            "end":   m.end(),
+            "segments": [
+                {"protect": True, "content": m.group(0), "no_pad": False},
+            ],
+        })
+        entity_ranges.append((m.start(), m.end()))
+
+    def _in_entity(s, e):
+        return any(s < se and e > ss for ss, se in entity_ranges)
+    # ---------- ③.3 说话人标签：\tg[Alba] → 三段 \tg[ / Alba / ] ----------
+    speaker_ranges = []
     for m in SPEAKER_TAG_RE.finditer(text):
+        if _in_angle(m.start(), m.end()) or _in_html(m.start(), m.end()):
+            continue
+        if _in_entity(m.start(), m.end()):
+            continue
         name = m.group(1).strip()
         regions.append({
             "start": m.start(),
@@ -103,21 +221,15 @@ def protect(text):
     def _in_speaker(s, e):
         return any(s < se and e > ss for ss, se in speaker_ranges)
 
-    # 其它控制码
+    # ---------- ③.4 其它命令式控制码 ----------
     for m in CTRL_RE.finditer(text):
         if _in_speaker(m.start(), m.end()):
             continue
-        regions.append({
-            "start": m.start(),
-            "end":   m.end(),
-            "segments": [
-                {"protect": True, "content": m.group(0), "no_pad": False},
-            ],
-        })
-
-    # 方括号标签
-    for m in TAG_RE.finditer(text):
-        if _in_speaker(m.start(), m.end()):
+        if _in_angle(m.start(), m.end()):
+            continue
+        if _in_html(m.start(), m.end()):
+            continue
+        if _in_entity(m.start(), m.end()):
             continue
         regions.append({
             "start": m.start(),
@@ -127,9 +239,33 @@ def protect(text):
             ],
         })
 
-    # 花括号占位符
+    # ---------- ③.5 方括号标签 ----------
+    for m in TAG_RE.finditer(text):
+        if _in_speaker(m.start(), m.end()):
+            continue
+        if _in_angle(m.start(), m.end()):
+            continue
+        if _in_html(m.start(), m.end()):
+            continue
+        if _in_entity(m.start(), m.end()):
+            continue
+        regions.append({
+            "start": m.start(),
+            "end":   m.end(),
+            "segments": [
+                {"protect": True, "content": m.group(0), "no_pad": False},
+            ],
+        })
+
+    # ---------- ③.6 花括号占位符 ----------
     for m in BRACE_RE.finditer(text):
         if _in_speaker(m.start(), m.end()):
+            continue
+        if _in_angle(m.start(), m.end()):
+            continue
+        if _in_html(m.start(), m.end()):
+            continue
+        if _in_entity(m.start(), m.end()):
             continue
         regions.append({
             "start": m.start(),
@@ -143,7 +279,6 @@ def protect(text):
     regions.sort(key=lambda r: (r["start"], -(r["end"] - r["start"])))
 
     # ★ 去除重叠 region（保留先加入的、更长的）
-    #   重叠场景：CTRL_RE 的 \w[speech hgss 3] 与 TAG_RE 的 [speech hgss 3]
     filtered = []
     for r in regions:
         overlaps = False
@@ -210,12 +345,10 @@ def protect(text):
 
     return result, maps
 
+
 def detect_unknown_ctrl(safe_text):
     """
-    在 protect() 处理后的文本中，找出未被 CTRL_RE 识别的控制码。
-
-    原理：protect() 会把已知控制码都替换成 @N@ 占位符，
-    如果 safe_text 里还有 \\字母 残留，就是名单外的。
+    在 protect() 处理后的文本中，找出未被识别的控制码。
 
     返回 [(token, context), ...]
     """
@@ -230,6 +363,36 @@ def detect_unknown_ctrl(safe_text):
         results.append((token, ctx))
     return results
 
+
+# ================================================================
+# 纯控制符句子检测
+# ================================================================
+_PURE_TEXT_RE = re.compile(r'[\s\W\d_]+', re.UNICODE)
+
+
+def is_pure_control(text, min_text_len=None):
+    """
+    判断文本是否"纯控制符"（剥离所有控制码后没有可翻译内容）。
+    """
+    if min_text_len is None:
+        min_text_len = getattr(config, "PURE_CONTROL_MIN_LEN", 2)
+    if not text:
+        return True
+
+    t = text
+    t = ANGLE_CMD_RE.sub('', t)
+    t = HTML_TAG_RE.sub('', t)
+    t = re.sub(_HTML_ENTITY_PAT, '', t)   # ★ HTML 实体也剥离
+    t = CTRL_RE.sub('', t)
+    t = TAG_RE.sub('', t)
+    t = BRACE_RE.sub('', t)
+    effective = _PURE_TEXT_RE.sub('', t)
+    return len(effective) < min_text_len
+
+
+# ================================================================
+# 占位符还原 / 校验
+# ================================================================
 def _left_right_of(maps):
     if not maps:
         return _PH_L_DEFAULT, _PH_R_DEFAULT
@@ -283,7 +446,6 @@ def restore(text, maps):
         if added_right and m_end < len(result) and result[m_end] == " ":
             right_cut = 1
 
-        # ★ lambda 防止 original 里的 \w \n 之类被当转义
         result = (result[:m_start - left_cut]
                   + original
                   + result[m_end + right_cut:])
@@ -315,24 +477,16 @@ def verify(text, maps):
 
 
 # ================================================================
-# 术语表（优化版：合并成一次正则匹配）
-#   _TERMS      : [(原文, 译文), ...] 按长度降序，保留给外部查询用
-#   _TERM_MAP   : {原文: 译文} 用于 lambda 内查表
-#   _COMBINED_RE: 4419 个词合并成的单个正则
+# 术语表
 # ================================================================
 _TERMS = []
 _TERM_MAP = {}
 _TERM_MAP_LOWER = {}
 _COMBINED_RE = None
 
+
 def _check_case_conflicts(terms):
-    """
-    检测术语表里是否有大小写不同但译文不同的词。
-    例如：
-        "Owen": "欧文"
-        "OWEN": "OWEN"
-    这种会导致小写索引冲突，取后者。此时输出警告。
-    """
+    """检测术语表里是否有大小写不同但译文不同的词。"""
     lower_map = {}
     conflicts = []
     for k, v in terms:
@@ -348,11 +502,12 @@ def _check_case_conflicts(terms):
         if len(conflicts) > 10:
             log.warning("  … 其余 %d 组省略", len(conflicts) - 10)
 
+
 def load_terms():
     global _TERMS, _TERM_MAP, _TERM_MAP_LOWER, _COMBINED_RE
     _TERMS = []
     _TERM_MAP = {}
-    _TERM_MAP_LOWER = {}          # ★ 加这个
+    _TERM_MAP_LOWER = {}
     _COMBINED_RE = None
 
     if not config.APPLY_TERMS:
@@ -367,7 +522,6 @@ def load_terms():
         exec(f.read(), ns)
     td = ns.get("TERM_DICT", {})
 
-    # 过滤：含 \ 或 [] 的键跳过；长度 ≤ 3 的英文键跳过（防误伤 Don't / Won't）
     good = []
     skipped_short = 0
     for k, v in td.items():
@@ -378,12 +532,10 @@ def load_terms():
             continue
         good.append((k, v))
 
-    # ★ 按长度降序：长的在前，正则交替匹配时优先命中长词
     good.sort(key=lambda x: -len(x[0]))
     _TERMS = good
     _TERM_MAP = dict(good)
 
-    # ★ 关键优化：把 N 个词合并成一个正则，大小写不敏感
     if good:
         word_chars = r'\w\u00C0-\u024F'
         alternation = '|'.join(re.escape(k) for k, _ in good)
@@ -391,16 +543,12 @@ def load_terms():
                    + alternation +
                    r')(?![' + word_chars + r'])')
         try:
-            # ★ re.IGNORECASE：Pokérus / PokéRus / POKÉRUS 都能匹配
             _COMBINED_RE = re.compile(pattern, re.IGNORECASE)
         except re.error as e:
             log.error("术语表合并正则失败：%s（将退化为逐条匹配）", e)
             _COMBINED_RE = None
 
-    # ★ 小写索引，供 IGNORECASE 匹配后查表用
     _TERM_MAP_LOWER = {k.lower(): v for k, v in good}
-
-    # ★ 检测大小写冲突（同一个词有多种大小写但译文不同）
     _check_case_conflicts(good)
 
     log.info("术语表加载：%d 条（跳过短词 %d 条，大小写不敏感）",
@@ -410,7 +558,6 @@ def load_terms():
 def find_terms(text):
     """
     找出 text 中命中的术语，返回 [(原文, 译文), ...]（去重，保持出现顺序）。
-    大小写不敏感。
     """
     if not _COMBINED_RE or not text:
         return []
@@ -431,11 +578,9 @@ def find_terms(text):
         result.append((matched, dst))
     return result
 
+
 def apply_terms(text):
-    """
-    术语兜底替换：把 text 里命中的术语原文替换为术语表译文。
-    大小写不敏感。用于每批翻译后的兜底修正。
-    """
+    """术语兜底替换：把 text 里命中的术语原文替换为术语表译文。"""
     if not _COMBINED_RE or not text:
         return text
 
@@ -447,6 +592,8 @@ def apply_terms(text):
         return dst if dst else matched
 
     return _COMBINED_RE.sub(_replace, text)
+
+
 # ================================================================
 # 按原文换行位置对齐译文
 # ================================================================
@@ -455,12 +602,8 @@ _PUNCT_SET = set(".!?。！？")
 
 def analyze_breaks(text):
     """
-    分析原文，返回 [bool, ...]：
-      每个"标点单元"后是否紧跟 \\n。
-
-    标点单元定义：
-      · 单个 . ! ? 。 ！ ？         → 一次
-      · 连续 2 个以上半角点（.. ... ......） → 整体算一次
+    分析原文，返回 [bool, ...]：每个"标点单元"后是否紧跟 \\n。
+    ★ 遍历时跳过所有控制码区域，避免控制码内部的标点被误判。
     """
     if not text:
         return []
@@ -468,6 +611,12 @@ def analyze_breaks(text):
     n = len(text)
     i = 0
     while i < n:
+        # ★ 先尝试匹配控制码整段并跳过
+        m = ALL_CTRL_RE.match(text, i)
+        if m:
+            i = m.end()
+            continue
+
         ch = text[i]
 
         # 连续点：2 个及以上作为一组
@@ -482,7 +631,6 @@ def analyze_breaks(text):
                 result.append(has_break)
                 i = j
                 continue
-            # 单个点 → 落到下面按普通标点处理
 
         # 单个标点
         if ch in _PUNCT_SET:
@@ -494,22 +642,28 @@ def analyze_breaks(text):
     return result
 
 
-def apply_breaks(text, breaks):
+def apply_breaks(text, breaks, mode="newline"):
     """
-    按 breaks 列表，在译文对应位置的标点后补加 \\n。
-
-    连续点处理方式与 analyze_breaks 保持一致：
-      · 译文里的连续 2+ 个点 → 作为一个单元
-      · 若对应原文位置有换行 → 加 \\n
+    按 breaks 列表，在译文对应位置的标点后补加换行符。
+    mode="newline" → 补 \\n
+    mode="space"   → 补空格
     """
     if not text or not breaks:
         return text
+
+    insert_char = '\\n' if mode == "newline" else ' '
 
     result = []
     idx = 0
     n = len(text)
     i = 0
     while i < n:
+        m = ALL_CTRL_RE.match(text, i)
+        if m:
+            result.append(m.group(0))
+            i = m.end()
+            continue
+
         ch = text[i]
 
         # 连续点：2 个及以上作为一组
@@ -524,7 +678,7 @@ def apply_breaks(text, breaks):
                                text[j] == '\\' and
                                text[j + 1] == 'n')
                     if not already:
-                        result.append('\\n')
+                        result.append(insert_char)
                 idx += 1
                 i = j
                 continue
@@ -537,37 +691,29 @@ def apply_breaks(text, breaks):
                            text[i + 1] == '\\' and
                            text[i + 2] == 'n')
                 if not already:
-                    result.append('\\n')
+                    result.append(insert_char)
             idx += 1
         i += 1
     return ''.join(result)
 
+
 # ================================================================
 # 换行重排
 # ================================================================
-# 复用 CTRL_RE 的已知名单，避免贪婪匹配 \NABC 之类
-_CTRL_FOR_REWRAP = re.compile(
-    r'(?:' + CTRL_RE.pattern + r')'
-    r'|@\d+@|⟦\d+⟧'
-)
-
-
-def rewrap(text, min_chars=None, max_chars=None, punct=None, min_gap=None):
+def rewrap(text, min_chars=None, max_chars=None, punct=None,
+           min_gap=None, mode="newline"):
     """
-    翻译后重新分行：
-
-      · 累计 max_chars 个字符 → 强制换行
-      · 累计 ≥ min_chars → 往后看 1 个字符，是软断点就换行
-      · 控制码原样输出，不计入、不触发换行
-      · 遇到 \\n 视为换行边界，重置计数
-      · 文本末尾不追加 \\n
-       若需要按原文换行位置对齐，由 apply_breaks 处理。
+    翻译后重新分行。
+    mode="newline" → 用 \\n
+    mode="space"   → 用空格
     """
     if not text:
         return text
     min_chars = min_chars if min_chars is not None else config.WRAP_CHARS_MIN
     max_chars = max_chars if max_chars is not None else config.WRAP_CHARS_MAX
     min_gap   = min_gap   if min_gap   is not None else getattr(config, "WRAP_MIN_GAP", 10)
+
+    insert_char = '\\n' if mode == "newline" else ' '
 
     soft_punct = set("，、；：,;: 　")
     soft_threshold = max(min_chars, min_gap)
@@ -587,7 +733,7 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None, min_gap=None):
                 count = 0
             continue
 
-        # 连续点：作为一个整体加入，只累计字数，不主动换行
+        # 连续点：作为一个整体加入，只累计字数
         if text[i] == '.':
             j = i
             while j < n and text[j] == '.':
@@ -596,9 +742,8 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None, min_gap=None):
             parts.append(dots)
             count += (j - i)
             i = j
-            # 若累计超过 max_chars，在此处强制换行
             if count >= max_chars:
-                parts.append("\\n")
+                parts.append(insert_char)
                 count = 0
             continue
 
@@ -608,19 +753,25 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None, min_gap=None):
         i += 1
 
         if count >= max_chars:
-            parts.append("\\n")
+            parts.append(insert_char)
             count = 0
             continue
 
         if count >= soft_threshold and i < n:
             next_ch = text[i]
             if next_ch in soft_punct:
-                parts.append("\\n")
+                parts.append(insert_char)
                 count = 0
 
     s = "".join(parts)
-    while s.endswith("\\n"):
-        s = s[:-2]
+
+    # 末尾处理
+    if mode == "newline":
+        while s.endswith("\\n"):
+            s = s[:-2]
+    else:
+        s = s.rstrip()      # 空格模式剥掉末尾空格
+
     return s
 
 # ================================================================
@@ -636,14 +787,16 @@ def prepare(text):
     hit_terms = find_terms(safe)
     return safe, maps, breaks, hit_terms
 
-def finalize(text, maps, breaks=None):
+
+def finalize(text, maps, breaks=None, mode="newline"):
     """
-    还原占位符 → 按原文换行位置补 \\n → 字数重排。
-    breaks 来自 prepare() 的第三个返回值。
+    还原占位符 → 按原文换行位置补换行符 → 字数重排。
+    mode="newline" → 用 \\n
+    mode="space"   → 用空格
     """
     text = restore(text, maps)
     if breaks:
-        text = apply_breaks(text, breaks)
+        text = apply_breaks(text, breaks, mode=mode)
     if config.REWRAP_ENABLE:
-        text = rewrap(text)
+        text = rewrap(text, mode=mode)
     return text

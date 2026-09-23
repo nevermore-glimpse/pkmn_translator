@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """四个核心功能的实现：翻译 / 检查 / Excel 转术语表 / 术语更新后重翻。"""
-import json
 import os
 import re
 import time
@@ -15,6 +14,7 @@ from translator import OllamaClient, translate_with_retry
 
 log = get_logger("commands")
 
+
 # ================================================================
 # 常用语言列表（序号选择用）
 # ================================================================
@@ -27,25 +27,21 @@ LANG_OPTIONS = [
     "西班牙文",
     "法文",
     "德文",
-    "意大利文"
+    "意大利文",
 ]
 
+
 # ================================================================
-# 报告路径：写到翻译文件同目录
+# 报告路径
 # ================================================================
 def _report_path():
-    """
-    返回检查报告路径：与输出文件同目录，名字为 <输出名>_report.txt
-    例：intl_translated.txt → intl_translated_report.txt
-    """
+    """返回检查报告路径：与输出文件同目录。"""
     out = config.Runtime.output_file
     d = os.path.dirname(out) or "."
     base = os.path.splitext(os.path.basename(out))[0]
     return os.path.join(d, f"{base}_report.txt")
 
-# ================================================================
-# 未识别控制码报告
-# ================================================================
+
 def _unknown_ctrl_report_path():
     """与输入文件同目录，名为 <输入名>_unknown_ctrl.txt"""
     inp = config.Runtime.input_file
@@ -55,9 +51,7 @@ def _unknown_ctrl_report_path():
 
 
 def _write_unknown_ctrl_report(hits, report_path):
-    """
-    hits: [(token, original, context), ...]
-    """
+    """hits: [(token, original, context), ...]"""
     from collections import defaultdict
 
     grouped = defaultdict(list)
@@ -68,11 +62,8 @@ def _write_unknown_ctrl_report(hits, report_path):
         f.write("# 未识别控制码报告\n")
         f.write(f"# 共 {len(grouped)} 种，{len(hits)} 次\n")
         f.write("#\n")
-        f.write("# 这些控制码不在 processor.py 的 CTRL_RE 名单中，\n")
+        f.write("# 这些控制码不在 processor.py 的名单中，\n")
         f.write("# 可能被模型误翻或丢失。请手工确认是否要加入名单。\n")
-        f.write("# 加入方式（processor.py 顶部 CTRL_RE）：\n")
-        f.write("#   带参数：加到  (?:wtnp|wt|tg|...)(?=\\[)  那一组\n")
-        f.write("#   无参数：加到  (?:PN|wu|HM|...)           那一组\n")
         f.write("=" * 70 + "\n\n")
 
         for token, items in sorted(grouped.items(),
@@ -86,11 +77,13 @@ def _write_unknown_ctrl_report(hits, report_path):
             f.write("\n")
 
     return report_path
+
+
+# ================================================================
+# 语言选择
+# ================================================================
 def _pick_language(prompt, default_key, exclude=None):
-    """
-    交互式语言选择。
-    返回选中的语言字符串，或 None 表示取消。
-    """
+    """交互式语言选择。返回选中的语言字符串，或 None 表示取消。"""
     print(f"\n{prompt}")
     for i, lang in enumerate(LANG_OPTIONS, 1):
         mark = ""
@@ -115,19 +108,14 @@ def _pick_language(prompt, default_key, exclude=None):
             return LANG_OPTIONS[idx]
     print("无效输入")
     return None
+
+
 # ================================================================
 # 占位符兜底
 # ================================================================
 def _force_restore(raw, maps):
     """
     兜底补回丢失的占位符。
-    在 raw 上（还带 @N@ 形式时）补全，最后统一 restore。
-
-    补回位置按占位符原文特征推断：
-      \\tg[ / [xxx 起始  → 句首
-      ] 说话人结束        → 紧跟名字（第一个标点/空格前）
-      \\n / \\N            → 最后一个句末标点后
-      其它                → 前/后 anchor 附近
     """
     if not maps:
         return raw
@@ -168,7 +156,6 @@ def _insert_token_by_hint(text, token, original, maps, m_idx, missing_set):
 
     # ② 说话人结束 ]
     if original == "]":
-        # 优先：紧贴前一个 \tg[ 类型
         for i in range(m_idx - 1, -1, -1):
             prev_item = maps[i]
             prev_orig = prev_item.get("original", "")
@@ -176,7 +163,6 @@ def _insert_token_by_hint(text, token, original, maps, m_idx, missing_set):
             if prev_orig.startswith("\\tg[") and prev_token in text:
                 pos = text.find(prev_token) + len(prev_token)
                 return text[:pos] + token + text[pos:]
-        # 没有 anchor：名字结尾 = 第一个标点/空格前，否则句尾
         for i, ch in enumerate(text):
             if ch.isspace() or ch in "，。！？、；：!?,.;:":
                 return text[:i] + token + text[i:]
@@ -189,7 +175,7 @@ def _insert_token_by_hint(text, token, original, maps, m_idx, missing_set):
                 return text[:i + 1] + token + text[i + 1:]
         return text + token
 
-    # ④ 其它：找后 anchor，插到它前面
+    # ④ 找后 anchor，插到它前面
     for i in range(m_idx + 1, len(maps)):
         next_token = maps[i]["token"]
         if next_token in text:
@@ -207,99 +193,303 @@ def _insert_token_by_hint(text, token, original, maps, m_idx, missing_set):
 
 
 # ================================================================
-# 功能 1：翻译
+# 内部：翻译一批
 # ================================================================
-def cmd_translate(skip_picker=False):
-    import filepicker
-    import settings
+def _translate_batch(client, batch_texts, cache,
+                     unknown_ctrl_hits, failed, extra_hits,
+                     mode_of_entry=None, bi=1):
+    """
+    翻译一批文本，写入缓存。
+    返回成功条数。
+    """
+    if not batch_texts:
+        return 0
 
-    log.info("=" * 50)
-    log.info("开始翻译")
-    unknown_ctrl_hits = []
-    failed = []
-    extra_hits = []        # ★ 术语冲突 / 占位符兜底 等
-    # ---------- 选源语言 / 目标语言 ----------
-    if not skip_picker and getattr(config, "ASK_LANG_EACH_TIME", True):
-        src_lang = _pick_language("请选择【源语言】：", config.SOURCE_LANG)
-        if not src_lang:
-            print("已取消")
-            return
+    import prefix_dict as PFD
 
-        tgt_lang = _pick_language("请选择【目标语言】：",
-                                  config.TARGET_LANG, exclude=src_lang)
-        if not tgt_lang:
-            print("已取消")
-            return
+    batch, maps_dict, breaks_dict = [], {}, {}
+    batch_terms = {}
+    hit_terms_all = {}
+    prefix_list = {}
+    new_prefixes = 0
 
-        if src_lang == tgt_lang:
-            print(f"\n⚠ 源语言和目标语言相同（{src_lang}）")
-            if input("继续？(y/N): ").strip().lower() != "y":
-                return
+    log.info("[批 %d] 开始  %d 条", bi, len(batch_texts))
 
-        # 写回 config.py + 热更新
-        settings.set_value("SOURCE_LANG", src_lang)
-        settings.set_value("TARGET_LANG", tgt_lang)
+    for k, txt in enumerate(batch_texts):
+        log.debug("[批 %d][%d] 原文=%r", bi, k, txt)
 
-        log.info("翻译方向：%s → %s", src_lang, tgt_lang)
-        print(f"\n  翻译方向：{src_lang} → {tgt_lang}")
-    else:
-        # 直接用 config 里的
-        print(f"\n  翻译方向：{config.SOURCE_LANG} → {config.TARGET_LANG}")
+        # 前缀提取
+        if getattr(config, "PREFIX_DICT_ENABLE", True):
+            prefix, body = PR.split_prefix(txt)
+            prefix_list[k] = prefix
+            if prefix:
+                if PFD.register_prefix(prefix):
+                    new_prefixes += 1
+                    log.debug("[批 %d][%d] 新前缀=%r", bi, k, prefix)
+                else:
+                    log.debug("[批 %d][%d] 前缀=%r（已注册）", bi, k, prefix)
+                log.debug("[批 %d][%d] 剥离前缀后 body=%r", bi, k, body)
+            else:
+                log.debug("[批 %d][%d] 无前缀", bi, k)
+        else:
+            prefix_list[k] = ""
+            body = txt
 
-    # ---------- 选定输入文件 ----------
-    if skip_picker:
-        src_path = config.Runtime.input_file
-        if not os.path.exists(src_path):
-            print(f"输入文件不存在：{src_path}")
-            log.error("输入文件不存在：%s", src_path)
-            return
-        print(f"\n输入文件：{src_path}")
-        print(f"输出文件：{config.Runtime.output_file}")
-        print(f"缓存文件：{config.Runtime.cache_file}")
-    else:
-        src_path = config.Runtime.input_file
+        # 玩家名替换
+        if getattr(config, "PLAYER_TOKEN", None):
+            new_body = body.replace(config.PLAYER_TOKEN,
+                                    config.PLAYER_PLACEHOLDER)
+            if new_body != body:
+                log.debug("[批 %d][%d] 玩家名替换：%r → %r",
+                          bi, k, body, new_body)
+            body = new_body
 
-        if not os.path.exists(src_path):
-            print(f"\n默认输入文件不存在：{src_path}")
-            picked = filepicker.pick_text_file(
-                initial_dir=config.BASE_DIR,
-                title="选择要翻译的文本文件",
+        # 保护 + 术语查找
+        safe, maps, breaks, hit_terms = PR.prepare(body)
+        batch.append((k, safe))
+        maps_dict[k] = maps
+        breaks_dict[k] = breaks
+
+        log.debug("[批 %d][%d] 送模型=%r", bi, k, safe)
+        log.debug("[批 %d][%d] 占位符数=%d  换行断点=%d",
+                  bi, k, len(maps), sum(1 for b in breaks if b))
+
+        if hit_terms:
+            log.debug("[批 %d][%d] 术语命中 %d 条：%s",
+                      bi, k, len(hit_terms),
+                      ", ".join(f"{a}={b}" for a, b in hit_terms[:5])
+                      + (" …" if len(hit_terms) > 5 else ""))
+
+        for src_term, dst_term in hit_terms:
+            if src_term not in hit_terms_all:
+                hit_terms_all[src_term] = dst_term
+
+        for token, ctx in PR.detect_unknown_ctrl(safe):
+            unknown_ctrl_hits.append((token, txt, ctx))
+            log.debug("[批 %d][%d] 未识别控制码：%r  上下文=%r",
+                      bi, k, token, ctx)
+
+    if new_prefixes:
+        PFD.save()
+        print(f"  [前缀] 发现 {new_prefixes} 个新前缀，已加入 prefix_dict.json")
+        log.info("[批 %d] 新增前缀 %d 个", bi, new_prefixes)
+
+    term_pairs_list = list(hit_terms_all.items())
+    if term_pairs_list:
+        log.info("[批 %d] 命中术语 %d 条，随 prompt 发送",
+                 bi, len(term_pairs_list))
+        log.debug("[批 %d] 术语表内容：%s", bi,
+                  ", ".join(f"{a}={b}" for a, b in term_pairs_list[:10])
+                  + (" …" if len(term_pairs_list) > 10 else ""))
+
+    # ---------- 请求模型 ----------
+    log.info("[批 %d] 请求模型（%d 条）…", bi, len(batch))
+    t_req = time.time()
+    result = translate_with_retry(client, batch,
+                                  terms_out=batch_terms,
+                                  term_pairs=term_pairs_list)
+    t_req_elapsed = time.time() - t_req
+    log.info("[批 %d] 模型返回 %d 条，耗时 %.1fs",
+             bi, len(result), t_req_elapsed)
+
+    # 单条重试
+    missing = [(k, t) for k, t in batch
+               if k not in result or not result[k].strip()]
+    if missing:
+        log.warning("[批 %d] 缺失 %d 条，单条重试", bi, len(missing))
+    for k, safe in missing:
+        for attempt in range(config.SINGLE_RETRIES):
+            try:
+                log.debug("[批 %d][%d] 单条重试 %d/%d",
+                          bi, k, attempt + 1, config.SINGLE_RETRIES)
+                r = translate_with_retry(client, [(k, safe)],
+                                         terms_out=batch_terms,
+                                         term_pairs=term_pairs_list)
+                if k in r and r[k].strip():
+                    result[k] = r[k]
+                    log.debug("[批 %d][%d] 单条重试成功", bi, k)
+                    break
+            except Exception as e:
+                log.debug("[批 %d][%d] 单条重试 %d 失败：%s",
+                          bi, k, attempt + 1, e)
+                time.sleep(1.5)
+
+    # ---------- 写入缓存 ----------
+    ok = 0
+    for k, src in enumerate(batch_texts):
+        raw = result.get(k)
+        if not raw:
+            log.warning("[批 %d][%d] 无返回", bi, k)
+            failed.append({'src': src, 'reason': '模型无返回'})
+            continue
+
+        log.debug("[批 %d][%d] 模型原始返回=%r", bi, k, raw)
+
+        maps = maps_dict[k]
+
+        # 占位符校验
+        ok_ph, missing_ph = PR.verify(raw, maps)
+        if not ok_ph:
+            log.warning("[批 %d][%d] 占位符丢失 %s",
+                        bi, k, missing_ph)
+            retried = False
+            for attempt in range(config.SINGLE_RETRIES):
+                try:
+                    log.debug("[批 %d][%d] 占位符重试 %d/%d",
+                              bi, k, attempt + 1, config.SINGLE_RETRIES)
+                    r = translate_with_retry(client, [(k, batch[k][1])],
+                                             term_pairs=term_pairs_list)
+                    if k in r and r[k].strip():
+                        ok3, _ = PR.verify(r[k], maps)
+                        if ok3:
+                            raw = r[k]
+                            retried = True
+                            log.debug("[批 %d][%d] 占位符重试成功", bi, k)
+                            break
+                except Exception:
+                    time.sleep(1.0)
+            if not retried:
+                raw = _force_restore(raw, maps)
+                log.info("[批 %d][%d] 占位符兜底补回", bi, k)
+                extra_hits.append({
+                    'src': src,
+                    'kind': '占位符兜底',
+                    'dst': raw,
+                    'detail': f'占位符 {missing_ph} 丢失，已按位置特征补回',
+                })
+
+            ok_final, _ = PR.verify(raw, maps)
+            if not ok_final:
+                log.error("[批 %d][%d] 占位符仍失败，保留原文", bi, k)
+                failed.append({'src': src, 'reason': '占位符丢失无法恢复'})
+                continue
+
+        # 还原 + 拼回前缀
+        mode = "newline"
+        if mode_of_entry:
+            mode = mode_of_entry.get(src, "newline")
+        log.debug("[批 %d][%d] 换行模式=%s", bi, k, mode)
+
+        body_final = PR.finalize(raw, maps, breaks_dict.get(k), mode=mode)
+        log.debug("[批 %d][%d] body译文=%r", bi, k, body_final)
+
+        if getattr(config, "PLAYER_TOKEN", None):
+            new_body_final = body_final.replace(config.PLAYER_PLACEHOLDER,
+                                                config.PLAYER_TOKEN)
+            if new_body_final != body_final:
+                log.debug("[批 %d][%d] 玩家名还原：%r → %r",
+                          bi, k, body_final, new_body_final)
+            body_final = new_body_final
+
+        prefix = prefix_list.get(k, "")
+        if prefix:
+            applied = PFD.apply_prefix(prefix)
+            final = applied + body_final
+            if applied != prefix:
+                log.debug("[批 %d][%d] 前缀应用字典：%r → %r",
+                          bi, k, prefix, applied)
+            else:
+                log.debug("[批 %d][%d] 前缀未翻译，原样保留：%r",
+                          bi, k, prefix)
+        else:
+            final = body_final
+
+        log.debug("[批 %d][%d] 最终译文=%r", bi, k, final)
+        cache.put(src, final)
+        ok += 1
+
+    # ---------- 术语合并（内联提取） ----------
+    if getattr(config, "AUTO_EXTRACT_TERMS", True) and batch_terms:
+        try:
+            import auto_terms
+            conflicts = []
+            added = auto_terms.merge_from_translation(
+                batch_terms, PR, conflicts_out=conflicts
             )
-            if not picked:
-                print("已取消")
-                return
-            config.Runtime.set_input(picked)
-            src_path = config.Runtime.input_file
+            if added:
+                print(f"  [术语] 新增 {added} 条，已应用到后续批次")
+                log.info("[批 %d] 术语新增 %d 条", bi, added)
 
-        print(f"\n输入文件：{src_path}")
-        print(f"输出文件：{config.Runtime.output_file}")
-        print(f"缓存文件：{config.Runtime.cache_file}")
+            if conflicts:
+                log.warning("[批 %d] 术语冲突 %d 条", bi, len(conflicts))
+                conflict_keys = {c['src'].lower() for c in conflicts}
+                for idx, terms in batch_terms.items():
+                    if not any(k.lower() in conflict_keys
+                               for k in terms.keys()):
+                        continue
+                    if 0 <= idx < len(batch_texts):
+                        src_text = batch_texts[idx]
+                        conflict_info = next(
+                            (c for c in conflicts
+                             if c['src'].lower() in
+                             {k.lower() for k in terms.keys()}),
+                            None,
+                        )
+                        detail = (
+                            f"术语冲突：{conflict_info['src']} "
+                            f"已有 {conflict_info['old']}，"
+                            f"模型返回 {conflict_info['new']}"
+                            if conflict_info else "术语冲突"
+                        )
+                        extra_hits.append({
+                            'src': src_text,
+                            'kind': '术语冲突',
+                            'dst': cache.get(src_text, ''),
+                            'detail': detail,
+                        })
+        except Exception as e:
+            log.warning("术语合并失败：%s", e)
 
-        if input("是否另选文件？(y/N): ").strip().lower() == "y":
-            picked = filepicker.pick_text_file(
-                initial_dir=os.path.dirname(src_path),
-                title="选择文本文件",
-            )
-            if picked:
-                config.Runtime.set_input(picked)
-                src_path = config.Runtime.input_file
-                print(f"已切换 → {src_path}")
-                print(f"   输出：{config.Runtime.output_file}")
-                print(f"   缓存：{config.Runtime.cache_file}")
+    # ---------- 术语兜底替换 ----------
+    if term_pairs_list:
+        fix_count = 0
+        for k, src in enumerate(batch_texts):
+            old_final = cache.get(src)
+            if not old_final:
+                continue
+            new_final = PR.apply_terms(old_final)
+            if new_final != old_final:
+                cache.put(src, new_final)
+                fix_count += 1
+                log.debug("[批 %d][%d] 术语兜底：%r → %r",
+                          bi, k, old_final, new_final)
+        if fix_count:
+            print(f"  [术语] 兜底替换 {fix_count} 条")
+            log.info("[批 %d] 术语兜底替换 %d 条", bi, fix_count)
 
-    if not os.path.exists(src_path):
-        print(f"文件不存在：{src_path}")
-        return
+    return ok
 
-    log.info("输入=%s", src_path)
-    log.info("输出=%s", config.Runtime.output_file)
 
-    # ---------- 加载术语表 ----------
+# ================================================================
+# 内部：翻译单个文件（核心流程）
+# ================================================================
+def _translate_core(src_path, newline, show_header=True):
+    """
+    对单个文件执行完整翻译流程。
+    src_path 已在 Runtime 里设置好 input/output/cache。
+    """
+    out_path = config.Runtime.output_file
+    cache_path = config.Runtime.cache_file
+
+    if show_header:
+        print(f"\n{'=' * 55}")
+        print(f"  翻译：{src_path}")
+        print(f"  输出：{out_path}")
+        print(f"{'=' * 55}")
+
+    # 加载术语表
     PR.load_terms()
 
-    # ---------- 解析 ----------
-    lines, newline = P.read_file(src_path, config.INPUT_ENCODING)
+    # 解析
+    lines, _ = P.read_file(src_path, config.INPUT_ENCODING)
     entries, special = P.extract_entries(lines)
+
+    # ★ 计算每行所属区块的换行模式
+    line_modes = P.get_block_modes(lines)
+    mode_of_entry = {}
+    for ln, src_text in entries:
+        if src_text not in mode_of_entry and 0 <= ln < len(line_modes):
+            mode_of_entry[src_text] = line_modes[ln]
     log.info("文件 %d 行  待翻 %d  特殊 %d",
              len(lines), len(entries), len(special))
     print(f"[解析] 总行数 {len(lines)}  待翻 {len(entries)}  特殊 {len(special)}")
@@ -308,23 +498,37 @@ def cmd_translate(skip_picker=False):
         print("没有可翻译的内容")
         return
 
-    # ---------- 缓存 ----------
-    cache = Cache(config.Runtime.cache_file)
+    # 缓存
+    cache = Cache(cache_path)
 
     seen, todo = set(), []
+    skipped_pure = 0
     for _, txt in entries:
         if txt in seen:
             continue
         seen.add(txt)
         if txt in cache:
             continue
+        if getattr(config, "SKIP_PURE_CONTROL", True) and PR.is_pure_control(txt):
+            cache.put(txt, txt)
+            skipped_pure += 1
+            continue
         todo.append(txt)
+
+    if skipped_pure:
+        cache.save()
+        log.info("跳过纯控制符句子 %d 条（已缓存原文）", skipped_pure)
+        print(f"[过滤] 跳过 {skipped_pure} 条纯控制符句子（不送模型）")
 
     log.info("唯一 %d  需翻 %d  缓存命中 %d",
              len(seen), len(todo), len(seen) - len(todo))
     print(f"[待翻] 唯一 {len(seen)}  需翻 {len(todo)}  缓存命中 {len(seen) - len(todo)}")
 
     # ---------- 批量翻译 ----------
+    unknown_ctrl_hits = []
+    failed = []
+    extra_hits = []
+
     if todo:
         client = OllamaClient()
         done = 0
@@ -335,169 +539,15 @@ def cmd_translate(skip_picker=False):
             bi = start // config.BATCH_SIZE + 1
             batch_texts = todo[start:start + config.BATCH_SIZE]
 
-            batch, maps_dict, breaks_dict = [], {}, {}
-            batch_terms = {}          # 收集模型内联返回的术语
-            hit_terms_all = {}        # 收集本批命中的术语（原文 → 译文）
-
-            for k, txt in enumerate(batch_texts):
-                safe, maps, breaks, hit_terms = PR.prepare(txt)
-                batch.append((k, safe))
-                maps_dict[k] = maps
-                breaks_dict[k] = breaks
-
-                # 汇总命中术语
-                for src_term, dst_term in hit_terms:
-                    if src_term not in hit_terms_all:
-                        hit_terms_all[src_term] = dst_term
-
-                # 检测未识别控制码
-                for token, ctx in PR.detect_unknown_ctrl(safe):
-                    unknown_ctrl_hits.append((token, txt, ctx))
-
-            # 传给模型的术语表
-            term_pairs_list = list(hit_terms_all.items())
-            if term_pairs_list:
-                log.debug("[批 %d] 命中术语 %d 条，随 prompt 发送",
-                          bi, len(term_pairs_list))
-
-            log.info("[批 %d] 开始  %d 条", bi, len(batch))
+            log.info("[批 %d] 开始  %d 条", bi, len(batch_texts))
             for k, txt in enumerate(batch_texts):
                 log.debug("[批 %d][%d] 原文=%r", bi, k, txt)
-                log.debug("[批 %d][%d] 送模型=%r", bi, k, batch[k][1])
 
-            result = translate_with_retry(client, batch,
-                                          terms_out=batch_terms,
-                                          term_pairs=term_pairs_list)
+            ok = _translate_batch(client, batch_texts, cache,
+                                  unknown_ctrl_hits, failed, extra_hits,
+                                  mode_of_entry=mode_of_entry,
+                                  bi=bi)
 
-            # 整批缺行 → 单条重试
-            missing = [(k, t) for k, t in batch
-                       if k not in result or not result[k].strip()]
-            if missing:
-                log.warning("[批 %d] 缺失 %d 条，单条重试", bi, len(missing))
-            for k, safe in missing:
-                for attempt in range(config.SINGLE_RETRIES):
-                    try:
-                        r = translate_with_retry(client, [(k, safe)],
-                                                 terms_out=batch_terms,
-                                                 term_pairs=term_pairs_list)
-                        if k in r and r[k].strip():
-                            result[k] = r[k]
-                            break
-                    except Exception as e:
-                        log.debug("[批 %d][%d] 单条重试 %d 失败：%s",
-                                  bi, k, attempt + 1, e)
-                        time.sleep(1.5)
-
-            ok = 0
-            for k, src in enumerate(batch_texts):
-                raw = result.get(k)
-                if not raw:
-                    log.warning("[批 %d][%d] 无返回：%r", bi, k, src)
-                    failed.append({'src': src, 'reason': '模型无返回'})
-                    continue
-
-                log.debug("[批 %d][%d] 模型原文=%r", bi, k, raw)
-                maps = maps_dict[k]
-
-                # 占位符校验
-                ok_ph, missing_ph = PR.verify(raw, maps)
-                if not ok_ph:
-                    log.warning("[批 %d][%d] 占位符丢失 %s，原文=%r",
-                                bi, k, missing_ph, src)
-                    retried = False
-                    for _ in range(config.SINGLE_RETRIES):
-                        try:
-                            r = translate_with_retry(
-                                client, [(k, batch[k][1])],
-                                term_pairs=term_pairs_list,
-                            )
-                            if k in r and r[k].strip():
-                                ok3, _ = PR.verify(r[k], maps)
-                                if ok3:
-                                    raw = r[k]
-                                    retried = True
-                                    break
-                        except Exception:
-                            time.sleep(1.0)
-                    if not retried:
-                        raw = _force_restore(raw, maps)
-                        log.info("[批 %d][%d] 占位符兜底补回", bi, k)
-                        # ★ 记录到 report，供用户审核
-                        extra_hits.append({
-                            'src': src,
-                            'kind': '占位符兜底',
-                            'dst': raw,
-                            'detail': f'占位符 {missing_ph} 丢失，已按位置特征补回',
-                        })
-
-                    ok_final, _ = PR.verify(raw, maps)
-                    if not ok_final:
-                        log.error("[批 %d][%d] 占位符仍失败，保留原文", bi, k)
-                        failed.append({'src': src, 'reason': '占位符丢失无法恢复'})
-                        continue
-
-                final = PR.finalize(raw, maps, breaks_dict.get(k))
-                log.debug("[批 %d][%d] 最终译文=%r", bi, k, final)
-                cache.put(src, final)
-                ok += 1
-            # ---------- 术语合并（内联提取） ----------
-            if getattr(config, "AUTO_EXTRACT_TERMS", True) and batch_terms:
-                try:
-                    import auto_terms
-                    conflicts = []
-                    added = auto_terms.merge_from_translation(
-                        batch_terms, PR, conflicts_out=conflicts
-                    )
-                    if added:
-                        print(f"  [术语] 新增 {added} 条，已应用到后续批次")
-
-                    # ★ 把涉及冲突的句子加入 report
-                    if conflicts:
-                        conflict_keys = {c['src'].lower() for c in conflicts}
-                        for idx, terms in batch_terms.items():
-                            hit = any(
-                                k.lower() in conflict_keys
-                                for k in terms.keys()
-                            )
-                            if not hit:
-                                continue
-                            if 0 <= idx < len(batch_texts):
-                                src_text = batch_texts[idx]
-                                conflict_info = next(
-                                    (c for c in conflicts
-                                     if c['src'].lower() in
-                                     {k.lower() for k in terms.keys()}),
-                                    None,
-                                )
-                                detail = (
-                                    f"术语冲突：{conflict_info['src']} "
-                                    f"已有 {conflict_info['old']}，"
-                                    f"模型返回 {conflict_info['new']}"
-                                    if conflict_info else "术语冲突"
-                                )
-                                extra_hits.append({
-                                    'src': src_text,
-                                    'kind': '术语冲突',
-                                    'dst': cache.get(src_text, ''),
-                                    'detail': detail,
-                                })
-                except Exception as e:
-                    log.warning("术语合并失败：%s", e)
-            # ---------- 术语兜底替换 ----------
-            if term_pairs_list:
-                fix_count = 0
-                for k, src in enumerate(batch_texts):
-                    old_final = cache.get(src)
-                    if not old_final:
-                        continue
-                    new_final = PR.apply_terms(old_final)
-                    if new_final != old_final:
-                        cache.put(src, new_final)
-                        fix_count += 1
-                        log.debug("[批 %d][%d] 术语兜底：%r → %r",
-                                  bi, k, old_final, new_final)
-                if fix_count:
-                    print(f"  [术语] 兜底替换 {fix_count} 条")
             cache.save()
             done += len(batch_texts)
             elapsed = time.time() - t0
@@ -518,18 +568,16 @@ def cmd_translate(skip_picker=False):
     translations = {txt: cache.get(txt) for _, txt in entries if cache.get(txt)}
     replaced = P.write_output(
         lines, entries, translations,
-        config.Runtime.output_file, newline, config.OUTPUT_ENCODING,
+        out_path, newline, config.OUTPUT_ENCODING,
     )
-    log.info("回写：%d/%d → %s",
-             replaced, len(entries), config.Runtime.output_file)
-    print(f"\n✔ 输出：{config.Runtime.output_file}")
+    log.info("回写：%d/%d → %s", replaced, len(entries), out_path)
+    print(f"\n✔ 输出：{out_path}")
     print(f"  替换 {replaced}/{len(entries)} 条")
 
     # ---------- 自动检查 ----------
     print("\n[检查] 生成检查报告…")
     try:
-        out_lines, _ = P.read_file(config.Runtime.output_file,
-                                   config.OUTPUT_ENCODING)
+        out_lines, _ = P.read_file(out_path, config.OUTPUT_ENCODING)
         report_path = _report_path()
         all_extra = failed + extra_hits
         hits = checker.check(lines, out_lines, entries, special, report_path,
@@ -538,13 +586,13 @@ def cmd_translate(skip_picker=False):
     except Exception as e:
         log.error("自动检查失败：%s", e)
         print(f"  自动检查失败（不影响翻译结果）：{e}")
+
     # ---------- 未识别控制码报告 ----------
     if unknown_ctrl_hits:
         try:
             uc_path = _unknown_ctrl_report_path()
             _write_unknown_ctrl_report(unknown_ctrl_hits, uc_path)
 
-            # 按类型统计
             from collections import Counter
             kinds = Counter(t for t, _, _ in unknown_ctrl_hits)
 
@@ -554,12 +602,25 @@ def cmd_translate(skip_picker=False):
             if len(kinds) > 10:
                 print(f"    … 其余 {len(kinds) - 10} 种省略")
             print(f"  报告：{uc_path}")
-            print(f"  建议：把上述控制码加入 processor.py 的 CTRL_RE 或报告给工具作者")
 
             log.warning("未识别控制码 %d 种 / %d 次 → %s",
                         len(kinds), len(unknown_ctrl_hits), uc_path)
         except Exception as e:
             log.error("写未识别控制码报告失败：%s", e)
+
+    # ---------- 前缀字典统计 ----------
+    if getattr(config, "PREFIX_DICT_ENABLE", True):
+        try:
+            import prefix_dict as PFD
+            s = PFD.stats()
+            if s["pending"]:
+                print(f"\n[前缀字典] 共 {s['total']} 条，"
+                      f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
+                print(f"  请编辑：{PFD.DICT_FILE}")
+                print(f"  翻译完成后选菜单 4 或 5 应用前缀字典")
+        except Exception as e:
+            log.debug("前缀字典统计失败：%s", e)
+
     # ---------- 自动建立术语表快照 ----------
     try:
         import term_sync as TS
@@ -569,6 +630,108 @@ def cmd_translate(skip_picker=False):
             log.info("术语表快照已更新：%d 条", len(current_terms))
     except Exception as e:
         log.warning("建立术语表快照失败：%s", e)
+
+
+# ================================================================
+# 功能 1：翻译
+# ================================================================
+def cmd_translate(skip_picker=False):
+    import filepicker
+    import settings
+
+    log.info("=" * 50)
+    log.info("开始翻译")
+
+    # ---------- 选源语言 / 目标语言 ----------
+    if not skip_picker and getattr(config, "ASK_LANG_EACH_TIME", True):
+        src_lang = _pick_language("请选择【源语言】：", config.SOURCE_LANG)
+        if not src_lang:
+            print("已取消")
+            return
+
+        tgt_lang = _pick_language("请选择【目标语言】：",
+                                  config.TARGET_LANG, exclude=src_lang)
+        if not tgt_lang:
+            print("已取消")
+            return
+
+        if src_lang == tgt_lang:
+            print(f"\n⚠ 源语言和目标语言相同（{src_lang}）")
+            if input("继续？(y/N): ").strip().lower() != "y":
+                return
+
+        settings.set_value("SOURCE_LANG", src_lang)
+        settings.set_value("TARGET_LANG", tgt_lang)
+
+        log.info("翻译方向：%s → %s", src_lang, tgt_lang)
+        print(f"\n  翻译方向：{src_lang} → {tgt_lang}")
+    else:
+        print(f"\n  翻译方向：{config.SOURCE_LANG} → {config.TARGET_LANG}")
+
+    # ---------- 选文件 / 文件夹 ----------
+    if skip_picker:
+        src_paths = [config.Runtime.input_file]
+    else:
+        default_dir = (os.path.dirname(config.Runtime.input_file)
+                       or config.BASE_DIR)
+        picked, is_dir = filepicker.pick_path(
+            initial_dir=default_dir,
+            title="选择要翻译的 .txt 文件或文件夹",
+        )
+        if not picked:
+            print("已取消")
+            return
+
+        if is_dir:
+            files = sorted([
+                os.path.join(picked, f)
+                for f in os.listdir(picked)
+                if f.lower().endswith(".txt")
+            ])
+            if not files:
+                print(f"文件夹里没有 .txt 文件：{picked}")
+                return
+            print(f"\n文件夹：{picked}")
+            print(f"共 {len(files)} 个 .txt 文件：")
+            for f in files:
+                print(f"  - {os.path.basename(f)}")
+            if input("\n开始批量翻译？(Y/n): ").strip().lower() == "n":
+                return
+            src_paths = files
+        else:
+            src_paths = [picked]
+
+    # ---------- 逐个翻译 ----------
+    total_files = len(src_paths)
+    processed = 0
+
+    for i, path in enumerate(src_paths, 1):
+        if not os.path.exists(path):
+            print(f"[跳过] 文件不存在：{path}")
+            continue
+
+        config.Runtime.set_input(path)
+
+        try:
+            _, newline = P.read_file(path, config.INPUT_ENCODING)
+        except Exception as e:
+            print(f"[跳过] 读取失败：{e}")
+            continue
+
+        if total_files > 1:
+            print(f"\n[{i}/{total_files}] {os.path.basename(path)}")
+
+        try:
+            _translate_core(path, newline, show_header=(total_files == 1))
+            processed += 1
+        except KeyboardInterrupt:
+            print("\n[中断] 用户中止")
+            raise
+
+    if total_files > 1:
+        print(f"\n{'=' * 55}")
+        print(f"  批量翻译完成，共处理 {processed}/{total_files} 个文件")
+        print(f"{'=' * 55}")
 
 
 # ================================================================
@@ -598,21 +761,17 @@ def _run_check():
 
 
 # ================================================================
-# 功能 2：重翻未翻译内容
+# 功能 3：重翻检查报告内容
 # ================================================================
 def cmd_retranslate_failed():
-    """
-    扫描输出文件，找出所有未翻译 / 疑似未翻译的句子，
-    从缓存删除对应条目后重新翻译。
-    行为类似菜单 5（术语更新后重翻），但筛选依据是检查报告而非术语表。
-    """
+    """扫描输出文件，找出所有未翻译 / 疑似未翻译的句子，重翻。"""
     log.info("=" * 50)
-    log.info("重翻未翻译内容")
+    log.info("重翻检查报告内容")
 
-    print("\n[重翻未翻译内容]")
+    print("\n[重翻检查报告内容]")
     print("-" * 55)
 
-    # ---------- 1. 先检查 ----------
+    # 1. 先检查
     hits = _run_check()
     if hits is None:
         return
@@ -621,7 +780,7 @@ def cmd_retranslate_failed():
         print("\n✔ 没有发现问题，无需重翻")
         return
 
-    # ---------- 2. 按类型分组 ----------
+    # 2. 按类型分组
     kinds_count = {}
     for h in hits:
         kinds_count[h['kind']] = kinds_count.get(h['kind'], 0) + 1
@@ -629,13 +788,13 @@ def cmd_retranslate_failed():
     for k, n in kinds_count.items():
         print(f"  {k}: {n}")
 
-    target_kinds = {"未翻译", "疑似未翻译", "译文残留控制码",
-                    "译文残留占位符", "翻译失败", "占位符兜底","术语冲突"}
+    target_kinds = {"疑似未翻译", "译文残留控制码",
+                    "译文残留占位符", "翻译失败", "占位符兜底", "术语冲突"}
     to_retranslate = [h for h in hits if h['kind'] in target_kinds]
-    symbol_issues  = [h for h in hits if h['kind'] == '符号不匹配']
+    symbol_issues = [h for h in hits if h['kind'] == '符号不匹配']
     special_issues = [h for h in hits if h['kind'] == '特殊行']
 
-    # ---------- 3. 检查是否可重翻 ----------
+    # 3. 检查是否可重翻
     if not to_retranslate:
         print("\n没有【未翻译 / 疑似未翻译】的句子")
         if symbol_issues:
@@ -646,22 +805,22 @@ def cmd_retranslate_failed():
             print(f"    需要手动处理，请查看报告")
         return
 
-    # ---------- 4. 列出待重翻 ----------
+    # 4. 列出待重翻
     print(f"\n待重翻：{len(to_retranslate)} 条")
     for h in to_retranslate[:10]:
         print(f"  [{h['kind']}] 行 {h['line_no']}  {h['src'][:60]}")
     if len(to_retranslate) > 10:
         print(f"  … 其余 {len(to_retranslate) - 10} 条")
 
-    # ---------- 5. 确认 ----------
+    # 5. 确认
     print(f"\n将从缓存中删除这 {len(to_retranslate)} 条原文，然后重新翻译。")
     if input("确认？(Y/n): ").strip().lower() == "n":
         print("已取消")
         return
 
-    # ---------- 6. 清缓存 ----------
+    # 6. 清缓存
     cache = Cache(config.Runtime.cache_file)
-    keys = {h['src'] for h in to_retranslate}   # h['src'] 已是 strip 过的原文
+    keys = {h['src'] for h in to_retranslate}
 
     before = len(cache)
     removed = cache.remove_many(keys)
@@ -669,7 +828,7 @@ def cmd_retranslate_failed():
     log.info("缓存：%d → %d（删除 %d）", before, len(cache), removed)
     print(f"✔ 已删除 {removed} 条缓存（原缓存 {before} 条）")
 
-    # ---------- 7. 重翻 ----------
+    # 7. 重翻
     if removed == 0:
         print("\n⚠ 缓存里没有这些条目（可能上次翻译失败未入库）")
         print("  直接重翻…")
@@ -683,7 +842,7 @@ def _print_summary(hits, report_path):
     c = Counter(h['kind'] for h in hits)
     print(f"  共 {len(hits)} 处问题：")
     for k in ('翻译失败', '占位符兜底', '术语冲突',
-              '未翻译', '疑似未翻译',
+              '疑似未翻译',
               '符号不匹配', '译文残留控制码', '译文残留占位符', '特殊行'):
         if c.get(k):
             print(f"    {k}: {c[k]}")
@@ -691,7 +850,7 @@ def _print_summary(hits, report_path):
 
 
 # ================================================================
-# 功能 3：Excel 转术语表
+# 功能 6：Excel 转术语表
 # ================================================================
 def _choose_language(prompt, default_key, exclude=None):
     import build_terms as BT
@@ -727,7 +886,7 @@ def cmd_build_terms():
     log.info("Excel 转术语表")
     print(f"\n[术语表] 从 Excel 提取")
 
-    # ---------- 选 Excel 文件 ----------
+    # 选 Excel 文件
     excel_path = config.EXCEL_FILE
 
     if not os.path.exists(excel_path):
@@ -763,7 +922,7 @@ def cmd_build_terms():
     for i, (name, r, c) in enumerate(sheets, 1):
         print(f"  {i:>2}. {name}   ({r} 行 × {c} 列)")
 
-    # ---------- 选语言 ----------
+    # 选语言
     src = _choose_language("请选择【源语言】：", config.EXCEL_SOURCE_LANG)
     if not src:
         print("已取消")
@@ -780,7 +939,7 @@ def cmd_build_terms():
         if input("继续？(y/N): ").strip().lower() != "y":
             return
 
-    # ---------- 选工作表 ----------
+    # 选工作表
     sheet_filter = input(
         "\n只处理哪些工作表？（序号，逗号分隔；回车=全部）："
     ).strip()
@@ -795,7 +954,7 @@ def cmd_build_terms():
         if not chosen:
             print("未识别到有效序号，改为处理全部")
 
-    # ---------- 输出路径 ----------
+    # 输出路径
     out_path = input(f"\n输出文件 [{config.TERM_FILE}]: ").strip().strip('"')
     out_path = out_path or config.TERM_FILE
 
@@ -826,47 +985,10 @@ def cmd_build_terms():
 
 
 # ================================================================
-# 功能 4：切换输入文件
-# ================================================================
-def cmd_switch_file():
-    """切换输入文件，自动派生输出 / 缓存路径。"""
-    import filepicker
-
-    print(f"\n当前输入：{config.Runtime.input_file}")
-
-    picked = filepicker.pick_text_file(
-        initial_dir=os.path.dirname(config.Runtime.input_file),
-        title="选择文本文件",
-    )
-    if not picked:
-        print("已取消")
-        return
-
-    config.Runtime.set_input(picked)
-    log.info("切换输入：%s", picked)
-
-    # 可选持久化
-    try:
-        config.Runtime.save()
-    except Exception:
-        pass
-
-    print(f"\n✔ 已切换：")
-    print(f"   输入：{config.Runtime.input_file}")
-    print(f"   输出：{config.Runtime.output_file}")
-    print(f"   缓存：{config.Runtime.cache_file}")
-
-
-# ================================================================
-# 功能 5：术语更新后重翻
+# 功能 2：术语更新后重翻
 # ================================================================
 def cmd_retranslate_terms():
-    """
-    对比术语表快照，找出：
-      · 新增的术语          → 清缓存重翻
-      · 译文被修改的术语    → 清缓存重翻
-      · 删除的术语          → 只更新快照（已有译文不受影响）
-    """
+    """对比术语表快照，找出新增/修改的术语并重翻相关句子。"""
     import term_sync as TS
 
     log.info("=" * 50)
@@ -875,20 +997,19 @@ def cmd_retranslate_terms():
     print("\n[术语更新后重翻]")
     print("-" * 55)
 
-    # ---------- 1. 加载当前术语 ----------
+    # 1. 加载当前术语
     current_terms = TS.load_current_terms()
     log.info("当前术语表：%d 条", len(current_terms))
     print(f"当前术语表：{len(current_terms)} 条")
 
     if not current_terms:
-        print("术语表为空或不存在，请先运行菜单 3 生成")
+        print("术语表为空或不存在，请先运行菜单 6 生成")
         return
 
-    # ---------- 2. 首次使用：只记录基准 ----------
+    # 2. 首次使用：只记录基准
     if not TS.snapshot_exists():
         print(f"\n未找到快照文件：{TS.SNAPSHOT_FILE}")
         print("首次使用本功能，需要先把当前术语表记录为基准。")
-        print("以后修改 term_dict.py 后再运行本功能，就能识别出变化。")
         print(f"\n当前术语表：{len(current_terms)} 条")
         ans = input("是否将当前术语表记录为基准？(Y/n): ").strip().lower()
         if ans == "n":
@@ -896,13 +1017,9 @@ def cmd_retranslate_terms():
             return
         TS.save_snapshot(current_terms)
         print(f"✔ 已保存基准（{len(current_terms)} 条）")
-        print("\n以后的工作流：")
-        print("  1. 修改 term_dict.py（增删术语或改译文）")
-        print("  2. 运行本功能")
-        print("  3. 系统自动找出变化、清缓存、重翻")
         return
 
-    # ---------- 3. 对比 ----------
+    # 3. 对比
     added, removed, modified, old_was_keyonly = TS.diff_terms()
 
     if added is None:
@@ -922,14 +1039,13 @@ def cmd_retranslate_terms():
 
     if old_was_keyonly:
         print("\n⚠ 检测到旧版快照（只存了 key 没存 value），")
-        print("  无法识别译文修改。本次运行后会自动升级快照格式，")
-        print("  下次就能检测译文变化了。")
+        print("  无法识别译文修改。本次运行后会自动升级快照格式。")
 
     if not added and not removed and not modified:
         print("\n术语表没有变化，无需重翻")
         return
 
-    # ---------- 4. 展示变化 ----------
+    # 4. 展示变化
     if added:
         print(f"\n【新增术语】（前 20 条）：")
         for t in added[:20]:
@@ -958,7 +1074,7 @@ def cmd_retranslate_terms():
             print(f"  … 其余 {len(removed) - 10} 条")
         print("  （删除的术语不影响已有译文，只更新快照）")
 
-    # ---------- 5. 找命中的缓存 ----------
+    # 5. 找命中的缓存
     affected_terms = list(added) + list(modified)
     if not affected_terms:
         print("\n没有需要重翻的内容（只有删除），直接更新快照")
@@ -976,7 +1092,6 @@ def cmd_retranslate_terms():
         TS.save_snapshot(current_terms)
         return
 
-    # 按命中术语统计
     from collections import Counter
     by_term = Counter(term for _, term in hits)
     print(f"\n命中缓存：{len(hits)} 条")
@@ -990,34 +1105,142 @@ def cmd_retranslate_terms():
     if len(hits) > 10:
         print(f"  … 其余 {len(hits) - 10} 条")
 
-    # ---------- 6. 确认 ----------
+    # 6. 确认
     print(f"\n将删除这 {len(hits)} 条缓存，然后重新翻译。")
     if input("确认？(Y/n): ").strip().lower() == "n":
         print("已取消（快照未更新）")
         return
 
-    # ---------- 7. 清缓存 ----------
+    # 7. 清缓存
     keys_to_remove = [k for k, _ in hits]
     removed_n = cache.remove_many(keys_to_remove)
     cache.save(force=True)
     log.info("已删除缓存：%d 条", removed_n)
     print(f"✔ 已删除 {removed_n} 条缓存")
 
-    # ---------- 8. 更新快照 ----------
+    # 8. 更新快照
     TS.save_snapshot(current_terms)
 
-    # ---------- 9. 开始重翻 ----------
+    # 9. 开始重翻
     print("\n开始重翻…")
     cmd_translate(skip_picker=True)
 
-# ================================================================
-# 兼容：老菜单若还引用这些函数名
-# ================================================================
-def cmd_preview():
-    _run_check()
 
+# ================================================================
+# 功能 5：应用前缀字典
+# ================================================================
+def cmd_apply_prefix_dict():
+    """
+    不调用模型，只重新拼接缓存里的译文 + 前缀字典里的前缀。
+    用于用户翻译完前缀后立即生效。
+    """
+    import prefix_dict as PFD
 
-def cmd_cache_stats():
+    log.info("=" * 50)
+    log.info("应用前缀字典")
+
+    print("\n[应用前缀字典]")
+    print("-" * 55)
+
+    PFD.reload_dict()
+    s = PFD.stats()
+    print(f"当前字典：共 {s['total']} 条，"
+          f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
+
+    if not os.path.exists(config.Runtime.input_file):
+        print(f"缺少输入文件：{config.Runtime.input_file}")
+        return
+    if not os.path.exists(config.Runtime.cache_file):
+        print(f"缺少缓存：{config.Runtime.cache_file}（先跑一次翻译）")
+        return
+
+    lines, newline = P.read_file(config.Runtime.input_file,
+                                 config.INPUT_ENCODING)
+    entries, special = P.extract_entries(lines)
     cache = Cache(config.Runtime.cache_file)
-    print(f"\n[缓存] {config.Runtime.cache_file}")
-    print(f"        条目：{len(cache)}")
+
+    translations = {}
+    hit_prefix = 0
+    miss_prefix = 0
+    no_prefix = 0
+
+    for _, src in entries:
+        prefix, body = PR.split_prefix(src)
+        if not prefix:
+            no_prefix += 1
+            translations[src] = cache.get(src)
+            continue
+
+        cached_final = cache.get(src)
+        if not cached_final:
+            continue
+
+        new_prefix = PFD.apply_prefix(prefix)
+        if new_prefix and new_prefix != prefix:
+            # 精确剔除旧前缀
+            if cached_final.startswith(prefix):
+                body_final = cached_final[len(prefix):]
+            elif cached_final.startswith(new_prefix):
+                body_final = cached_final[len(new_prefix):]
+            else:
+                body_final = cached_final
+            translations[src] = new_prefix + body_final
+            hit_prefix += 1
+        else:
+            translations[src] = cached_final
+            miss_prefix += 1
+
+    replaced = P.write_output(
+        lines, entries, translations,
+        config.Runtime.output_file, newline, config.OUTPUT_ENCODING,
+    )
+
+    print(f"\n✔ 输出：{config.Runtime.output_file}")
+    print(f"  替换 {replaced}/{len(entries)} 条")
+    print(f"  前缀替换生效：{hit_prefix} 条；"
+          f"未翻译前缀：{miss_prefix} 条；无前缀：{no_prefix} 条")
+    log.info("应用前缀字典完成：%d/%d", replaced, len(entries))
+
+
+# ================================================================
+# 功能 4：翻译前缀字典
+# ================================================================
+def cmd_review_prefix_dict():
+    """列出前缀字典，方便用户翻译。"""
+    import prefix_dict as PFD
+
+    PFD.reload_dict()
+    s = PFD.stats()
+
+    print("\n[前缀字典]")
+    print("-" * 55)
+    print(f"文件：{PFD.DICT_FILE}")
+    print(f"统计：共 {s['total']} 条，"
+          f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
+
+    pending = PFD.list_pending()
+    if not pending:
+        print("\n✔ 没有待翻译的前缀")
+        return
+
+    print(f"\n待翻译前缀（前 30 条）：")
+    for i, (k, _) in enumerate(pending[:30], 1):
+        print(f"  {i:>3}. {k}")
+
+    if len(pending) > 30:
+        print(f"  … 其余 {len(pending) - 30} 条")
+
+    print(f"\n请编辑：{PFD.DICT_FILE}")
+    print("把每个前缀的 \"\" 换成你的译文，例如：")
+    print('  "\\\\w[speech hgss 3]\\\\tg[???]": '
+          '"\\\\w[speech hgss 3]\\\\tg[欧文]"')
+
+    if input("\n是否现在打开文件？(y/N): ").strip().lower() == "y":
+        try:
+            if os.name == "nt":
+                os.startfile(PFD.DICT_FILE)
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", PFD.DICT_FILE])
+        except Exception as e:
+            print(f"打开失败：{e}，请手动打开：{PFD.DICT_FILE}")

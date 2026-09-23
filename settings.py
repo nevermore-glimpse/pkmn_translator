@@ -33,7 +33,7 @@ EDITABLE = [
     ("MODEL",              "Ollama 模型名",     "str",   "如 qwen2.5:14b"),
     ("OLLAMA_URL",         "Ollama 服务地址",   "str",   "一般不动"),
     ("TIMEOUT",            "请求超时(秒)",      "float", "限制模型输出时间（超时直接断开）"),
-    ("NUM_CTX",            "上下文长度",        "int",   "越大关联性越强"),
+    ("NUM_CTX",            "上下文长度",        "int",   "至少大于2000+每批条数x100"),
     ("NUM_PREDICT",        "最大生成 token",    "int",   "限制模型输出上限（超限直接断开）"),
     ("TEMPERATURE",        "采样温度",          "float", "0.0-1.0,越大模型自由度越高"),
     ("THINK",              "推理模式",        "bool",  "True/False"),
@@ -41,17 +41,20 @@ EDITABLE = [
     # ---------- 翻译策略 ----------
     ("BATCH_SIZE",         "每批条数",          "int",   "建议 10-30"),
     ("BATCH_RETRIES",      "整批重试次数",      "int",   "失败时重试"),
-    ("SINGLE_RETRIES",     "单条重试次数",      "int",   "失败时重新"),
+    ("SINGLE_RETRIES",     "单条重试次数",      "int",   "失败时重试"),
     ("CACHE_SAVE_EVERY",   "缓存保存间隔",      "int",   "每 N 批保存一次"),
     ("SOURCE_LANG",        "源语言",            "str",   "如 英语 / 西班牙文"),
     ("TARGET_LANG",        "目标语言",          "str",   "如 简体中文"),
     ("ASK_LANG_EACH_TIME", "每次询问语言",      "bool",  "翻译前是否弹语言选择"),
+    ("PREFIX_DICT_ENABLE", "启用前缀字典", "bool", "句首控制码由字典管理"),
+    ("SKIP_PURE_CONTROL", "跳过纯控制符", "bool", "剥离后无内容的句子不翻译"),
+    ("PURE_CONTROL_MIN_LEN", "纯控制符阈值", "int", "剥离后最少保留几个字"),
 
     # ---------- 换行重排 ----------
-    ("REWRAP_ENABLE",      "启用换行重排",      "bool",  ""),
+    ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "只适用于[map*]下的翻译"),
     ("WRAP_CHARS_MIN",     "换行下限(字)",      "int",   ""),
     ("WRAP_CHARS_MAX",     "换行上限(字)",      "int",   ""),
-    ("WRAP_MIN_GAP",       "换行最小间隔(字)",  "int",   "换行后至少 N 字才换"),  # ★ 新增
+    ("WRAP_MIN_GAP",       "换行最小间隔(字)",  "int",   "换行后至少 N 字才换"),
 
     # ---------- 术语与 Excel ----------
     ("APPLY_TERMS",        "启用术语替换",      "bool",  ""),
