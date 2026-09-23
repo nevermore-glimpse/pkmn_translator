@@ -111,6 +111,9 @@ WRAP_MIN_GAP   = 10    # ★ 新增：换行后至少 N 个字才能再次换行
 # ---------- 术语 ----------
 APPLY_TERMS        = True
 ASK_LANG_EACH_TIME = True
+# ---------- 玩家名替换 ----------
+PLAYER_TOKEN = r"\PN"              # 游戏脚本里的玩家名控制码
+PLAYER_PLACEHOLDER = "玛俐大小姐"  # 送模型时的替换文本（含罕见括号，防误伤）
 
 # ---------- 自动术语提取 ----------
 AUTO_EXTRACT_TERMS    = True    # 翻译时自动提取专有名词
@@ -118,14 +121,18 @@ AUTO_EXTRACT_MIN_LEN  = 3       # 术语最短长度（过滤单字母/双字母
 # ---------- Excel ----------
 EXCEL_SOURCE_LANG = "西班牙文"
 EXCEL_TARGET_LANG = "简体中文"
-
+# ---------- 句首控制码字典 ----------
+PREFIX_DICT_ENABLE = True    # 启用句首控制码前缀字典
+# ---------- 纯控制符过滤 ----------
+SKIP_PURE_CONTROL = True    # 剥离控制码后无有效内容的句子跳过翻译
+PURE_CONTROL_MIN_LEN = 2    # 剥离后至少保留多少个字母/汉字才算有内容
 # ================================================================
 # 用户配置覆盖
 #   源码运行：settings.py 直接改 config.py
 #   exe 运行：settings.py 写 user_config.json，这里读它覆盖默认值
 # ================================================================
 USER_CONFIG_FILE = os.path.join(BASE_DIR, "user_config.json")
-SNAPSHOT_INITIALIZED = False
+SNAPSHOT_INITIALIZED = True
 
 if os.path.exists(USER_CONFIG_FILE):
     try:

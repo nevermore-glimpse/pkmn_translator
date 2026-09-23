@@ -7,18 +7,23 @@
     log = get_logger(__name__)
     log.info("...")
 
-日志文件：E:\pkmn_translator\logs\translate_YYYYMMDD.log
+日志文件：<BASE_DIR>/logs/translate_YYYYMMDD.log
 环境变量 DEBUG_PH=1 时，控制台也输出 DEBUG 级别。
+启动时自动删除 keep_days 天前的日志。
 """
 import logging
 import os
+import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import config
 
 _LOG_DIR = os.path.join(config.BASE_DIR, "logs")
 _INITIALIZED = False
+
+# 保留最近 N 天的日志
+LOG_KEEP_DAYS = 3
 
 
 class _ColorFormatter(logging.Formatter):
@@ -39,6 +44,38 @@ class _ColorFormatter(logging.Formatter):
         return msg
 
 
+def _cleanup_old_logs(log_dir, keep_days=LOG_KEEP_DAYS):
+    """
+    删除 keep_days 天前的 translate_*.log。
+    只处理 translate_YYYYMMDD.log 格式的文件，
+    其它日志（如 ollama_launch.log）不动。
+    """
+    pattern = re.compile(r'^translate_(\d{8})\.log$')
+    cutoff = datetime.now() - timedelta(days=keep_days)
+    removed = 0
+
+    try:
+        for name in os.listdir(log_dir):
+            m = pattern.match(name)
+            if not m:
+                continue
+            try:
+                file_date = datetime.strptime(m.group(1), "%Y%m%d")
+            except ValueError:
+                continue
+            if file_date < cutoff:
+                p = os.path.join(log_dir, name)
+                try:
+                    os.remove(p)
+                    removed += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return removed
+
+
 def _init():
     global _INITIALIZED
     if _INITIALIZED:
@@ -46,6 +83,15 @@ def _init():
     _INITIALIZED = True
 
     os.makedirs(_LOG_DIR, exist_ok=True)
+
+    # ★ 清理旧日志
+    try:
+        n = _cleanup_old_logs(_LOG_DIR, LOG_KEEP_DAYS)
+        if n:
+            print(f"[logger] 已清理 {n} 个超过 {LOG_KEEP_DAYS} 天的日志文件")
+    except Exception:
+        pass
+
     root = logging.getLogger("pkmn")
     root.setLevel(logging.DEBUG)
     root.handlers.clear()

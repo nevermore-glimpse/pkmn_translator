@@ -17,7 +17,7 @@ import settings
 
 BANNER = """\
 ====================================================================
-                      宝可梦同人游戏翻译工具
+                    宝可梦同人游戏翻译工具v1.1.0
 作者github：
 https://github.com/nevermore-glimpse
 作者bilibili（玛俐大小姐想让我告白）：
@@ -31,12 +31,13 @@ https://space.bilibili.com/3546602748775226?spm_id_from=333.1007.0.0
   输出文件：{output}
 --------------------------------------------------------------------
   1. 翻译（术语匹配大小写不敏感）
-  2. 重翻检查报告内容
-  3. Excel 转术语表
-  4. 切换输入文件
-  5. 术语更新后重翻相关句子
-  6. 设置
+  2. 术语更新后重翻相关句子
+  3. 重翻检查报告内容
+  4. 翻译前缀字典
+  5. 应用前缀字典
+  6. Excel 转术语表
   7. 重新检查环境
+  8. 设置
   0. 退出
 ====================================================================
 """
@@ -142,17 +143,19 @@ def main():
             if choice == "1":
                 commands.cmd_translate()
             elif choice == "2":
-                commands.cmd_retranslate_failed()
-            elif choice == "3":
-                commands.cmd_build_terms()
-            elif choice == "4":
-                commands.cmd_switch_file()
-            elif choice == "5":
                 commands.cmd_retranslate_terms()
+            elif choice == "3":
+                commands.cmd_retranslate_failed()
+            elif choice == "4":
+                commands.cmd_review_prefix_dict()
+            elif choice == "5":
+                commands.cmd_apply_prefix_dict()
             elif choice == "6":
-                settings.show_menu()
+                commands.cmd_build_terms()
             elif choice == "7":
                 env_check.check_all(verbose=True)
+            elif choice == "8":
+                settings.show_menu()
             elif choice == "0":
                 log.info("用户退出")
                 print("再见")
