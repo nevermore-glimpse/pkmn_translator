@@ -270,6 +270,101 @@ def _apply_lang_model(src_lang=None, tgt_lang=None, model=None):
 
 
 # ================================================================
+# 常用语言列表（序号选择用）
+# ================================================================
+LANG_OPTIONS = [
+    "英文",
+    "简体中文",
+    "繁体中文",
+    "日文",
+    "韩文",
+    "西班牙文",
+    "法文",
+    "德文",
+    "意大利文",
+]
+
+
+# ================================================================
+# 报告路径
+# ================================================================
+def _report_path():
+    """返回检查报告路径：与输出文件同目录。"""
+    out = config.Runtime.output_file
+    d = os.path.dirname(out) or "."
+    base = os.path.splitext(os.path.basename(out))[0]
+    return os.path.join(d, f"{base}_report.txt")
+
+
+def _unknown_ctrl_report_path():
+    """与输入文件同目录，名为 <输入名>_unknown_ctrl.txt"""
+    inp = config.Runtime.input_file
+    d = os.path.dirname(inp) or "."
+    base = os.path.splitext(os.path.basename(inp))[0]
+    return os.path.join(d, f"{base}_unknown_ctrl.txt")
+
+
+def _write_unknown_ctrl_report(hits, report_path):
+    """hits: [(token, original, context), ...]"""
+    from collections import defaultdict
+
+    grouped = defaultdict(list)
+    for token, orig, ctx in hits:
+        grouped[token].append((orig, ctx))
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("# 未识别控制码报告\n")
+        f.write(f"# 共 {len(grouped)} 种，{len(hits)} 次\n")
+        f.write("#\n")
+        f.write("# 这些控制码不在 processor.py 的名单中，\n")
+        f.write("# 可能被模型误翻或丢失。请手工确认是否要加入名单。\n")
+        f.write("=" * 70 + "\n\n")
+
+        for token, items in sorted(grouped.items(),
+                                    key=lambda x: (-len(x[1]), x[0])):
+            f.write(f"[{token}]  出现 {len(items)} 次\n")
+            for orig, ctx in items[:3]:
+                f.write(f"  原文：  {orig[:100]}\n")
+                f.write(f"  上下文：{ctx[:100]}\n")
+            if len(items) > 3:
+                f.write(f"  … 其余 {len(items) - 3} 次省略\n")
+            f.write("\n")
+
+    return report_path
+
+
+# ================================================================
+# 语言选择
+# ================================================================
+def _pick_language(prompt, default_key, exclude=None):
+    """交互式语言选择。返回选中的语言字符串，或 None 表示取消。"""
+    print(f"\n{prompt}")
+    for i, lang in enumerate(LANG_OPTIONS, 1):
+        mark = ""
+        if lang == default_key:
+            mark = "   ← 上次使用"
+        if exclude and lang == exclude:
+            mark = "   (已被选为另一种语言)"
+        print(f"  {i:>2}. {lang}{mark}")
+    print(f"   0. 自定义（手动输入）")
+
+    hint = f"[{default_key}]" if default_key else "[回车跳过]"
+    raw = input(f"请选择 {hint}: ").strip()
+
+    if not raw:
+        return default_key or None
+    if raw == "0":
+        custom = input("请输入语言名（如 English / 日本語）：").strip()
+        return custom or None
+    if raw.isdigit():
+        idx = int(raw) - 1
+        if 0 <= idx < len(LANG_OPTIONS):
+            return LANG_OPTIONS[idx]
+    print("无效输入")
+    return None
+
+
+# ================================================================
 # 占位符兜底
 # ================================================================
 def _force_restore(raw, maps, src=None):
@@ -811,6 +906,50 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         "done": len(todo) - len(failed),
         "failed": len(failed),
     }
+
+    # ---------- 未识别控制码报告 ----------
+    if unknown_ctrl_hits:
+        try:
+            uc_path = _unknown_ctrl_report_path()
+            _write_unknown_ctrl_report(unknown_ctrl_hits, uc_path)
+
+            from collections import Counter
+            kinds = Counter(t for t, _, _ in unknown_ctrl_hits)
+
+            print(f"\n⚠ 检测到未识别控制码：")
+            for tok, n in kinds.most_common(10):
+                print(f"    {tok}  × {n}")
+            if len(kinds) > 10:
+                print(f"    … 其余 {len(kinds) - 10} 种省略")
+            print(f"  报告：{uc_path}")
+
+            log.warning("未识别控制码 %d 种 / %d 次 → %s",
+                        len(kinds), len(unknown_ctrl_hits), uc_path)
+        except Exception as e:
+            log.error("写未识别控制码报告失败：%s", e)
+
+    # ---------- 前缀字典统计 ----------
+    if getattr(config, "PREFIX_DICT_ENABLE", True):
+        try:
+            import prefix_dict as PFD
+            s = PFD.stats()
+            if s["pending"]:
+                print(f"\n[前缀字典] 共 {s['total']} 条，"
+                      f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
+                print(f"  请编辑：{PFD.DICT_FILE}")
+                print(f"  翻译完成后选菜单 4 或 5 应用前缀字典")
+        except Exception as e:
+            log.debug("前缀字典统计失败：%s", e)
+
+    # ---------- 自动建立术语表快照 ----------
+    try:
+        import term_sync as TS
+        current_terms = TS.load_current_terms()
+        if current_terms:
+            TS.save_snapshot(current_terms)
+            log.info("术语表快照已更新：%d 条", len(current_terms))
+    except Exception as e:
+        log.warning("建立术语表快照失败：%s", e)
 
 
 def _update_snapshot():

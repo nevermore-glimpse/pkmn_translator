@@ -771,6 +771,30 @@ def find_terms(text):
     return result
 
 
+def find_terms(text):
+    """
+    找出 text 中命中的术语，返回 [(原文, 译文), ...]（去重，保持出现顺序）。
+    """
+    if not _COMBINED_RE or not text:
+        return []
+
+    seen = set()
+    result = []
+    for m in _COMBINED_RE.finditer(text):
+        matched = m.group(1)
+        dst = _TERM_MAP.get(matched)
+        if dst is None:
+            dst = _TERM_MAP_LOWER.get(matched.lower())
+        if not dst:
+            continue
+        key = matched.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((matched, dst))
+    return result
+
+
 def apply_terms(text):
     """
     术语兜底替换：把 text 里命中的术语原文替换为术语表译文。
