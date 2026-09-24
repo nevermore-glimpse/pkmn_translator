@@ -21,6 +21,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 import bridge
+import logger
 import commands
 import config
 import env_check
@@ -888,6 +889,8 @@ class App:
             progress_fn=lambda d, t, x: self.q.put(("prog", (d, t, x))),
             cancel_fn=lambda: self._cancel_flag,
         )
+        # logging 记录同步到「运行日志」页，与命令行里看到的内容一致
+        logger.set_gui_sink(lambda s: self.q.put(("log", s)))
 
         self.root.after(80, self._pump)
         self.root.after(300, self._detect_models_async)
@@ -1606,7 +1609,7 @@ class App:
         left_b = tk.Frame(bottom, bg=CARD)
         left_b.pack(side="left")
         tk.Label(left_b,
-                 text="改动/删除会写入术语字典，并删除含相关术语句子的缓存",
+                 text="改动/删除会写入术语字典",
                  bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(side="left")
         right_b = tk.Frame(bottom, bg=CARD)
         right_b.pack(side="right")

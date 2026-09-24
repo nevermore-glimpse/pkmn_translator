@@ -69,6 +69,13 @@ def emit(*args, **kwargs):
         pass
     text = sep.join(str(a) for a in args) + end
 
+    # ★ 同步写入运行日志：让日志文件与 cmd / 界面上看到的输出保持一致
+    try:
+        import logger
+        logger.log_cmd(text)
+    except Exception:
+        pass
+
     with _lock:
         sink = _print_sink
     if sink is not None:

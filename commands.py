@@ -916,12 +916,12 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
             from collections import Counter
             kinds = Counter(t for t, _, _ in unknown_ctrl_hits)
 
-            print(f"\n⚠ 检测到未识别控制码：")
+            bridge.emit(f"\n⚠ 检测到未识别控制码：")
             for tok, n in kinds.most_common(10):
-                print(f"    {tok}  × {n}")
+                bridge.emit(f"    {tok}  × {n}")
             if len(kinds) > 10:
-                print(f"    … 其余 {len(kinds) - 10} 种省略")
-            print(f"  报告：{uc_path}")
+                bridge.emit(f"    … 其余 {len(kinds) - 10} 种省略")
+            bridge.emit(f"  报告：{uc_path}")
 
             log.warning("未识别控制码 %d 种 / %d 次 → %s",
                         len(kinds), len(unknown_ctrl_hits), uc_path)
@@ -934,10 +934,10 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
             import prefix_dict as PFD
             s = PFD.stats()
             if s["pending"]:
-                print(f"\n[前缀字典] 共 {s['total']} 条，"
-                      f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
-                print(f"  请编辑：{PFD.DICT_FILE}")
-                print(f"  翻译完成后选菜单 4 或 5 应用前缀字典")
+                bridge.emit(f"\n[前缀字典] 共 {s['total']} 条，"
+                            f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
+                bridge.emit(f"  请编辑：{PFD.DICT_FILE}")
+                bridge.emit(f"  翻译完成后选菜单 4 或 5 应用前缀字典")
         except Exception as e:
             log.debug("前缀字典统计失败：%s", e)
 

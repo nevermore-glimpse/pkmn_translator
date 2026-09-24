@@ -21,6 +21,8 @@ import config
 
 _LOG_DIR = os.path.join(config.BASE_DIR, "logs")
 _INITIALIZED = False
+_emit_logger = None     # cmd / 界面输出专用：只写文件，不回灌控制台
+_gui_sink = None        # GUI「运行日志」页回调
 
 # 保留最近 N 天的日志
 LOG_KEEP_DAYS = 3
@@ -117,6 +119,18 @@ def _init():
     ))
     root.addHandler(ch)
 
+    # ★ cmd / 界面输出专用日志器：
+    #   复用同一个文件句柄（避免两个 handler 同时打开同一个文件），
+    #   并关闭冒泡 —— 否则 emit() 的内容会被控制台 handler 再打一遍，
+    #   命令行里同一行就会出现两次。
+    global _emit_logger
+    el = logging.getLogger("pkmn.cmd")
+    el.setLevel(logging.DEBUG)
+    el.handlers.clear()
+    el.propagate = False
+    el.addHandler(fh)
+    _emit_logger = el
+
     root.info("=" * 60)
     root.info("会话开始  日志文件：%s", log_file)
     root.info("=" * 60)
@@ -126,3 +140,59 @@ def get_logger(name):
     _init()
     short = name.split(".")[-1] or "main"
     return logging.getLogger(f"pkmn.{short}")
+
+
+def log_cmd(text):
+    """
+    把 cmd / 界面上的输出同步写入运行日志文件，
+    使「运行日志」与命令行里看到的内容保持一致。
+
+    只写文件、不回灌控制台：emit() 本身已经打印过一次，
+    再走控制台 handler 会造成同一行重复出现。
+    """
+    _init()
+    el = _emit_logger
+    if el is None:
+        return
+    try:
+        for line in str(text).splitlines():
+            if line.strip():
+                el.info(line)
+    except Exception:
+        pass
+
+
+class _GuiHandler(logging.Handler):
+    """把 logging 记录转发给 GUI「运行日志」页。"""
+
+    def emit(self, record):
+        fn = _gui_sink
+        if fn is None:
+            return
+        try:
+            fn(self.format(record) + "\n")
+        except Exception:
+            pass
+
+
+def set_gui_sink(fn):
+    """
+    注册 GUI 回调后，log.info / warning / error 会同步显示在 GUI「运行日志」页，
+    与命令行里看到的内容一致。传 None 取消注册。
+    """
+    global _gui_sink
+    _init()
+    _gui_sink = fn
+
+    root = logging.getLogger("pkmn")
+    for h in list(root.handlers):
+        if isinstance(h, _GuiHandler):
+            root.removeHandler(h)
+    if fn is not None:
+        gh = _GuiHandler()
+        gh.setLevel(logging.INFO)
+        gh.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)-7s] %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        root.addHandler(gh)

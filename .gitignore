@@ -18,7 +18,7 @@ ENV/
 .vscode/
 *.swp
 *.swo
-
+work/
 # ---------- 运行时产物 ----------
 logs/
 reports/
