@@ -179,3 +179,142 @@ def find_affected_cache(cache_data, terms):
                 hits.append((key, term))
                 break
     return hits
+
+
+# ================================================================
+# 术语字典读写（GUI 术语表编辑用）
+# ================================================================
+# 匹配 "key": "value",  形式的一行（兼容末尾注释）
+_PAIR_LINE_RE = re.compile(
+    r'^(\s*)("(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*")(,?)(\s*(?:#.*)?)$'
+)
+
+
+def _split_lines_keepends(text):
+    return text.splitlines()
+
+
+def load_auto_block():
+    """
+    读取 term_dict.py 中 AUTO 块（自动提取术语）里的条目。
+    返回 [(原文, 译文), ...]，按文件顺序。
+    """
+    try:
+        import auto_terms
+        start_mark, end_mark = auto_terms.AUTO_START, auto_terms.AUTO_END
+    except Exception:
+        return []
+
+    if not os.path.exists(config.TERM_FILE):
+        return []
+
+    try:
+        with open(config.TERM_FILE, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception as e:
+        log.warning("读取 term_dict.py 失败：%s", e)
+        return []
+
+    si = text.find(start_mark)
+    ei = text.find(end_mark)
+    if si == -1 or ei == -1 or ei < si:
+        return []
+
+    block = text[si + len(start_mark):ei]
+    pairs = []
+    for line in _split_lines_keepends(block):
+        m = _PAIR_LINE_RE.match(line)
+        if not m:
+            continue
+        try:
+            k = json.loads(m.group(2))
+            v = json.loads(m.group(4))
+        except Exception:
+            continue
+        pairs.append((k, v))
+    return pairs
+
+
+def save_term_values(updates):
+    """
+    把 {原文: 新译文} 写回 term_dict.py（原地替换 value，保留格式与注释）。
+    返回实际改动条数。
+    """
+    if not updates:
+        return 0
+
+    if not os.path.exists(config.TERM_FILE):
+        log.warning("term_dict.py 不存在，无法写入")
+        return 0
+
+    with open(config.TERM_FILE, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    out = []
+    changed = 0
+    for line in text.splitlines():
+        m = _PAIR_LINE_RE.match(line)
+        if m:
+            try:
+                k = json.loads(m.group(2))
+            except Exception:
+                k = None
+            if k in updates:
+                new_v = json.dumps(updates[k], ensure_ascii=False)
+                line = (f"{m.group(1)}{m.group(2)}{m.group(3)}"
+                        f"{new_v}{m.group(5)}{m.group(6)}")
+                changed += 1
+        out.append(line)
+
+    if not changed:
+        return 0
+
+    _atomic_write(config.TERM_FILE, "\n".join(out) + "\n")
+    log.info("术语表写回 %d 条修改", changed)
+    return changed
+
+
+def delete_term_keys(keys):
+    """
+    从 term_dict.py 中删除指定原文 key 对应的条目（整行移除）。
+    返回实际删除条数。
+
+    删除仅在「应用术语」时落到文件；GUI 里先进入待删除集合，可撤回。
+    """
+    if not keys:
+        return 0
+    if not os.path.exists(config.TERM_FILE):
+        log.warning("term_dict.py 不存在，无法删除")
+        return 0
+
+    keyset = set(keys)
+    with open(config.TERM_FILE, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    out = []
+    deleted = 0
+    for line in text.splitlines():
+        m = _PAIR_LINE_RE.match(line)
+        if m:
+            try:
+                k = json.loads(m.group(2))
+            except Exception:
+                k = None
+            if k in keyset:
+                deleted += 1
+                continue  # 跳过该行 = 删除
+        out.append(line)
+
+    if not deleted:
+        return 0
+
+    _atomic_write(config.TERM_FILE, "\n".join(out) + "\n")
+    log.info("术语表删除 %d 条", deleted)
+    return deleted
+
+
+def _atomic_write(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)

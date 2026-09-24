@@ -53,6 +53,23 @@ def check_ollama_service(url=None):
         return False, f"无法连接 {host}:{port}（{e.__class__.__name__}）"
 
 
+def list_ollama_models(timeout=4):
+    """
+    列出本机 Ollama 已安装的模型名（升序）。
+    服务不可用时返回空列表，不抛异常。
+    """
+    try:
+        import requests
+        p = urllib.parse.urlparse(config.OLLAMA_URL)
+        r = requests.get(f"{p.scheme}://{p.netloc}/api/tags", timeout=timeout)
+        r.raise_for_status()
+        names = [m.get("name", "") for m in r.json().get("models", [])]
+        return sorted(n for n in names if n)
+    except Exception as e:
+        log.debug("查询模型列表失败：%s", e)
+        return []
+
+
 def check_ollama_model(model=None):
     import requests
     model = model or config.MODEL

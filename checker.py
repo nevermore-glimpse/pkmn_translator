@@ -43,7 +43,8 @@ WHITELIST = {
 # 占位符匹配
 PLACEHOLDER_RE = re.compile(r'@\s*\d+\s*@|⟦\s*\d+\s*⟧')
 
-
+# 异常 @ 符号：连续 2 个以上
+_ABNORMAL_AT_RE = re.compile(r'@{2,}')
 # ================================================================
 # 工具：剥离所有控制码
 # ================================================================
@@ -107,7 +108,17 @@ def _find_leftover_placeholder(text):
         return []
     return [m.group(0) for m in PLACEHOLDER_RE.finditer(text)]
 
-
+def _find_abnormal_at(text):
+    """
+    检测译文里是否有异常的 @@ / @@@ 符号。
+    先剔除合法占位符 @数字@，再看剩余是否还有连续 @。
+    """
+    if not text:
+        return []
+    # 剔除合法占位符
+    t = PLACEHOLDER_RE.sub('', text)
+    # 剩余的 @ 里面，连续 2 个以上视为异常
+    return [m.group(0) for m in _ABNORMAL_AT_RE.finditer(t)]
 # ================================================================
 # 主检查
 # ================================================================
@@ -199,6 +210,14 @@ def check(src_lines, out_lines, entries, special, report_path,
                 'src': src, 'dst': dst,
                 'detail': f'译文中存在未还原的占位符：'
                           f'{", ".join(dst_ph[:5])}',
+            })
+        # ★⑤ 疑似异常句：连续 @ 符号
+        abnormal_at = _find_abnormal_at(dst)
+        if abnormal_at:
+            hits.append({
+                'line_no': line_no, 'kind': '疑似异常句',
+                'src': src, 'dst': dst,
+                'detail': f'译文含异常符号：{", ".join(abnormal_at[:5])}',
             })
 
     # ---------- 特殊行 ----------

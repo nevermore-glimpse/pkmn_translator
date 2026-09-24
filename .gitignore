@@ -50,3 +50,6 @@ desktop.ini
 *.bak
 *.tmp
 ~$*
+
+# ---------- WorkBuddy 内部数据（非项目源码） ----------
+.workbuddy/

@@ -1,6 +1,44 @@
-[Map0]
-¿Hasta qué hora quieres dormir?\hm
-¿Hasta qué hora quieres dormir?\hm
+﻿[Map0]
+......\wt[5] ......
+......\wt[5] ......
+Hello, \PN!\nI can see you calling me over there!
+Hello, \PN!\nI can see you calling me over there!
+Come over and talk to me.
+Come over and talk to me.
+Hello, this is Professor Oak...\nOh, hello, \PN!
+Hello, this is Professor Oak...\nOh, hello, \PN!
+So, how's your Pokédex coming along?
+So, how's your Pokédex coming along?
+Hmm, let's see..\nYou've seen \v[1] Pokémon, and \nyou've caught \v[2] Pokémon!\nI see!
+Hmm, let's see..\nYou've seen \v[1] Pokémon, and \nyou've caught \v[2] Pokémon!\nI see!
+Hmm, you still have a long journey ahead of you! \nKeep on going!
+Hmm, you still have a long journey ahead of you! \nKeep on going!
+Hmm, you're catching Pokémon at a decent pace!
+Hmm, you're catching Pokémon at a decent pace!
+You've caught a lot of Pokémon, but make sure you're raising them carefully!
+You've caught a lot of Pokémon, but make sure you're raising them carefully!
+I didn't even know that many Pokémon existed!
+I didn't even know that many Pokémon existed!
+Show me your Pokédex again anytime!
+Show me your Pokédex again anytime!
+Show me your Pokédex anytime!
+Show me your Pokédex anytime!
+Click!\wt[10]\n......\wt[5] ......
+Click!\wt[10]\n......\wt[5] ......
+\bDo you want me to stop following you?
+\bDo you want me to stop following you?
+\bI'll stay here, then.
+\bI'll stay here, then.
+\bLet's keep going!
+\bLet's keep going!
+¿Hasta qué hora quieres dormir?
+¿Hasta qué hora quieres dormir?
+¡Hora de disfrutar de la mañana!
+¡Hora de disfrutar de la mañana!
+¡Hora de disfrutar de la tarde!
+¡Hora de disfrutar de la tarde!
+¡Hora de disfrutar de la noche!
+¡Hora de disfrutar de la noche!
 \tg[Fátima]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
 \tg[Fátima]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
 \tg[Dante]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
@@ -11,6 +49,8 @@
 \tg[Owen]Perfecto, ¡lucharemos juntos!
 \tg[Owen]Entendido, avísame si necesitas que te eche un cable.
 \tg[Owen]Entendido, avísame si necesitas que te eche un cable.
+\w[]
+\w[]
 \tg[Owen]Curaré a tus Pokémon sobre la marcha y Helioptile y yo estaremos a tu lado en combate.\n¡Juntos no habrá quien nos venza!
 \tg[Owen]Curaré a tus Pokémon sobre la marcha y Helioptile y yo estaremos a tu lado en combate.\n¡Juntos no habrá quien nos venza!
 \tg[Elliot]Q-qué frío.\n¡Salgamos de aquí cuanto antes!
@@ -25,6 +65,8 @@
 \tg[¿Owen?]¿Todo bien?\nContinuemos.
 \tg[Lionel, el Campeón de Galar]¡Soy el Campeón de Galar!\n¡Mi personalidad se basa en ser el Campeón de Galar, y soy el Campeón y tengo un Charizard!
 \tg[Lionel, el Campeón de Galar]¡Soy el Campeón de Galar!\n¡Mi personalidad se basa en ser el Campeón de Galar, y soy el Campeón y tengo un Charizard!
+Anuncios...
+Anuncios...
 \w[1]<ar>\ts[]\wu\wtnp[5]PA: \v[50] ps</ar>
 \w[1]<ar>\ts[]\wu\wtnp[5]PA: \v[50] ps</ar>
 \w[1]<ar>\ts[]\wu\wtnp[5]\v[67]\v[68]ps</ar>
@@ -91,6 +133,8 @@ Esta Losa parece reforzar el Ataque Especial de tu equipo siempre, pero se perde
 \tg[Recluta]Sé que es una intrusa y tal, pero si se queda así para siempre\..\..\..\nDía tras día, sin parar de girar\..\..\..
 \tg[Recluta]Agh, da igual.\n¡Ahora te saco de ahí!
 \tg[Recluta]Agh, da igual.\n¡Ahora te saco de ahí!
+Qué mareo\..\..\..
+Qué mareo\..\..\..
 \tg[Recluta]Pues sí, definitivamente es retrasado.\nLo siento muchísimo por ti.
 \tg[Recluta]Pues sí, definitivamente es retrasado.\nLo siento muchísimo por ti.
 \tg[Recluta]Pues sí, definitivamente es retrasada.\nLo siento muchísimo por ti.
@@ -123,6 +167,8 @@ Desgraciadamente, no tengo ninguna...
 Desgraciadamente, no tengo ninguna...
 No se me ocurre nada que decir en esta situación...
 No se me ocurre nada que decir en esta situación...
+<<[>>*****************************************<<]>>
+<<[>>*****************************************<<]>>
 \tg[¿Owen?]Prohibidos, he dicho.
 \tg[¿Owen?]Prohibidos, he dicho.
 Ya que la papelera está a la inversa, debería llamarse "arelepap".
@@ -131,11 +177,2504 @@ Ya que la papelera está a la inversa, debería llamarse "arelepap".
 \tg[¿Owen?]Ah, no.\nProhibidos los chistes de papeleras mientras yo esté aquí.
 Dios, otra vez tú.\nEspero que no me hagas perder mucho el tiempo.
 Dios, otra vez tú.\nEspero que no me hagas perder mucho el tiempo.
+...\n...
+...\n...
 Nadie que te importe.\n¿Tienes códigos o no?
 Nadie que te importe.\n¿Tienes códigos o no?
 Códigos que hacen cosas, sí.\nCómo los obtengas no es problema mío.
 Códigos que hacen cosas, sí.\nCómo los obtengas no es problema mío.
 ¿Los tienes o no?\nNo tengo todo el día.
 ¿Los tienes o no?\nNo tengo todo el día.
+Pues piérdete.
+Pues piérdete.
 Espera...\n¿No tienes un Repartir Exp.?
 Espera...\n¿No tienes un Repartir Exp.?
+Ten, toma uno.
+Ten, toma uno.
+¡Has completado una misión!
+¡Has completado una misión!
+Evaluate Pokédex
+Evaluate Pokédex
+Quit
+Quit
+Yes
+Yes
+No
+No
+07:00
+07:00
+11:00
+11:00
+15:00
+15:00
+Más opciones
+Más opciones
+19:00
+19:00
+23:00
+23:00
+No quiero dormir
+No quiero dormir
+Luchar en pareja
+Luchar en pareja
+Luchar a solas
+Luchar a solas
+Ver figuras sala
+Ver figuras sala
+Sí
+Sí
+Curar
+Curar
+Hablar
+Hablar
+Nada
+Nada
+Agua (600$)
+Agua (600$)
+Refresco (800$)
+Refresco (800$)
+Limonada (1100$)
+Limonada (1100$)
+¿Hay Pokémon por aquí?
+¿Hay Pokémon por aquí?
+Nada, nos vemos
+Nada, nos vemos
+¿Y tú eres...?
+¿Y tú eres...?
+¿Códigos?
+¿Códigos?
+[Map1]
+\tg[Manaphy]¡Mana!
+\tg[Manaphy]¡Mana!
+De parte de Elena:
+De parte de Elena:
+Veo que estas jugando en android, tendrás bugs y yo no me hago responsable de ello.
+Veo que estas jugando en android, tendrás bugs y yo no me hago responsable de ello.
+Usa o cómprate un ordenador lol
+Usa o cómprate un ordenador lol
+\tg[Haya]¡Hola!\nSoy la profesora Haya.
+\tg[Haya]¡Hola!\nSoy la profesora Haya.
+\tg[Haya]Quería informarte de que si descargaste este fangame desde algún sitio web diferente a PokéLiberty o la cuenta de Twitter oficial, estás siendo timado.
+\tg[Haya]Quería informarte de que si descargaste este fangame desde algún sitio web diferente a PokéLiberty o la cuenta de Twitter oficial, estás siendo timado.
+\tg[Haya]No redistribuyas links monetizados del juego.\NPone en peligro a los autores y podría impedir el desarrollo de fangames como este.
+\tg[Haya]No redistribuyas links monetizados del juego.\NPone en peligro a los autores y podría impedir el desarrollo de fangames como este.
+\tg[Haya]También hay algo más que deberías saber...
+\tg[Haya]También hay algo más que deberías saber...
+\tg[Chatot]¡Si robas algún recurso de este fangame, paraguazo!\n¡Cruac!
+\tg[Chatot]¡Si robas algún recurso de este fangame, paraguazo!\n¡Cruac!
+\tg[Chatot]¡No hay piedad para los ladrones! \n¡Cruac, cruac!
+\tg[Chatot]¡No hay piedad para los ladrones! \n¡Cruac, cruac!
+\tg[Haya]Así que ya sabes...
+\tg[Haya]Así que ya sabes...
+\tg[Haya]¡No robes los recursos de este fangame, por favooooor!
+\tg[Haya]¡No robes los recursos de este fangame, por favooooor!
+\tg[Haya]Eso es todo.\n¡Disfruta del juego!
+\tg[Haya]Eso es todo.\n¡Disfruta del juego!
+\w[]\l[1]Región de Esoteria - Central Petrolífera
+\w[]\l[1]Región de Esoteria - Central Petrolífera
+[Map2]
+\tg[Elliot]¡Cuántos Pokémon!\nQué bien que todo esté tan animado como de costumbre.
+\tg[Elliot]¡Cuántos Pokémon!\nQué bien que todo esté tan animado como de costumbre.
+\tg[Elliot]Oye, \PN...\NCreo que debería contártelo.
+\tg[Elliot]Oye, \PN...\NCreo que debería contártelo.
+\tg[Elliot]Lo cierto es que estoy pensando en abandonar el pueblo.\nTú sabes mejor que nadie que siempre he querido convertirme en un gran fotógrafo...
+\tg[Elliot]Lo cierto es que estoy pensando en abandonar el pueblo.\nTú sabes mejor que nadie que siempre he querido convertirme en un gran fotógrafo...
+\tg[Elliot]He estado trabajando muy duro en el huerto de mi abuelo para poder ganar dinero y comprarme esta cámara.
+\tg[Elliot]He estado trabajando muy duro en el huerto de mi abuelo para poder ganar dinero y comprarme esta cámara.
+\tg[Elliot]¡Pienso viajar con ella por toda la región de Esoteria!\nAsí podré tomar fotos de lugares recónditos y Pokémon nunca antes vistos.
+\tg[Elliot]¡Pienso viajar con ella por toda la región de Esoteria!\nAsí podré tomar fotos de lugares recónditos y Pokémon nunca antes vistos.
+\tg[Elliot]Es algo precipitado, pero... me voy hoy mismo.\nEs más, ya lo tengo todo listo para partir.
+\tg[Elliot]Es algo precipitado, pero... me voy hoy mismo.\nEs más, ya lo tengo todo listo para partir.
+\tg[Elliot]Aunque tengo que preguntarte, \PN... \N¿Por qué no te vienes conmigo?
+\tg[Elliot]Aunque tengo que preguntarte, \PN... \N¿Por qué no te vienes conmigo?
+\tg[Elliot]Al igual que yo siempre he soñado con ser fotógrafo, tú lo has hecho con ser entrenador.\n¡Podemos emprender este viaje juntos!
+\tg[Elliot]Al igual que yo siempre he soñado con ser fotógrafo, tú lo has hecho con ser entrenador.\n¡Podemos emprender este viaje juntos!
+\tg[Elliot]Al igual que yo siempre he soñado con ser fotógrafo, tú lo has hecho con ser entrenadora.\n¡Podemos emprender este viaje juntos!
+\tg[Elliot]Al igual que yo siempre he soñado con ser fotógrafo, tú lo has hecho con ser entrenadora.\n¡Podemos emprender este viaje juntos!
+\tg[Elliot]Sé que no tienes ningún Pokémon para empezar...\n¡Pero no te preocupes, tengo un plan!
+\tg[Elliot]Sé que no tienes ningún Pokémon para empezar...\n¡Pero no te preocupes, tengo un plan!
+\tg[Elliot]He oído que la profesora Haya cuida en su laboratorio algunos Pokémon.\nEstoy seguro de que no se molestará si le pedimos uno para ti.
+\tg[Elliot]He oído que la profesora Haya cuida en su laboratorio algunos Pokémon.\nEstoy seguro de que no se molestará si le pedimos uno para ti.
+\tg[Elliot]¡Venga, vamos a hacerle una visita! \nNo perdemos nada por intentarlo.
+\tg[Elliot]¡Venga, vamos a hacerle una visita! \nNo perdemos nada por intentarlo.
+¿Pip?
+¿Pip?
+[Map3]
+Al este -> Instituto Meteorológico\n Al oeste <- Pueblo Jaspe
+Al este -> Instituto Meteorológico\n Al oeste <- Pueblo Jaspe
+El cofre se está riendo.\nMe da yuyu.
+El cofre se está riendo.\nMe da yuyu.
+¡Cuando las miradas entre dos entrenadores se cruzan, comienza el combate!
+¡Cuando las miradas entre dos entrenadores se cruzan, comienza el combate!
+¿Conoces a un joven llamado Chano?\n¡Al parecer está desaparecido!
+¿Conoces a un joven llamado Chano?\n¡Al parecer está desaparecido!
+Casa del leñador
+Casa del leñador
+Este evento fue copy-pasteado de otro así que probablemente tenga el mismo diálogo.
+Este evento fue copy-pasteado de otro así que probablemente tenga el mismo diálogo.
+Je, je, je...\n¡Mis Pokémon son encantadores!
+Je, je, je...\n¡Mis Pokémon son encantadores!
+Serán encantadores, pero no muy fuertes...
+Serán encantadores, pero no muy fuertes...
+Un Pokémon será más feliz si está siempre a tu lado.
+Un Pokémon será más feliz si está siempre a tu lado.
+Al noreste -> Instituto Meteorológico\n Al noroeste <- Pueblo Jaspe\n Al sur -> Pueblo Berilo\n
+Al noreste -> Instituto Meteorológico\n Al noroeste <- Pueblo Jaspe\n Al sur -> Pueblo Berilo\n
+Lo siento, chico.\nLas vigas que sostienen el techo de la mina de adamantita están prácticamente desgastadas por el tiempo y son muy inestables.
+Lo siento, chico.\nLas vigas que sostienen el techo de la mina de adamantita están prácticamente desgastadas por el tiempo y son muy inestables.
+Lo siento, chica.\nLas vigas que sostienen el techo de la mina de adamantita están prácticamente desgastadas por el tiempo y son muy inestables.
+Lo siento, chica.\nLas vigas que sostienen el techo de la mina de adamantita están prácticamente desgastadas por el tiempo y son muy inestables.
+Nadie puede entrar hasta que no estén reparadas.\n¡Sería muy peligroso!
+Nadie puede entrar hasta que no estén reparadas.\n¡Sería muy peligroso!
+La adamantita es un mineral formado en ambientes medianamente fríos.\nAl ser de aspecto parecido al diamante pero más común y barato, se suele utilizar como reemplazo en las joyas.
+La adamantita es un mineral formado en ambientes medianamente fríos.\nAl ser de aspecto parecido al diamante pero más común y barato, se suele utilizar como reemplazo en las joyas.
+Esta mina es famosa por ser una gran fuente de adamantita, y además por estar plagada por unos Pokémon llamados Sableye.
+Esta mina es famosa por ser una gran fuente de adamantita, y además por estar plagada por unos Pokémon llamados Sableye.
+Dicen que las gemas incrustadas en sus ojos son, en realidad, pequeñas piezas de este mineral.
+Dicen que las gemas incrustadas en sus ojos son, en realidad, pequeñas piezas de este mineral.
+Se suelen poner muy nerviosos cuando algún minero entra a recolectar adamantita, pero siempre han sido fácilmente controlables.
+Se suelen poner muy nerviosos cuando algún minero entra a recolectar adamantita, pero siempre han sido fácilmente controlables.
+Lo cierto es que llevo diciéndole al leñador que me preste algo de madera para sustituir las vigas desde hace mucho tiempo...
+Lo cierto es que llevo diciéndole al leñador que me preste algo de madera para sustituir las vigas desde hace mucho tiempo...
+Pasa que ese hombre es un ermitaño y no hay manera de hacerle salir de su casa.\nY mira que vive aquí cerca, justo un poco más abajo.
+Pasa que ese hombre es un ermitaño y no hay manera de hacerle salir de su casa.\nY mira que vive aquí cerca, justo un poco más abajo.
+Siempre está amargado y no quiere ver a nadie, dudo siquiera que llegues a intercambiar algunas palabras con él.
+Siempre está amargado y no quiere ver a nadie, dudo siquiera que llegues a intercambiar algunas palabras con él.
+Soy un principiante, ¡pero parece que tú también!
+Soy un principiante, ¡pero parece que tú también!
+A veces me cuesta reconocer que tengo mucho que aprender.\n¿No te ocurre a ti lo mismo?
+A veces me cuesta reconocer que tengo mucho que aprender.\n¿No te ocurre a ti lo mismo?
+¡Oye, tú!\n¿¡Es que no sabes que esto es allanamiento de morada!?
+¡Oye, tú!\n¿¡Es que no sabes que esto es allanamiento de morada!?
+¡Si vivo en mitad del campo, es para que nadie me moleste!\n¡Vamos, largo!
+¡Si vivo en mitad del campo, es para que nadie me moleste!\n¡Vamos, largo!
+¡Si vivo en mitad del campo, es para que nadie me moleste!\n¡Si no te vas, te enterarás de lo que vale un peine!
+¡Si vivo en mitad del campo, es para que nadie me moleste!\n¡Si no te vas, te enterarás de lo que vale un peine!
+¿¡Cómo dices!?\n¡No sé qué significa eso, pero te voy a partir en dos con mi hacha!
+¿¡Cómo dices!?\n¡No sé qué significa eso, pero te voy a partir en dos con mi hacha!
+Af...\NEres fuerte, chaval.
+Af...\NEres fuerte, chaval.
+Está bien, te escucharé.\n¿Qué quieres?
+Está bien, te escucharé.\n¿Qué quieres?
+\..\..\..\n¿Un Drifloon, dices?
+\..\..\..\n¿Un Drifloon, dices?
+¡¡Ahí estás!!\n¡Voy a bajarte de ahí ahora mismo!
+¡¡Ahí estás!!\n¡Voy a bajarte de ahí ahora mismo!
+Ahí te va el Pokémon.\nTen más cuidado la próxima vez.
+Ahí te va el Pokémon.\nTen más cuidado la próxima vez.
+¡Eso pensaba!\n¡Largo!
+¡Eso pensaba!\n¡Largo!
+¡Ah, chico!\nPor increíble que suene, el leñador ha venido para ayudar a reconstruir las vigas de la mina.
+¡Ah, chico!\nPor increíble que suene, el leñador ha venido para ayudar a reconstruir las vigas de la mina.
+¡Ah, chica!\nPor increíble que suene, el leñador ha venido para ayudar a reconstruir las vigas de la mina.
+¡Ah, chica!\nPor increíble que suene, el leñador ha venido para ayudar a reconstruir las vigas de la mina.
+Por desgracia, justo cuando arréglabamos la última, unos Sableyes atacaron...\n¡Jamás los había visto tan agresivos!
+Por desgracia, justo cuando arréglabamos la última, unos Sableyes atacaron...\n¡Jamás los había visto tan agresivos!
+Debe ser porque se han acostumbrado a que nadie los moleste durante un largo periodo de tiempo. \nLo que es más, vi a algunos cargar con algo...
+Debe ser porque se han acostumbrado a que nadie los moleste durante un largo periodo de tiempo. \nLo que es más, vi a algunos cargar con algo...
+Era un Pokémon muy bonito que tenía alrededor unos cristales de color rosa.\nEspero que no trataran de hacer nada malo con él.
+Era un Pokémon muy bonito que tenía alrededor unos cristales de color rosa.\nEspero que no trataran de hacer nada malo con él.
+Si vas a entrar en la mina de adamantita, ten sumo cuidado.\n¡Esos Sableyes aparecerán de la nada y atacarán!
+Si vas a entrar en la mina de adamantita, ten sumo cuidado.\n¡Esos Sableyes aparecerán de la nada y atacarán!
+Se suelen poner muy nerviosos cuando algún minero entra a recolectar adamantita, pero siempre habían sido buenamente controlables... hasta ahora.
+Se suelen poner muy nerviosos cuando algún minero entra a recolectar adamantita, pero siempre habían sido buenamente controlables...  hasta ahora.
+He criado a mi Pokémon con mucho mimo.\n¡Te enseñaré de lo que es capaz!
+He criado a mi Pokémon con mucho mimo.\n¡Te enseñaré de lo que es capaz!
+Jo, parece que nos queda un largo camino por recorrer.
+Jo, parece que nos queda un largo camino por recorrer.
+Cuidar de tus Pokémon es importantísimo.\n¡Si están contentos, seguro que serán más fuertes!
+Cuidar de tus Pokémon es importantísimo.\n¡Si están contentos, seguro que serán más fuertes!
+¿Minas de adamantita?
+¿Minas de adamantita?
+¿No hay nada que hacer?
+¿No hay nada que hacer?
+Me parece muy bien, ¡hasta luego!
+Me parece muy bien, ¡hasta luego!
+Fight me!!
+Fight me!!
+Ya me iba
+Ya me iba
+[Map4]
+Los Pokémon de tipo Agua son la caña, ¿¡no crees!?
+Los Pokémon de tipo Agua son la caña, ¿¡no crees!?
+¡Ja, ja, ja!\n¡Sabía que encontraría otro apasionado de los Pokémon de tipo Agua!
+¡Ja, ja, ja!\n¡Sabía que encontraría otro apasionado de los Pokémon de tipo Agua!
+Toma, para ti.\nEs mi caña vieja, ¡igual puedes hacer algún uso de ella!
+Toma, para ti.\nEs mi caña vieja, ¡igual puedes hacer algún uso de ella!
+Anda, si ya tienes una.\nPues nada.
+Anda, si ya tienes una.\nPues nada.
+Tch.\nNo tienes ni idea.
+Tch.\nNo tienes ni idea.
+Pescar es divertido pero si no encuentras al Pokémon que quieres pronto puede llegar a poner a uno de los nervios...
+Pescar es divertido pero si no encuentras al Pokémon que quieres pronto puede llegar a poner a uno de los nervios...
+Me cuesta leer el grabado desde aquí.
+Me cuesta leer el grabado desde aquí.
+Sí
+Sí
+No
+No
+[Map5]
+No puedo entrar, la academia cierra a estas horas...
+No puedo entrar, la academia cierra a estas horas...
+O eso pensaba.\n¡Pero tengo la llave!
+O eso pensaba.\n¡Pero tengo la llave!
+¡Owen y el profesor me esperan en la Central Eléctrica de la Ruta 2!
+¡Owen y el profesor me esperan en la Central Eléctrica de la Ruta 2!
+No debería entrar ahora.
+No debería entrar ahora.
+¡Has obtenido un Extraño Transmisor!\nEste parece ser el único lugar donde le llega cobertura.
+¡Has obtenido un Extraño Transmisor!\nEste parece ser el único lugar donde le llega cobertura.
+Colocas las pilas que te ha dado la chica en el transmisor\..\..\..
+Colocas las pilas que te ha dado la chica en el transmisor\..\..\..
+\..\..\..\n\..\..\..
+\..\..\..\n\..\..\..
+¡El transmisor ahora tiene pilas y está listo para usarse!
+¡El transmisor ahora tiene pilas y está listo para usarse!
+Parece que el Transmisor recibe una señal aquí...\n¿Quieres probar a utilizarlo?
+Parece que el Transmisor recibe una señal aquí...\n¿Quieres probar a utilizarlo?
+\tg[???]¡¡Síii, por fin!!\n¡Mi transmisor!
+\tg[???]¡¡Síii, por fin!!\n¡Mi transmisor!
+\tg[???]¡No sabes cuánto tiempo llevaba buscándolo!\n¡Lo daba por perdido, en serio!
+\tg[???]¡No sabes cuánto tiempo llevaba buscándolo!\n¡Lo daba por perdido, en serio!
+\tg[???]Menos mal que a alguien se le ha ocurrido utilizarlo...\nY bueno, ahora...
+\tg[???]Menos mal que a alguien se le ha ocurrido utilizarlo...\nY bueno, ahora...
+\tg[???]¿Me lo devuelves, pliiiis?
+\tg[???]¿Me lo devuelves, pliiiis?
+\tg[???]¿¡Pero qué os pasa a todos aquí!?\n¡Me dijeron que en este planeta los Nomekops y los Sonamuh se llevaban bien!
+\tg[???]¿¡Pero qué os pasa a todos aquí!?\n¡Me dijeron que en este planeta los Nomekops y los Sonamuh se llevaban bien!
+\tg[???]¿¡Y qué me encuentro!?\n¡A un puñado de Sonamuhs incivilizados que, para colmo, usan a los Nomekops para hacer peleítas!
+\tg[???]¿¡Y qué me encuentro!?\n¡A un puñado de Sonamuhs incivilizados que, para colmo, usan a los Nomekops para hacer peleítas!
+\tg[???]¡Y no soy un Elgyem!\n¡Tengo un nombre como todo Nomekop que se precie!
+\tg[???]¡Y no soy un Elgyem!\n¡Tengo un nombre como todo Nomekop que se precie!
+\tg[???]¡Escúchame bien!\n¡Soy 01000101 01001100 01000111 01011001 01000101 01001101!
+\tg[???]¡Escúchame bien!\n¡Soy 01000101 01001100 01000111 01011001 01000101 01001101!
+\tg[01000101 01001100 01000111 01011 etc] \..\..\..\n\..\..\..
+\tg[01000101 01001100 01000111 01011 etc] \..\..\..\n\..\..\..
+\tg[Elgyem]\..\..\..\n¡Aunque puedes llamarme Elgyem!
+\tg[Elgyem]\..\..\..\n¡Aunque puedes llamarme Elgyem!
+\tg[Elgyem]¡Bah, ahora me he cabreado!\n¡TE VOY A ANIQUILAR, ONAMUH IMPERTINENTEEEEEEEEE!
+\tg[Elgyem]¡Bah, ahora me he cabreado!\n¡TE VOY A ANIQUILAR, ONAMUH IMPERTINENTEEEEEEEEE!
+\tg[Elgyem]¡Auuuuuuuuuuuh!\n¡PERO QUÉ DOLOR!
+\tg[Elgyem]¡Auuuuuuuuuuuh!\n¡PERO QUÉ DOLOR!
+\tg[Elgyem]¿¡Cómo es posible!?\n¡Un Onumah ha podido conmigo...!
+\tg[Elgyem]¿¡Cómo es posible!?\n¡Un Onumah ha podido conmigo...!
+\tg[Elgyem]¡Esto es completamente impensable! \n¡No puede ser verdad!
+\tg[Elgyem]¡Esto es completamente impensable! \n¡No puede ser verdad!
+\tg[Elgyem]Agh...\nVale, aunque parece que estoy algo más calmado.
+\tg[Elgyem]Agh...\nVale, aunque parece que estoy algo más calmado.
+\tg[Elgyem]De hecho, al ver a tus Nomekops... \nHe podido ver que no eres una mala persona.
+\tg[Elgyem]De hecho, al ver a tus Nomekops... \nHe podido ver que no eres una mala persona.
+\tg[Elgyem]Como disculpas...\nPuedo ofrecerte algo de información, supongo.
+\tg[Elgyem]Como disculpas...\nPuedo ofrecerte algo de información, supongo.
+\tg[Elgyem]Estoy viajando por toda la región y sé bastante sobre las rutas.\n¡Si me ves por algún lado, habla conmigo!
+\tg[Elgyem]Estoy viajando por toda la región y sé bastante sobre las rutas.\n¡Si me ves por algún lado, habla conmigo!
+\tg[Elgyem]¡Pero que sepas que esto no quedará así!\n¡Volveremos a vernos las caras en combate, Onamuh!
+\tg[Elgyem]¡Pero que sepas que esto no quedará así!\n¡Volveremos a vernos las caras en combate, Onamuh!
+Parece que el Transmisor recibe una señal aquí, pero no puedo utilizarlo sin pilas.
+Parece que el Transmisor recibe una señal aquí, pero no puedo utilizarlo sin pilas.
+\tg[Owen]¿Pero qué...?\n¡Las luces se han ido de repente!
+\tg[Owen]¿Pero qué...?\n¡Las luces se han ido de repente!
+\tg[Owen]Qué raro...\n¿Habrá un apagón general en todo el pueblo?
+\tg[Owen]Qué raro...\n¿Habrá un apagón general en todo el pueblo?
+\tg[Simon]¿Qué demonios pasa ahora?\n¡Que no veo ni torta!
+\tg[Simon]¿Qué demonios pasa ahora?\n¡Que no veo ni torta!
+\tg[Simon]¿Eh? También se han apagado la luz de las farolas...\n¿El pueblo entero se ha quedado sin electricidad?
+\tg[Simon]¿Eh? También se han apagado la luz de las farolas...\n¿El pueblo entero se ha quedado sin electricidad?
+\tg[Simon]Esto debe ser cosa de la Central Eléctrica de la Ruta 2.\nQuitaos de en medio, voy a echar un vistazo.
+\tg[Simon]Esto debe ser cosa de la Central Eléctrica de la Ruta 2.\nQuitaos de en medio, voy a echar un vistazo.
+\tg[Owen]¡Espere, profesor!\nYo también voy.
+\tg[Owen]¡Espere, profesor!\nYo también voy.
+\tg[Owen]Y tú también, \PN.\nVayamos a ver qué ocurre.
+\tg[Owen]Y tú también, \PN.\nVayamos a ver qué ocurre.
+Este evento fue copy-pasteado de otro así que probablemente tenga el mismo diálogo.
+Este evento fue copy-pasteado de otro así que probablemente tenga el mismo diálogo.
+Sí
+Sí
+No
+No
+¡Socorro, un Elgyem que habla!
+¡Socorro, un Elgyem que habla!
+No, mío. Vuélvete pa' tu planeta.
+No, mío. Vuélvete pa' tu planeta.
+[Map6]
+\tg[???]A-ah.\N¡Has vuelto!
+\tg[???]A-ah.\N¡Has vuelto!
+\tg[???]Todos los Charjabug están aquí.\n¡M- muchas gracias!
+\tg[???]Todos los Charjabug están aquí.\n¡M- muchas gracias!
+\tg[Abi]S-soy el líder de Gimnasio de Ciudad Cornalina, Abi.\n¿Eres un aspirante?
+\tg[Abi]S-soy el líder de Gimnasio de Ciudad Cornalina, Abi.\n¿Eres un aspirante?
+\tg[Abi]Estaré encantado de recibirte.\nT-toma, por las molestias.
+\tg[Abi]Estaré encantado de recibirte.\nT-toma, por las molestias.
+\tg[Abi]Si pones esto en un árbol de miel, al cabo del tiempo aparecerá un Pokémon raro.\nHe visto que tienes una Pokédex, así que pensé que te sería de ayuda...
+\tg[Abi]Si pones esto en un árbol de miel, al cabo del tiempo aparecerá un Pokémon raro.\nHe visto que tienes una Pokédex, así que pensé que te sería de ayuda...
+\tg[Abi]Déjame que cure también a tu equipo.\nEs lo mínimo que podría hacer.
+\tg[Abi]Déjame que cure también a tu equipo.\nEs lo mínimo que podría hacer.
+\tg[Abi]Vamos, Charjabug.\nO-os llevaré al Centro Pokémon y luego yo volveré al Gimnasio, aunque ya parecéis estar mejor...
+\tg[Abi]Vamos, Charjabug.\nO-os llevaré al Centro Pokémon y luego yo volveré al Gimnasio, aunque ya parecéis estar mejor...
+\tg[???]¡Por favor, recupera a los Charjabug! \nNo deben haber salido del bosque.
+\tg[???]¡Por favor, recupera a los Charjabug! \nNo deben haber salido del bosque.
+\tg[???]Bien, parece que ya están todos...\nV- vamos, chicos.
+\tg[???]Bien, parece que ya están todos...\nV- vamos, chicos.
+\tg[???]Estoy seguro de que una vez en el Centro Pokémon os pondréis mejor...\nP-pongámonos en marcha.
+\tg[???]Estoy seguro de que una vez en el Centro Pokémon os pondréis mejor...\nP-pongámonos en marcha.
+\tg[???]¡A-ah...!\n¡No!
+\tg[???]¡A-ah...!\n¡No!
+\tg[???]¡Volved aquí!\n¡Q-que todavía no estáis curadoooos!
+\tg[???]¡Volved aquí!\n¡Q-que todavía no estáis curadoooos!
+\tg[???]Vaya...\nS-se han ido todos.
+\tg[???]Vaya...\nS-se han ido todos.
+\tg[???]¡Oye!\n¿Eres un entrenador?
+\tg[???]¡Oye!\n¿Eres un entrenador?
+\tg[???]A-agradecería que pudieses ayudarme a volver a reunir a los Charjabug que se han escapado.
+\tg[???]A-agradecería que pudieses ayudarme a volver a reunir a los Charjabug que se han escapado.
+\tg[???]No sé qué les habrá pasado, pero tenían demasiada electricidad acumulada y se han puesto muy nerviosos...
+\tg[???]No sé qué les habrá pasado, pero tenían demasiada electricidad acumulada y se han puesto muy nerviosos...
+\tg[???]No deben haber ido muy lejos.\nT-te espero aquí, ¿vale?
+\tg[???]No deben haber ido muy lejos.\nT-te espero aquí, ¿vale?
+¡Badidos!\n¡He vito a los badidos!
+¡Badidos!\n¡He vito a los badidos!
+¡Me robaron mi almuerzo!
+¡Me robaron mi almuerzo!
+Ah, no.\nCi mi almuerzo me lo comido yo.
+Ah, no.\nCi mi almuerzo me lo comido yo.
+¡Bug, char!
+¡Bug, char!
+Al este -> Ruta 3
+Al este -> Ruta 3
+Si un árbol cae en un bosque y nadie está cerca para oírlo, ¿de qué color es el árbol?
+Si un árbol cae en un bosque y nadie está cerca para oírlo, ¿de qué color es el árbol?
+Dicen que unos bandidos muy peculiares habitan en este bosque, ¿pero dónde?
+Dicen que unos bandidos muy peculiares habitan en este bosque, ¿pero dónde?
+\tg[Elliot]¡\PN!\N¡Qué alegría verte!
+\tg[Elliot]¡\PN!\N¡Qué alegría verte!
+\tg[Elliot]Ya tienes tu carnet de entrenador, ¿eh?\n¡Cómo mola!
+\tg[Elliot]Ya tienes tu carnet de entrenador, ¿eh?\n¡Cómo mola!
+\tg[Elliot]Ciudad Cornalina queda más adelante, pasando la Ruta 3.\n¡Menos mal que el Bosque Lucerna se atraviesa casi en línea recta!
+\tg[Elliot]Ciudad Cornalina queda más adelante, pasando la Ruta 3.\n¡Menos mal que el Bosque Lucerna se atraviesa casi en línea recta!
+\tg[Elliot]Yo me quedaré aquí un rato tomando fotos.\n¡Quién sabe, igual encuentro al Pokémon de la leyenda!
+\tg[Elliot]Yo me quedaré aquí un rato tomando fotos.\n¡Quién sabe, igual encuentro al Pokémon de la leyenda!
+\tg[Elliot]Ah, también he traído algo de medicina.\n¿Necesitas ayuda?
+\tg[Elliot]Ah, también he traído algo de medicina.\n¿Necesitas ayuda?
+\tg[Elliot]Puedo curar a tus Pokémon, aunque solo tengo medicina para tres veces.\n¿Lo necesitas?
+\tg[Elliot]Puedo curar a tus Pokémon, aunque solo tengo medicina para tres veces.\n¿Lo necesitas?
+¡Salud de tu equipo Pokémon restaurada!
+¡Salud de tu equipo Pokémon restaurada!
+\tg[Elliot]¡Está bien!\nDime luego si necesitas curar a tus Pokémon.
+\tg[Elliot]¡Está bien!\nDime luego si necesitas curar a tus Pokémon.
+\tg[Elliot]Puedo curar a tus Pokémon, aunque solamente dos veces más.\n¿Lo necesitas?
+\tg[Elliot]Puedo curar a tus Pokémon, aunque solamente dos veces más.\n¿Lo necesitas?
+\tg[Elliot]Puedo curar a tus Pokémon, aunque solamente una vez más.\n¿Lo necesitas?
+\tg[Elliot]Puedo curar a tus Pokémon, aunque solamente una vez más.\n¿Lo necesitas?
+\tg[Elliot]Lo siento, se me ha acabado la medicina.\n¡Tendrás que arreglártelas por ti mismo!
+\tg[Elliot]Lo siento, se me ha acabado la medicina.\n¡Tendrás que arreglártelas por ti mismo!
+\tg[Elliot]Lo siento, se me ha acabado la medicina.\n¡Tendrás que arreglártelas por ti misma!
+\tg[Elliot]Lo siento, se me ha acabado la medicina.\n¡Tendrás que arreglártelas por ti misma!
+¡Eh, eh!\n¡Ni un paso más!
+¡Eh, eh!\n¡Ni un paso más!
+Te llevas muy bien con tus Pokémon.\n¡Admirable!
+Te llevas muy bien con tus Pokémon.\n¡Admirable!
+¡Ji, ji, ji!\n¡Cuidado, no vayas a tropezarte!
+¡Ji, ji, ji!\n¡Cuidado, no vayas a tropezarte!
+¡Au! Dichosas ramas...
+¡Au! Dichosas ramas...
+Este bosque es muy bonito, pero tienes que mirar por dónde pisas...
+Este bosque es muy bonito, pero tienes que mirar por dónde pisas...
+Al oeste -> Ruta 2
+Al oeste -> Ruta 2
+Este evento fue copy-pasteado de otro así que probablemente tenga el mismo diálogo.
+Este evento fue copy-pasteado de otro así que probablemente tenga el mismo diálogo.
+¿¡Te atreves a adentrarte en el bosque solo!?
+¿¡Te atreves a adentrarte en el bosque solo!?
+¿¡Te atreves a adentrarte en el bosque sola!?
+¿¡Te atreves a adentrarte en el bosque sola!?
+Tengo mucho miedo de adentrarme más...
+Tengo mucho miedo de adentrarme más...
+Me dijeron que el bosque podía atravesarse fácilmente...\n¡Soy demasiado cobardica!
+Me dijeron que el bosque podía atravesarse fácilmente...\n¡Soy demasiado cobardica!
+¡El Charjabug ha descargado su energía!\nParece que ahora está bien.
+¡El Charjabug ha descargado su energía!\nParece que ahora está bien.
+¡Alto!\N¡Debo asegurarme de que tienes cuidado de la fauna del bosque!
+¡Alto!\N¡Debo asegurarme de que tienes cuidado de la fauna del bosque!
+Vi unos tíos muy raros antes que buscaban Charjabug.
+Vi unos tíos muy raros antes que buscaban Charjabug.
+¡Sí, porfis!
+¡Sí, porfis!
+No, estoy como una rosa
+No, estoy como una rosa
+[Map7]
+Es una roca con aspecto mohoso...
+Es una roca con aspecto mohoso...
+Parece que a este Pokémon le gustaría llevarte de vuelta a la otra orilla.\n¿Aceptas?
+Parece que a este Pokémon le gustaría llevarte de vuelta a la otra orilla.\n¿Aceptas?
+\tg[???]No hay señal...\n¿Acaso no es lo suficientemente potente?
+\tg[???]No hay señal...\n¿Acaso no es lo suficientemente potente?
+\tg[???]O tal vez simplemente me equivoco. \nEste podría no ser el lugar, después de todo...
+\tg[???]O tal vez simplemente me equivoco. \nEste podría no ser el lugar, después de todo...
+\tg[Alba]Nada...\nEsta es la última parte del lago que me falta por mirar.
+\tg[Alba]Nada...\nEsta es la última parte del lago que me falta por mirar.
+\tg[Elliot]¡Alba!\n¿Has encontrado algo?
+\tg[Elliot]¡Alba!\n¿Has encontrado algo?
+\tg[Alba]¡Elliot!\n¡\PN!
+\tg[Alba]¡Elliot!\n¡\PN!
+\tg[Alba]No, no he encontrado nada.\nEsta es la última parte del lago que me queda por investigar.
+\tg[Alba]No, no he encontrado nada.\nEsta es la última parte del lago que me queda por investigar.
+\tg[Alba]Pero el hecho de que estéis aquí significa...\n¿¡Habéis encontrado a Azelf!?
+\tg[Alba]Pero el hecho de que estéis aquí significa...\n¿¡Habéis encontrado a Azelf!?
+\tg[Elliot]¡Sí!\nHemos venido por si necesitabas ayuda buscando.
+\tg[Elliot]¡Sí!\nHemos venido por si necesitabas ayuda buscando.
+\tg[Alba]Vale, ¿qué os parece si nos dividimos lo que queda?\nYo revisaré esta orilla.
+\tg[Alba]Vale, ¿qué os parece si nos dividimos lo que queda?\nYo revisaré esta orilla.
+\tg[Elliot]¡Desde luego!\nVamos, \PN.
+\tg[Elliot]¡Desde luego!\nVamos, \PN.
+\tg[Alba]Tengo que hacerlo...\nTengo que encontrar a Uxie.
+\tg[Alba]Tengo que hacerlo...\nTengo que encontrar a Uxie.
+\tg[Alba]Si no, Jeremiah, Teresa y sus Pokémon...\n¡No pueden acabar así!
+\tg[Alba]Si no, Jeremiah, Teresa y sus Pokémon...\n¡No pueden acabar así!
+\tg[Alba]¿Eh?\nEspera, el agua del lago está...
+\tg[Alba]¿Eh?\nEspera, el agua del lago está...
+\w[speech hgss 3]\tg[Alba]Quién...\n¿Quién eres tú?
+\w[speech hgss 3]\tg[Alba]Quién...\n¿Quién eres tú?
+\w[speech hgss 3]\tg[Alba]\..\..\..\n\..\..\..
+\w[speech hgss 3]\tg[Alba]\..\..\..\n\..\..\..
+\w[speech hgss 3]\tg[Alba](Está intentando darme la mano.\nNo sé si debería...)
+\w[speech hgss 3]\tg[Alba](Está intentando darme la mano.\nNo sé si debería...)
+\tg[Alba]¡AAAAAAAAAH!
+\tg[Alba]¡AAAAAAAAAH!
+¡ME PERDÍOOOOO!
+¡ME PERDÍOOOOO!
+¿Tú tambén tas perdío?
+¿Tú tambén tas perdío?
+\tg[Alba]¿E-elliot?\n¿\PN?
+\tg[Alba]¿E-elliot?\n¿\PN?
+\tg[Elliot]¿Estás bien, Alba?\nParecía que estabas ensimismada mirando el lago, ¡no respondías a nada!
+\tg[Elliot]¿Estás bien, Alba?\nParecía que estabas ensimismada mirando el lago, ¡no respondías a nada!
+\tg[Elliot]Y estás sujetando algo con las manos...\n¿Qué es?
+\tg[Elliot]Y estás sujetando algo con las manos...\n¿Qué es?
+\tg[Alba]¡Ah, sí!\n¡Encontré a Uxie y me lo dio!
+\tg[Alba]¡Ah, sí!\n¡Encontré a Uxie y me lo dio!
+\tg[Elliot]¿¡En serio!?\n¡Genial, entonces ya solo queda la reliquia de Mesprit!
+\tg[Elliot]¿¡En serio!?\n¡Genial, entonces ya solo queda la reliquia de Mesprit!
+\tg[Alba]Tómalo tú, \PN.\NEn cierto modo... lo he conseguido gracias a ti.
+\tg[Alba]Tómalo tú, \PN.\NEn cierto modo... lo he conseguido gracias a ti.
+\tg[Elliot]Oí rumores de Mesprit en la Ruta 12, al norte de Pueblo Amberino.\n¡Dirijámonos ahora allí!
+\tg[Elliot]Oí rumores de Mesprit en la Ruta 12, al norte de Pueblo Amberino.\n¡Dirijámonos ahora allí!
+¿¡Dónde!? ¿Dónde está Uxie?
+¿¡Dónde!? ¿Dónde está Uxie?
+Al parecer Uxie puede borrarte la memoria. \n¡Igual lo he visto, pero me ha hecho olvidarlo!
+Al parecer Uxie puede borrarte la memoria. \n¡Igual lo he visto, pero me ha hecho olvidarlo!
+¡El Charjabug ha descargado su energía!\nParece que ahora está bien.
+¡El Charjabug ha descargado su energía!\nParece que ahora está bien.
+Es un cofre solitario.\nCreo que quiere que lo deje solo.
+Es un cofre solitario.\nCreo que quiere que lo deje solo.
+\w[speech hgss 3]\tg[???]...\N...
+\w[speech hgss 3]\tg[???]...\N...
+\w[speech hgss 3]\tg[???]...\N¿Mmmm?
+\w[speech hgss 3]\tg[???]...\N¿Mmmm?
+\w[speech hgss 3]\tg[???]¿Necesitas algo?\nUn segundo, por favor.
+\w[speech hgss 3]\tg[???]¿Necesitas algo?\nUn segundo, por favor.
+\tg[???]...\nListo.
+\tg[???]...\nListo.
+\tg[???]Así que eres un entrenador.
+\tg[???]Así que eres un entrenador.
+\tg[???]Así que eres una entrenadora.
+\tg[???]Así que eres una entrenadora.
+\tg[???]¿Venías a por este Charjabug?\nPuedes llévartelo, se encuentra bien.
+\tg[???]¿Venías a por este Charjabug?\nPuedes llévartelo, se encuentra bien.
+\tg[???]Ya he descargado toda la energía que tenía acumulada.\nParece más calmado.
+\tg[???]Ya he descargado toda la energía que tenía acumulada.\nParece más calmado.
+\tg[???]Espera un momento.\n¿Eso que llevas implementado en la Pokédex es...?
+\tg[???]Espera un momento.\n¿Eso que llevas implementado en la Pokédex es...?
+\tg[???]No me equivoco.\nConque tú también posees una copia del Sistema Realidea...\nYa veo, debió ser aquella persona.
+\tg[???]No me equivoco.\nConque tú también posees una copia del Sistema Realidea...\nYa veo, debió ser aquella persona.
+\tg[???]Me llamo Teresa.\nActualmente dirijo a los miembros de la corporación Metis.
+\tg[???]Me llamo Teresa.\nActualmente dirijo a los miembros de la corporación Metis.
+\tg[Teresa]Me encantaría quedarme a charlar un poco contigo, pero por desgracia llevo algo de prisa.\nEspero que no te importe.
+\tg[Teresa]Me encantaría quedarme a charlar un poco contigo, pero por desgracia llevo algo de prisa.\nEspero que no te importe.
+\tg[Teresa]Ah, y a ser posible agradecería que te mantuvieses al margen.\nYa sabes a qué me refiero.
+\tg[Teresa]Ah, y a ser posible agradecería que te mantuvieses al margen.\nYa sabes a qué me refiero.
+\tg[Teresa]Y dile a la persona que te dio el Sistema que no nos hemos olvidado de él.\nEs más, estamos deseando volverle a ver...
+\tg[Teresa]Y dile a la persona que te dio el Sistema que no nos hemos olvidado de él.\nEs más, estamos deseando volverle a ver...
+Sí
+Sí
+No
+No
+[Map8]
+Al este -> Bosque Lucerna
+Al este -> Bosque Lucerna
+¡Hola, amigo!\n¿No te hace una batalla?
+¡Hola, amigo!\n¿No te hace una batalla?
+¡Hola, amiga!\n¿No te hace una batalla?
+¡Hola, amiga!\n¿No te hace una batalla?
+¡Es culpa de mi mochila, que pesa demasiado!
+¡Es culpa de mi mochila, que pesa demasiado!
+¿Que qué llevo en mi mochila?\nJe, je, je...
+¿Que qué llevo en mi mochila?\nJe, je, je...
+¡No debo seguir avanzando todavía!
+¡No debo seguir avanzando todavía!
+¡Has atrapado al Purrloin!
+¡Has atrapado al Purrloin!
+¡Recuperaste la pulsera! Hora de devolverla.
+¡Recuperaste la pulsera! Hora de devolverla.
+Creo que ya tenemos suficientes.
+Creo que ya tenemos suficientes.
+¿Por qué tardan tanto?\n¡No puede ser tan difícil capturar esos Pokémon!
+¿Por qué tardan tanto?\n¡No puede ser tan difícil capturar esos Pokémon!
+¡Hola!\n¿Has probado a plantas bayas?
+¡Hola!\n¿Has probado a plantas bayas?
+Si usas abono, creceran aún más rapido.\n¡Toma uno!
+Si usas abono, creceran aún más rapido.\n¡Toma uno!
+Nunca está de más recoger algunas bayas.\n¡Quién sabe cuando pueden hacer falta!
+Nunca está de más recoger algunas bayas.\n¡Quién sabe cuando pueden hacer falta!
+Son más escurridizos de lo que creía...
+Son más escurridizos de lo que creía...
+¡Hola, hola!\n¿Qué haces por aquí a estas horas, muchacho?
+¡Hola, hola!\n¿Qué haces por aquí a estas horas, muchacho?
+¡Hola, hola!\n¿Qué haces por aquí a estas horas, muchacha?
+¡Hola, hola!\n¿Qué haces por aquí a estas horas, muchacha?
+¡Ven, siéntate!\nSiempre tengo alguna que otra historia que contar a la luz de la hoguera.
+¡Ven, siéntate!\nSiempre tengo alguna que otra historia que contar a la luz de la hoguera.
+Te hablaré de la leyenda del Bosque Lucerna. \n¿Sabías que ese lugar está estrechamente ligado a Uxie?
+Te hablaré de la leyenda del Bosque Lucerna. \n¿Sabías que ese lugar está estrechamente ligado a Uxie?
+Cuentan que, hace mucho tiempo, una civilización de Pokémon y humanos habitaba en las profundidades del bosque.\nPor aquel entonces, ambas especies vivían en completa armonía.
+Cuentan que, hace mucho tiempo, una civilización de Pokémon y humanos habitaba en las profundidades del bosque.\nPor aquel entonces, ambas especies vivían en completa armonía.
+Uxie es conocido como el ser de la sabiduría. \nPara compartir su don con los demás, cedió parte de su poder en la forma de una reliquia.
+Uxie es conocido como el ser de la sabiduría. \nPara compartir su don con los demás, cedió parte de su poder en la forma de una reliquia.
+Sin embargo, cuando los fuertes vínculos entre Pokémon y humanos empezaron a disiparse, Uxie se vio obligado a recuperar la reliquia y esconderla de los hombres.
+Sin embargo, cuando los fuertes vínculos entre Pokémon y humanos empezaron a disiparse, Uxie se vio obligado a recuperar la reliquia y esconderla de los hombres.
+Dicen que, de encontrar a alguien que pueda reafirmar los lazos entre humanos y Pokémon una vez más, Uxie abriría el camino hacia él y haría entrega de de su don.
+Dicen que, de encontrar a alguien que pueda reafirmar los lazos entre humanos y Pokémon una vez más, Uxie abriría el camino hacia él y haría entrega de de su don.
+Interesante, ¿no crees?\nEs una leyenda que cuentan los viajeros.
+Interesante, ¿no crees?\nEs una leyenda que cuentan los viajeros.
+Aunque, si te soy sincero, es algo dificíl de creer.\nPara empezar, de haber existido una civilización en el bosque, las ruinas deberían seguir ahí, ¿no?
+Aunque, si te soy sincero, es algo dificíl de creer.\nPara empezar, de haber existido una civilización en el bosque, las ruinas deberían seguir ahí, ¿no?
+Además, Uxie es un Pokémon conocido por habitar en lagos.\nSi bien es cierto que en el bosque hay uno, nadie lo ha visto en siglos.
+Además, Uxie es un Pokémon conocido por habitar en lagos.\nSi bien es cierto que en el bosque hay uno, nadie lo ha visto en siglos.
+¿Quizá borra la memoria de todo aquel que lo haya visto?\n¿O simplemente serán todo patrañas?
+¿Quizá borra la memoria de todo aquel que lo haya visto?\n¿O simplemente serán todo patrañas?
+Ni siquiera se sabe a ciencia cierta qué era exactamente esa reliquia ni qué efecto tenía... \n¡Es todo muy extraño!
+Ni siquiera se sabe a ciencia cierta qué era exactamente esa reliquia ni qué efecto tenía... \n¡Es todo muy extraño!
+Bueno, muchacho.\nMe alegro de haber compartido este rato contigo.
+Bueno, muchacho.\nMe alegro de haber compartido este rato contigo.
+Bueno, muchacha.\nMe alegro de haber compartido este rato contigo.
+Bueno, muchacha.\nMe alegro de haber compartido este rato contigo.
+Si alguna vez te encuentras con algún viajero como yo que tenga algo que contar, no dudes en escucharle.\n¡Nuestras historias son las mejores!
+Si alguna vez te encuentras con algún viajero como yo que tenga algo que contar, no dudes en escucharle.\n¡Nuestras historias son las mejores! 
+Oh, está bien.\n¡Nos vemos por ahí, viajero!
+Oh, está bien.\n¡Nos vemos por ahí, viajero!
+\tg[Simon]Los molinos siguen en marcha...\nY la central tiene luz.
+\tg[Simon]Los molinos siguen en marcha...\nY la central tiene luz.
+\tg[Simon]No tienen excusa.\nSea quien sea que esté jugueteando con el suministro eléctrico, se va a enterar de lo que vale un peine.
+\tg[Simon]No tienen excusa.\nSea quien sea que esté jugueteando con el suministro eléctrico, se va a enterar de lo que vale un peine.
+\tg[Owen]Eh, profesor...
+\tg[Owen]Eh, profesor...
+\tg[Simon]¡AAAAAH!\NMaldición, si solo son pelo-Zanama y pelo-Tamato...
+\tg[Simon]¡AAAAAH!\NMaldición, si solo son pelo-Zanama y pelo-Tamato...
+\tg[Simon]¡AAAAAH!\NMaldición, si solo son pelo-Zanama y pelo-Pinia...
+\tg[Simon]¡AAAAAH!\NMaldición, si solo son pelo-Zanama y pelo-Pinia...
+\tg[Owen]<fs=20>¿Ahora también llama a \PN así...?</fs>\NProfesor Simon, creo haber visto a unos tipos muy sospechosos por aquí antes.
+\tg[Owen]<fs=20>¿Ahora también llama a \PN así...?</fs>\NProfesor Simon, creo haber visto a unos tipos muy sospechosos por aquí antes.
+\tg[Owen]<fs=20>¿Ahora también tiene un mote para \PN...?</fs>\NProfesor Simon, creo haber visto a unos tipos muy sospechosos por aquí antes.
+\tg[Owen]<fs=20>¿Ahora también tiene un mote para \PN...?</fs>\NProfesor Simon, creo haber visto a unos tipos muy sospechosos por aquí antes.
+\tg[Owen]Es bastante probable que fueran ellos los culpables.\nAunque igual deberíamos llamar a la policía...
+\tg[Owen]Es bastante probable que fueran ellos los culpables.\nAunque igual deberíamos llamar a la policía...
+\tg[Simon]¡Bah!\nQuedaos aquí, esto lo soluciono yo bien rápido.
+\tg[Simon]¡Bah!\nQuedaos aquí, esto lo soluciono yo bien rápido.
+\tg[Owen]¡Ah!\N¡Espere, profesor!
+\tg[Owen]¡Ah!\N¡Espere, profesor!
+¡Claro!
+¡Claro!
+No, tengo prisa
+No, tengo prisa
+[Map9]
+Está lleno de ropa íntima de color rosa...\nLa verdad es que no debería estar abriendo cajones ajenos.
+Está lleno de ropa íntima de color rosa...\nLa verdad es que no debería estar abriendo cajones ajenos.
+Solo es un plato llano.
+Solo es un plato llano.
+¡Un peluche de Treecko!
+¡Un peluche de Treecko!
+¡Un peluche de Manaphy!
+¡Un peluche de Manaphy!
+\tg[Investigador]¡A mí no me mires, yo no tuve nada que ver!
+\tg[Investigador]¡A mí no me mires, yo no tuve nada que ver!
+\tg[Investigador]Por muy mal que parezca que se lleven, esos dos hacen muy buenas migas.
+\tg[Investigador]Por muy mal que parezca que se lleven, esos dos hacen muy buenas migas.
+\tg[Investigador]Yo mismo he visto cómo el Chatot se hace un ovillo en su cabeza por la noche para dormir...\nEs de lo más curioso.
+\tg[Investigador]Yo mismo he visto cómo el Chatot se hace un ovillo en su cabeza por la noche para dormir...\nEs de lo más curioso.
+\tg[Investigador]Me pregunto si la profesora se aguanta el comentar lo mucho que le pesa la cabeza por culpa de su Chatot...
+\tg[Investigador]Me pregunto si la profesora se aguanta el comentar lo mucho que le pesa la cabeza por culpa de su Chatot...
+\tg[Investigador]¿La profesora?\nSe ha ido a Ciudad Anatasa a comprar más peluches para ponerlos en su cuarto.
+\tg[Investigador]¿La profesora?\nSe ha ido a Ciudad Anatasa a comprar más peluches para ponerlos en su cuarto.
+¿Quieres a Gulliby, el Pokémon de tipo Agua?
+¿Quieres a Gulliby, el Pokémon de tipo Agua?
+¡Ya has elegido un Pokémon!
+¡Ya has elegido un Pokémon!
+Es un Gulliby de la profesora.
+Es un Gulliby de la profesora.
+¿Quieres a Mousic, el Pokémon de tipo Fuego?
+¿Quieres a Mousic, el Pokémon de tipo Fuego?
+Es un Mousic de la profesora.
+Es un Mousic de la profesora.
+¡Un peluche de Lucario!
+¡Un peluche de Lucario!
+Debería ayudar a la profesora.
+Debería ayudar a la profesora.
+Me da pena la profesora.\nHaré el esfuerzo de ayudarla.
+Me da pena la profesora.\nHaré el esfuerzo de ayudarla.
+¿Quieres a Meadew, el Pokémon de tipo planta?
+¿Quieres a Meadew, el Pokémon de tipo planta?
+Es un Meadew de la profesora.
+Es un Meadew de la profesora.
+\tg[Haya]Uf...\nParece que se ha calmado.
+\tg[Haya]Uf...\nParece que se ha calmado.
+\tg[Haya]Muchas gracias, te debo una muy grande.\nTuve un despiste esta mañana... y olvidé darle de comer a mi Chatot.
+\tg[Haya]Muchas gracias, te debo una muy grande.\nTuve un despiste esta mañana... y olvidé darle de comer a mi Chatot.
+\tg[Haya]Cuando no come...\nEn fin, tú mismo has podido comprobar lo que ocurre.
+\tg[Haya]Cuando no come...\nEn fin, tú mismo has podido comprobar lo que ocurre.
+\tg[Haya]Cuando no come...\nEn fin, tú misma has podido comprobar lo que ocurre.
+\tg[Haya]Cuando no come...\nEn fin, tú misma has podido comprobar lo que ocurre.
+\tg[Investigador]<fs=20>¿Esta mañana?\nSi se le olvida siempre, normalmente soy yo quien da de comer a los Pokémon...</fs>
+\tg[Investigador]<fs=20>¿Esta mañana?\nSi se le olvida siempre, normalmente soy yo quien da de comer a los Pokémon...</fs>
+\tg[Haya]Ay, venga.\nNo seas así...
+\tg[Haya]Ay, venga.\nNo seas así...
+\tg[Haya]Un despiste lo puede tener cualquiera, ¿no?\n¡Te prometo que tendrás tu comedero lleno de ahora en adelante!
+\tg[Haya]Un despiste lo puede tener cualquiera, ¿no?\n¡Te prometo que tendrás tu comedero lleno de ahora en adelante!
+\tg[Chatot]¡Cruac!\n¿Quimidiri llini?
+\tg[Chatot]¡Cruac!\n¿Quimidiri llini?
+\tg[Haya]¡Eso es! Buen chico.\n<fs=20>No veas cómo pesa el condenado...</fs>
+\tg[Haya]¡Eso es! Buen chico.\n<fs=20>No veas cómo pesa el condenado...</fs>
+\tg[Haya]¡Ah, casi me olvidaba de ti!\nEres el chico que vive en la casa de al lado, ¿no?
+\tg[Haya]¡Ah, casi me olvidaba de ti!\nEres el chico que vive en la casa de al lado, ¿no?
+\tg[Haya]¡Ah, casi me olvidaba de ti!\nEres la chica que vive en la casa de al lado, ¿no?
+\tg[Haya]¡Ah, casi me olvidaba de ti!\nEres la chica que vive en la casa de al lado, ¿no?
+\tg[Haya]¿Podrías recordarme tu nombre? \n\..\..\..
+\tg[Haya]¿Podrías recordarme tu nombre? \n\..\..\..
+\tg[Haya]Ah, claro.\n¡Eres \PN!
+\tg[Haya]Ah, claro.\n¡Eres \PN!
+\tg[Haya]¡Pues dime!\nViniste porque necesitabas algo, ¿no?
+\tg[Haya]¡Pues dime!\nViniste porque necesitabas algo, ¿no?
+\tg[Haya]Haré todo lo que pueda para ayudarte. \nNo te cortes.
+\tg[Haya]Haré todo lo que pueda para ayudarte. \nNo te cortes.
+\tg[Haya]¿Conque quieres un Pokémon para viajar por la región?\nYa veo...
+\tg[Haya]¿Conque quieres un Pokémon para viajar por la región?\nYa veo...
+\tg[Haya]Lo cierto es que ese Mousic parece haberte pillado bastante cariño...\nAsí que...
+\tg[Haya]Lo cierto es que ese Mousic parece haberte pillado bastante cariño...\nAsí que...
+\tg[Haya]Lo cierto es que ese Meadew parece haberte pillado bastante cariño...\nAsí que...
+\tg[Haya]Lo cierto es que ese Meadew parece haberte pillado bastante cariño...\nAsí que...
+\tg[Haya]Lo cierto es que ese Gulliby parece haberte pillado bastante cariño...\nAsí que...
+\tg[Haya]Lo cierto es que ese Gulliby parece haberte pillado bastante cariño...\nAsí que...
+\tg[Haya]¡Claro!\n¿Por qué no?
+\tg[Haya]¡Claro!\n¿Por qué no?
+\tg[Haya]Puedes quedártelo...\n¡Pero con una condición!
+\tg[Haya]Puedes quedártelo...\n¡Pero con una condición!
+\tg[Haya]Ay, ay, ay.\n¿Dónde lo puse?
+\tg[Haya]Ay, ay, ay.\n¿Dónde lo puse?
+\tg[Haya]Esto no...\nEsto tampoco...
+\tg[Haya]Esto no...\nEsto tampoco...
+\tg[Haya]¡Ah, lo tengo!\nTe pillé.
+\tg[Haya]¡Ah, lo tengo!\nTe pillé.
+\tg[Haya]¡Tendrás que llevarte esto contigo!\nSe trata de una Pokédex.
+\tg[Haya]¡Tendrás que llevarte esto contigo!\nSe trata de una Pokédex.
+\tg[Haya]Con ella registrarás todos los Pokémon que veas y atrapes.\nMe haría mucha ilusión que vinieras a enseñármela de vez en cuando.
+\tg[Haya]Con ella registrarás todos los Pokémon que veas y atrapes.\nMe haría mucha ilusión que vinieras a enseñármela de vez en cuando.
+\tg[Haya]¡Incluso puedo ofrecerte alguna que otra recompensa por tu trabajo!\nNo suena del todo mal, ¿verdad?
+\tg[Haya]¡Incluso puedo ofrecerte alguna que otra recompensa por tu trabajo!\nNo suena del todo mal, ¿verdad?
+\tg[Haya]Sobre tu Pokémon, creo que estará más contento si lo mantienes fuera de su Pokéball. \nPero no te olvides de darle de comer de vez en cuando, ¿vale?
+\tg[Haya]Sobre tu Pokémon, creo que estará más contento si lo mantienes fuera de su Pokéball. \nPero no te olvides de darle de comer de vez en cuando, ¿vale?
+\tg[Haya]Háblale siempre que puedas.\nDependiendo de donde estés, igual reacciona de una manera u otra...
+\tg[Haya]Háblale siempre que puedas.\nDependiendo de donde estés, igual reacciona de una manera u otra...
+\tg[Haya]¡Te deseo lo mejor en tu aventura! \nEstoy segura de que harás grandes logros.
+\tg[Haya]¡Te deseo lo mejor en tu aventura! \nEstoy segura de que harás grandes logros.
+\tg[Chatot]¡Hirís grindis ligris!\n¡Cruac!
+\tg[Chatot]¡Hirís grindis ligris!\n¡Cruac!
+\tg[Haya]¡Je, je, je!\n¡No te creo!
+\tg[Haya]¡Je, je, je!\n¡No te creo!
+\tg[Haya]No seas tímido.\nSé que has venido por algo.
+\tg[Haya]No seas tímido.\nSé que has venido por algo.
+\tg[Haya]No seas tímida.\nSé que has venido por algo.
+\tg[Haya]No seas tímida.\nSé que has venido por algo.
+\tg[Haya]Te lo vuelvo a preguntar.\n¿En qué puedo ayudarte?
+\tg[Haya]Te lo vuelvo a preguntar.\n¿En qué puedo ayudarte?
+\tg[Chatot]¡Sirti in ti ivintiri!\n¡Cruac!
+\tg[Chatot]¡Sirti in ti ivintiri!\n¡Cruac!
+¡Un peluche de Glameow!
+¡Un peluche de Glameow!
+¡Oh, Arceus mío!\n¡Esta papelera está llena de... papeles!
+¡Oh, Arceus mío!\n¡Esta papelera está llena de... papeles!
+No debo mirar en los frigoríficos ajenos, por muy tentador que sea.
+No debo mirar en los frigoríficos ajenos, por muy tentador que sea.
+\tg[Haya]¡A-ayúdame, por favor!\n¡No te quedes ahí mirando!
+\tg[Haya]¡A-ayúdame, por favor!\n¡No te quedes ahí mirando!
+\tg[Haya]¡Hola, \PN!\N¿Quieres que evalúe tu Pokédex?
+\tg[Haya]¡Hola, \PN!\N¿Quieres que evalúe tu Pokédex?
+\tg[Haya]¡Has visto \v[1] Pokémon y atrapado \v[2]!
+\tg[Haya]¡Has visto \v[1] Pokémon y atrapado \v[2]!
+\tg[Haya]¡Guau, has atrapado 10 Pokémon distintos!
+\tg[Haya]¡Guau, has atrapado 10 Pokémon distintos!
+\tg[Haya]¡Qué chachi!\n¡Toma, por tu esfuerzo!
+\tg[Haya]¡Qué chachi!\n¡Toma, por tu esfuerzo!
+\tg[Haya]¡Te daré un premio si consigues atrapar 10 Pokémon distintos!
+\tg[Haya]¡Te daré un premio si consigues atrapar 10 Pokémon distintos!
+\tg[Haya]¡Vuelve a verme cuando Hayas capturado más Pokémon!
+\tg[Haya]¡Vuelve a verme cuando Hayas capturado más Pokémon!
+\tg[Chatot]¡Quiptiridi mís Pikímin!\n¡Cruac!
+\tg[Chatot]¡Quiptiridi mís Pikímin!\n¡Cruac!
+\tg[Haya]¡Guau, has atrapado 30 Pokémon distintos!
+\tg[Haya]¡Guau, has atrapado 30 Pokémon distintos!
+\tg[Haya]¡Te daré un premio si consigues atrapar 30 Pokémon distintos!
+\tg[Haya]¡Te daré un premio si consigues atrapar 30 Pokémon distintos!
+\tg[Haya]¡Si los capturas a todos, te haré entrega de un diplomita muy chulo!
+\tg[Haya]¡Si los capturas a todos, te haré entrega de un diplomita muy chulo!
+\tg[Haya]¡N-no me mires así!\n¡Que era broma!
+\tg[Haya]¡N-no me mires así!\n¡Que era broma!
+\tg[Chatot]¡Iri brimi!\n¡Cruac!
+\tg[Chatot]¡Iri brimi!\n¡Cruac!
+\tg[Haya]¡Guau, has atrapado 100 Pokémon distintos!
+\tg[Haya]¡Guau, has atrapado 100 Pokémon distintos!
+\tg[Haya]¡Te daré un premio si consigues atrapar 100 Pokémon distintos!
+\tg[Haya]¡Te daré un premio si consigues atrapar 100 Pokémon distintos!
+\tg[Haya]¡Vas muy bien, \PN!\n¡A este paso, tendré lista mi investigación en un periquito!
+\tg[Haya]¡Vas muy bien, \PN!\n¡A este paso, tendré lista mi investigación en un periquito!
+\tg[Haya]Espera...\n¿Qué es un periquito?
+\tg[Haya]Espera...\n¿Qué es un periquito?
+\tg[Chatot]¡Piriquiti!\n¡Cruac!
+\tg[Chatot]¡Piriquiti!\n¡Cruac!
+\tg[Haya]¡No se me ocurre nada más que darte de momento!\nVuelve luego, ¿vale?
+\tg[Haya]¡No se me ocurre nada más que darte de momento!\nVuelve luego, ¿vale?
+¡Un peluche de Happiny!
+¡Un peluche de Happiny!
+La papelera no contiene nada.
+La papelera no contiene nada.
+Una tetera.\nVacía.
+Una tetera.\nVacía.
+\tg[Haya]¡Ay, ay, ay!\n¡Que alguien haga algooo!
+\tg[Haya]¡Ay, ay, ay!\n¡Que alguien haga algooo!
+\tg[Investigador]¡Ojalá pudiera!\n¡No me deja acercarme!
+\tg[Investigador]¡Ojalá pudiera!\n¡No me deja acercarme!
+\tg[Haya]Oh, ¿ya te has calmado?\nYa está, ya pasó...
+\tg[Haya]Oh, ¿ya te has calmado?\nYa está, ya pasó...
+\tg[Haya]¡NOOOOOOOOOOOOOOOOO!
+\tg[Haya]¡NOOOOOOOOOOOOOOOOO!
+\tg[Haya]¡Oh, hay alguien!\n¡Tú, por favor!
+\tg[Haya]¡Oh, hay alguien!\n¡Tú, por favor!
+\tg[Haya]En la salita a tu derecha hay algunos Pokémon.\n¡Usa uno de ellos para tranquilizar al Chatot, rápidooo!
+\tg[Haya]En la salita a tu derecha hay algunos Pokémon.\n¡Usa uno de ellos para tranquilizar al Chatot, rápidooo!
+\tg[Simon]¡Pero si todo esto es culpa tuya!\n¡Hazte responsable y sacrifícate al pajarraco para que pare de una vez!
+\tg[Simon]¡Pero si todo esto es culpa tuya!\n¡Hazte responsable y sacrifícate al pajarraco para que pare de una vez!
+\tg[Haya]¿¡Q-qué me sacrifique!?\n¡Esto no es un ritual!
+\tg[Haya]¿¡Q-qué me sacrifique!?\n¡Esto no es un ritual!
+\tg[Simon]¡\pn, maldita sea!\n¡Ya era hora!
+\tg[Simon]¡\pn, maldita sea!\n¡Ya era hora!
+\tg[Simon]¡Échanos un cable con el Chatot este de las narices!
+\tg[Simon]¡Échanos un cable con el Chatot este de las narices!
+\tg[Haya]¿Ya... está...?\n¿Se ha acabado?
+\tg[Haya]¿Ya... está...?\n¿Se ha acabado?
+\tg[Simon]Eso parece.\nBájate de una vez, que pesas mucho.
+\tg[Simon]Eso parece.\nBájate de una vez, que pesas mucho.
+\tg[Simon]Ouch.\nQué cruel\..\..\..
+\tg[Simon]Ouch.\nQué cruel\..\..\..
+\tg[Simon]Eres un maldito desastre.\n¿Siquiera te tomas en serio tu trabajo?
+\tg[Simon]Eres un maldito desastre.\n¿Siquiera te tomas en serio tu trabajo?
+\tg[Haya]¡Pues claro que sí!\n¡Solo soy un poco despistada!
+\tg[Haya]¡Pues claro que sí!\n¡Solo soy un poco despistada!
+\tg[Haya]A veces se me olvida darle de comer al Chatot.\n¡Pero solo algunas veces!
+\tg[Haya]A veces se me olvida darle de comer al Chatot.\n¡Pero solo algunas veces!
+\tg[Investigador]Discutible, la verdad.
+\tg[Investigador]Discutible, la verdad.
+\tg[Haya]¿Cómo dices?
+\tg[Haya]¿Cómo dices?
+\tg[Investigador]No, nada.
+\tg[Investigador]No, nada.
+\tg[Simon]Por cierto, \PN, ¿no ha venido Owen contigo?
+\tg[Simon]Por cierto, \PN, ¿no ha venido Owen contigo?
+\tg[Owen]Agh\..\..\..\nMucha\...\..\.. cuesta\..\..\..
+\tg[Owen]Agh\..\..\..\nMucha\...\..\.. cuesta\..\..\..
+\tg[Owen]¡B-buenas!\nMe llamo Owen, encantado.
+\tg[Owen]¡B-buenas!\nMe llamo Owen, encantado.
+\tg[Owen]Esto\..\..\..\n¿Ese Chatot no tiene cara, como\..\..\.. de muy mala leche?
+\tg[Owen]Esto\..\..\..\n¿Ese Chatot no tiene cara, como\..\..\.. de muy mala leche?
+\tg[Haya]Ah, ni caso.\n¡Yo soy Haya, encantada de conocerte también!
+\tg[Haya]Ah, ni caso.\n¡Yo soy Haya, encantada de conocerte también!
+\tg[Haya]Este es Simon, un antiguo amigo mío.\n¡Éramos vecinos, incluso!
+\tg[Haya]Este es Simon, un antiguo amigo mío.\n¡Éramos vecinos, incluso!
+\tg[Haya]Se fue a investigar no sé qué y luego desapareció por ahí.\n¡Me alegra que haya vuelto!
+\tg[Haya]Se fue a investigar no sé qué y luego desapareció por ahí.\n¡Me alegra que haya vuelto!
+\tg[Simon]Genial, solo que nadie te ha pedido que me presentes ni cuentes mi vida.\nY ya me conocen, maldita sea.
+\tg[Simon]Genial, solo que nadie te ha pedido que me presentes ni cuentes mi vida.\nY ya me conocen, maldita sea.
+\tg[Haya]Ah, lo siento\..\..\..\nPerdón\..\..\..
+\tg[Haya]Ah, lo siento\..\..\..\nPerdón\..\..\..
+\tg[Owen]Tranquila, profesora.\nPor experiencia propia, te acabas acostumbrando.
+\tg[Owen]Tranquila, profesora.\nPor experiencia propia, te acabas acostumbrando.
+\tg[Owen]Más o menos\..\..\..\nJa, ja, ja.
+\tg[Owen]Más o menos\..\..\..\nJa, ja, ja.
+\tg[Simon]Bueno, ya está bien.\nVamos al grano.
+\tg[Simon]Bueno, ya está bien.\nVamos al grano.
+\tg[Simon]He analizado el código del Sistema Realidea de Metis Corp. y he encontrado algo extremadamente sospechoso.
+\tg[Simon]He analizado el código del Sistema Realidea de Metis Corp. y he encontrado algo extremadamente sospechoso.
+\tg[Simon]Como era de esperar\..\..\..\nEl Sistema está diseñado para que, si de primeras no hay un vínculo entre entrenador y Pokémon, se cree uno falso para acceder a sus funciones.
+\tg[Simon]Como era de esperar\..\..\..\nEl Sistema está diseñado para que, si de primeras no hay un vínculo entre entrenador y Pokémon, se cree uno falso para acceder a sus funciones.
+\tg[Simon]Y después, tal y como dijo Teresa, el propio Sistema deshará esos falsos vínculos pasado un cierto periodo de tiempo.\nHasta ahí todo bien, supongo.
+\tg[Simon]Y después, tal y como dijo Teresa, el propio Sistema deshará esos falsos vínculos pasado un cierto periodo de tiempo.\nHasta ahí todo bien, supongo.
+\tg[Simon]El problema es cierta parte de código que no tiene sentido que esté ahí.\nEs un desastre y está incompleta, pero no es nada que se pueda ignorar.
+\tg[Simon]El problema es cierta parte de código que no tiene sentido que esté ahí.\nEs un desastre y está incompleta, pero no es nada que se pueda ignorar.
+\tg[Simon]Su función consiste en transferir los vínculos registrados por otros entrenadores con sus Pokémon a un único usuario.\nEn otras palabras\..\..\..
+\tg[Simon]Su función consiste en transferir los vínculos registrados por otros entrenadores con sus Pokémon a un único usuario.\nEn otras palabras\..\..\..
+\tg[Simon]Dicho usuario podría vincularse con todos los Pokémon de los entrenadores de la región eliminando por completo el vínculo con sus propietarios originales, ya fuera falso o no.
+\tg[Simon]Dicho usuario podría vincularse con todos los Pokémon de los entrenadores de la región eliminando por completo el vínculo con sus propietarios originales, ya fuera falso o no.
+\tg[Owen]¿E-estoy entendiendo bien?\n¿¡Estás diciendo que lo que quieren es apropiarse de todos los Pokémon de la región!?
+\tg[Owen]¿E-estoy entendiendo bien?\n¿¡Estás diciendo que lo que quieren es apropiarse de todos los Pokémon de la región!?
+\tg[Owen]¡Entonces\..\..\..!\n¡Teresa y Jeremiah nos han estado mintiendo!
+\tg[Owen]¡Entonces\..\..\..!\n¡Teresa y Jeremiah nos han estado mintiendo!
+\tg[Owen]Ellos son los únicos que desarrollan el Sistema Realidea de Metis Corp., ¿verdad?\n¡No hay forma de que hayan hecho algo así sin querer!
+\tg[Owen]Ellos son los únicos que desarrollan el Sistema Realidea de Metis Corp., ¿verdad?\n¡No hay forma de que hayan hecho algo así sin querer!
+\tg[Owen]Pero todavía no es seguro que vayan a utilizar ese código, ¿no?\nY ni siquiera está completo.
+\tg[Owen]Pero todavía no es seguro que vayan a utilizar ese código, ¿no?\nY ni siquiera está completo.
+\tg[Simon]Sí, cierto\..\..\..\nPero por desgracia tengo pruebas de que sí podrían tener planeado terminarlo y ejecutarlo.
+\tg[Simon]Sí, cierto\..\..\..\nPero por desgracia tengo pruebas de que sí podrían tener planeado terminarlo y ejecutarlo.
+\tg[Simon]Para llevar a cabo algo así, el Sistema no solo necesita una gran cantidad de energía.\nTambién debe ser extremadamente potente.
+\tg[Simon]Para llevar a cabo algo así, el Sistema no solo necesita una gran cantidad de energía.\nTambién debe ser extremadamente potente.
+\tg[Simon]Por una parte ya era sospechoso que necesitasen tanta energía de la región hasta el punto de recurrir a un Celesteela en Ciudad Jade.\nEs una cantidad demasiado masiva.
+\tg[Simon]Por una parte ya era sospechoso que necesitasen tanta energía de la región hasta el punto de recurrir a un Celesteela en Ciudad Jade.\nEs una cantidad demasiado masiva.
+\tg[Simon]Y por otra\..\..\..\NHe encontrado registros de búsqueda de cierto Pokémon conocido como Manaphy.
+\tg[Simon]Y por otra\..\..\..\NHe encontrado registros de búsqueda de cierto Pokémon conocido como Manaphy.
+\tg[Haya]¡Oh, Manaphy!\n¡Yo sé algo sobre ese Pokémon!
+\tg[Haya]¡Oh, Manaphy!\n¡Yo sé algo sobre ese Pokémon!
+\tg[Haya]Tiene la capacidad de establecer un vínculo con cualquier otro Pokémon que desee, ¿verdad?\nPor eso es especial.
+\tg[Haya]Tiene la capacidad de establecer un vínculo con cualquier otro Pokémon que desee, ¿verdad?\nPor eso es especial.
+\tg[Simon]No había llegado a preguntarte, pero gracias por la información.\nEso explica por qué lo necesitan.
+\tg[Simon]No había llegado a preguntarte, pero gracias por la información.\nEso explica por qué lo necesitan.
+\tg[Simon]Quieren a Manaphy para extraer su habilidad de establecer vínculos e introducirla en el Sistema Realidea.\nCon esto y si llegan a terminan el código, el Sistema podría presentar una amenaza a todos los Pokémon y entrenadores de la región.
+\tg[Simon]Quieren a Manaphy para extraer su habilidad de establecer vínculos e introducirla en el Sistema Realidea.\nCon esto y si llegan a terminan el código, el Sistema podría presentar una amenaza a todos los Pokémon y entrenadores de la región.
+\tg[Owen]¡Entonces tenemos que encontrar a Manaphy antes que ellos a toda costa!\nPor eso estamos aquí con la profesora Haya, ¿no?
+\tg[Owen]¡Entonces tenemos que encontrar a Manaphy antes que ellos a toda costa!\nPor eso estamos aquí con la profesora Haya, ¿no?
+\tg[Simon]Efectivamente.\nSeñorita Haya, ¿dónde podemos encontrar a Manaphy?
+\tg[Simon]Efectivamente.\nSeñorita Haya, ¿dónde podemos encontrar a Manaphy?
+\tg[Haya]Ah.\nPues ni idea.
+\tg[Haya]Ah.\nPues ni idea.
+\tg[Simon]¿¡Cómo que ni idea!?\n¿¡Pero tú no te dedicabas a estudiar a los Pokémon!?
+\tg[Simon]¿¡Cómo que ni idea!?\n¿¡Pero tú no te dedicabas a estudiar a los Pokémon!?
+\tg[Haya]¿Y a mí que me cuentas?\n¿¡Cómo voy a saber el paradero de un Pokémon místico que podría estar en cualquier parte!?
+\tg[Haya]¿Y a mí que me cuentas?\n¿¡Cómo voy a saber el paradero de un Pokémon místico que podría estar en cualquier parte!?
+\tg[Haya]¡Sé que es un Pokémon acuático así que digo yo que estará en el agua!\nEn el mar, probablemente\..\..\..
+\tg[Haya]¡Sé que es un Pokémon acuático así que digo yo que estará en el agua!\nEn el mar, probablemente\..\..\..
+\tg[Haya]Pero si alguien puede saber algo sobre su ubicación precisa, entonces deberíais preguntar en Pueblo Florita.\nLos antepasados de sus habitantes solían tener vínculos con Pokémon místicos.
+\tg[Haya]Pero si alguien puede saber algo sobre su ubicación precisa, entonces deberíais preguntar en Pueblo Florita.\nLos antepasados de sus habitantes solían tener vínculos con Pokémon místicos.
+\tg[Simon]Es suficiente.\n¡Andando, \PN y Owen!
+\tg[Simon]Es suficiente.\n¡Andando, \PN y Owen!
+\tg[Simon]Yo voy a seguir investigando el código.\nVosotros tenéis que encontrar a Manaphy y pararles los pies a Metis Corp.
+\tg[Simon]Yo voy a seguir investigando el código.\nVosotros tenéis que encontrar a Manaphy y pararles los pies a Metis Corp.
+\tg[Owen]Para llegar a Pueblo Florita tenemos que pasar por Pueblo Amberino y atravesar la Ruta 13, ¿no?\n¡Voy para allá ahora mismo!
+\tg[Owen]Para llegar a Pueblo Florita tenemos que pasar por Pueblo Amberino y atravesar la Ruta 13, ¿no?\n¡Voy para allá ahora mismo!
+\tg[Simon]Y yo vuelvo a la Academia.\nAllí estaré por si necesitas algo, \PN.
+\tg[Simon]Y yo vuelvo a la Academia.\nAllí estaré por si necesitas algo, \PN.
+\tg[Haya]¡Ah, Simon!\n¿Has visto a Elliot?
+\tg[Haya]¡Ah, Simon!\n¿Has visto a Elliot?
+\tg[Haya]¡Ha crecido un montón!\nSeguro que él también se alegraría de\..\.\..
+\tg[Haya]¡Ha crecido un montón!\nSeguro que él también se alegraría de\..\.\..
+\tg[Simon]¡No!\n¡Cállate!
+\tg[Simon]¡No!\n¡Cállate!
+\tg[Haya]¡A-ah!\nNo he dicho nada malo, ¿no\..\..\..?
+\tg[Haya]¡A-ah!\nNo he dicho nada malo, ¿no\..\..\..?
+Creo que debería ayudar a la profesora.
+Creo que debería ayudar a la profesora.
+¿Enciendo el portátil?
+¿Enciendo el portátil?
+Hay datos sobre regiones lejanas.\nParecen enviados por otros profesores Pokémon.
+Hay datos sobre regiones lejanas.\nParecen enviados por otros profesores Pokémon.
+¿Apago el portátil?
+¿Apago el portátil?
+Tic, tac.\nEl tiempo corre.
+Tic, tac.\nEl tiempo corre.
+Hay muchos libros en esta estantería, pero ninguno llama mi atención.
+Hay muchos libros en esta estantería, pero ninguno llama mi atención.
+Sí
+Sí
+No
+No
+¡Quiero un Pokémon!
+¡Quiero un Pokémon!
+Solo pasaba a saludar
+Solo pasaba a saludar
+Nada, ¡ya me voy!
+Nada, ¡ya me voy!
+[Map10]
+Al este: Ruta 2
+Al este: Ruta 2
+No debería mirar en buzones ajenos.
+No debería mirar en buzones ajenos.
+¡No me interrumpas!\nEstoy jugando a mantenerle la mirada a mi Spewpa.
+¡No me interrumpas!\nEstoy jugando a mantenerle la mirada a mi Spewpa.
+Me ha ganado todas las veces pero...\n¡Esta es mi oportunidad!
+Me ha ganado todas las veces pero...\n¡Esta es mi oportunidad!
+En la torre del pueblo vive un señor muy extraño.\nHace tanto ruido ahí arriba que hay veces que me cuesta distinguir el sonido del reloj...
+En la torre del pueblo vive un señor muy extraño.\nHace tanto ruido ahí arriba que hay veces que me cuesta distinguir el sonido del reloj...
+¡Qué hermosas hortalizas!\nMenos mal que a los Pokémon salvajes no les da por pasarse por aquí a comer...
+¡Qué hermosas hortalizas!\nMenos mal que a los Pokémon salvajes no les da por pasarse por aquí a comer...
+Aun así, ojalá volviesen a vender repelentes. \nHe oído que en otros lugares los Pokémon dificultan las cosechas.
+Aun así, ojalá volviesen a vender repelentes. \nHe oído que en otros lugares los Pokémon dificultan las cosechas.
+¡Buff!
+¡Buff!
+¡Qué contenta estoy con la nueva pulsera que me ha regalado mi novio!\n¡Es tan reluciente!
+¡Qué contenta estoy con la nueva pulsera que me ha regalado mi novio!\n¡Es tan reluciente!
+¡A-ayuda!\n¡Al ladrón!
+¡A-ayuda!\n¡Al ladrón!
+Oh, ¿estás haciendo favores?\nPues verás, resulta que iba paseando tan tranquila con la pulsera nueva que me había regalado mi novio...
+Oh, ¿estás haciendo favores?\nPues verás, resulta que iba paseando tan tranquila con la pulsera nueva que me había regalado mi novio...
+De repente sentí un escalofrío...\n¡Un Purrloin salió de la nada y se la llevó!
+De repente sentí un escalofrío...\n¡Un Purrloin salió de la nada y se la llevó!
+Lo vi huir hacia la Ruta 2.\n¡Por favor, recupérala!
+Lo vi huir hacia la Ruta 2.\n¡Por favor, recupérala!
+Y ten cuidado; los Purrloin son muy listos. \n¡Tendrás que pillarle por la retaguardia si quieres atraparlo!
+Y ten cuidado; los Purrloin son muy listos. \n¡Tendrás que pillarle por la retaguardia si quieres atraparlo!
+¡Tu lista de favores ha sido actualizada!
+¡Tu lista de favores ha sido actualizada!
+Vi al Purrloin huir hacia la Ruta 2.\n¡Por favor, recupérala!
+Vi al Purrloin huir hacia la Ruta 2.\n¡Por favor, recupérala!
+¡Oh, es mi pulsera!\n¡Muchísimas gracias por recuperarla!
+¡Oh, es mi pulsera!\n¡Muchísimas gracias por recuperarla!
+Como vuelva a ver a ese Purrloin...\n¡Me lo voy a comer con patatas!
+Como vuelva a ver a ese Purrloin...\n¡Me lo voy a comer con patatas!
+Por cierto, hace poco encontré esto mientras paseaba.\nA mí no me sirve de mucho, ¡pero puede que algún día a ti sí!
+Por cierto, hace poco encontré esto mientras paseaba.\nA mí no me sirve de mucho, ¡pero puede que algún día a ti sí!
+Ya he terminado lo que el profesor quería.\nSerá mejor volver a la academia.
+Ya he terminado lo que el profesor quería.\nSerá mejor volver a la academia.
+¡Gracias por recuperar mi pulsera!
+¡Gracias por recuperar mi pulsera!
+\tg[Elliot]¡\PN!\n¿Cómo te ha ido en tus primeros combates?
+\tg[Elliot]¡\PN!\n¿Cómo te ha ido en tus primeros combates?
+\tg[Elliot]Si tus Pokémon están agotados, deberías dirigirte al Centro Pokémon para restaurar su salud.
+\tg[Elliot]Si tus Pokémon están agotados, deberías dirigirte al Centro Pokémon para restaurar su salud.
+\tg[Elliot]Por otra parte, si te has quedado sin Pociones...\nAl otro lado hay una tienda donde las venden.
+\tg[Elliot]Por otra parte, si te has quedado sin Pociones...\nAl otro lado hay una tienda donde las venden.
+\tg[Elliot]Como nuevo entrenador, supongo que querrás enfrentarte a los ocho Gimnasios para luego entrar en la Liga Pokémon.
+\tg[Elliot]Como nuevo entrenador, supongo que querrás enfrentarte a los ocho Gimnasios para luego entrar en la Liga Pokémon.
+\tg[Elliot]Como nueva entrenadora, supongo que querrás enfrentarte a los ocho Gimnasios para luego entrar en la Liga Pokémon.
+\tg[Elliot]Como nueva entrenadora, supongo que querrás enfrentarte a los ocho Gimnasios para luego entrar en la Liga Pokémon.
+\tg[Elliot]Tengo entendido que el primero está en Ciudad Cornalina, algo lejos de aquí.
+\tg[Elliot]Tengo entendido que el primero está en Ciudad Cornalina, algo lejos de aquí.
+\tg[Elliot]Además, he oído que necesitas un carnet de entrenador para poder presentarte ante los líderes...
+\tg[Elliot]Además, he oído que necesitas un carnet de entrenador para poder presentarte ante los líderes...
+\tg[Elliot]Ya que acabas de empezar, igual te convendría visitar la Academia que hay al oeste del pueblo.\n¡Seguro que allí te darán un carnet!
+\tg[Elliot]Ya que acabas de empezar, igual te convendría visitar la Academia que hay al oeste del pueblo.\n¡Seguro que allí te darán un carnet!
+\tg[Elliot]Aunque me han contado que hay un profesor un tanto...\n¿Peculiar, digamos?
+\tg[Elliot]Aunque me han contado que hay un profesor un tanto...\n¿Peculiar, digamos?
+\tg[Elliot]C-claro que, son solo rumores...\nNo sé mucho al respecto.
+\tg[Elliot]C-claro que, son solo rumores...\nNo sé mucho al respecto.
+\tg[Elliot]Yo ahora me voy al Centro Pokémon a descansar un poco.\n¡Ya nos veremos por ahí, \PN!
+\tg[Elliot]Yo ahora me voy al Centro Pokémon a descansar un poco.\n¡Ya nos veremos por ahí, \PN!
+Pueblo Berilo.\n¡Date un cambio de aires!
+Pueblo Berilo.\n¡Date un cambio de aires!
+¡Floon!
+¡Floon!
+Es un Purrloin de aspecto sospechoso...
+Es un Purrloin de aspecto sospechoso...
+¡Me encanta pasear con Globito!\n¡Es el mejor Pokémon del mundo mundial!
+¡Me encanta pasear con Globito!\n¡Es el mejor Pokémon del mundo mundial!
+¡Hola!\n¡No, no quiero nada!
+¡Hola!\n¡No, no quiero nada!
+¡Solo quería que vieses a mi Globito!\n¿No es genial?
+¡Solo quería que vieses a mi Globito!\n¿No es genial?
+¿G-globito?
+¿G-globito?
+¡GLOBITOOOOOOOOOOOOOOOOOOOOO!
+¡GLOBITOOOOOOOOOOOOOOOOOOOOO!
+Vale, es posible que tenga un favor para ti... \n¡¡RECUPERA A MI GLOBITOOO!
+Vale, es posible que tenga un favor para ti... \n¡¡RECUPERA A MI GLOBITOOO!
+¡Recupera a Globito, te lo ruego!\nSe fue volando a la Ruta 1...
+¡Recupera a Globito, te lo ruego!\nSe fue volando a la Ruta 1...
+¡¡Globito!!\n¡Muchísimas gracias, entrenador!
+¡¡Globito!!\n¡Muchísimas gracias, entrenador!
+¡¡Globito!!\n¡Muchísimas gracias, entrenadora!
+¡¡Globito!!\n¡Muchísimas gracias, entrenadora!
+Ten esto en agradecimiento.\nTeniendo a Globito, no creo que lo necesite.
+Ten esto en agradecimiento.\nTeniendo a Globito, no creo que lo necesite.
+Le ataré una piedra a Globito para que no se vuelva a escapar...\nJe, je, je.
+Le ataré una piedra a Globito para que no se vuelva a escapar...\nJe, je, je.
+Al oeste: Academia Berilo
+Al oeste: Academia Berilo
+La mirada de este Pokémon me aterra.
+La mirada de este Pokémon me aterra.
+[Map11]
+[Map12]
+La antorcha está apagada.
+La antorcha está apagada.
+El fuego de la antorcha brilla con fuerza...
+El fuego de la antorcha brilla con fuerza...
+Este evento fue copy-pasteado de otro así que probablemente tenga el mismo diálogo.
+Este evento fue copy-pasteado de otro así que probablemente tenga el mismo diálogo.
+[Map13]
+[Map14]
+¡Deja de seguirme, sucio engendro!
+¡Deja de seguirme, sucio engendro!
+Me encontré con este Sableye en una cueva y desde entonces no deja de seguirme.
+Me encontré con este Sableye en una cueva y desde entonces no deja de seguirme.
+Creo que mi calva brilla tanto que se piensa que es una joya.
+Creo que mi calva brilla tanto que se piensa que es una joya.
+¿Rebuscar en la basura?
+¿Rebuscar en la basura?
+¡Una bolsa de basura ha atacado!
+¡Una bolsa de basura ha atacado!
+Mejor no meter la mano ahí.
+Mejor no meter la mano ahí.
+A simple vista parece una ciudad limpia, pero hay veces que la basura se acumula en las esquinas...
+A simple vista parece una ciudad limpia, pero hay veces que la basura se acumula en las esquinas...
+Mi Minccino siempre me ayuda a limpiar, pero aun así...\n¿Tanto le cuesta a la gente ser más respetuosa con las calles?
+Mi Minccino siempre me ayuda a limpiar, pero aun así...\n¿Tanto le cuesta a la gente ser más respetuosa con las calles?
+¡Vamos, Metapod! ¡Demuestra tu fortaleza!
+¡Vamos, Metapod! ¡Demuestra tu fortaleza!
+Ciudad Cornalina.\n¡La mejor calidad de vida de la región!\n\nO eso queremos creer...
+Ciudad Cornalina.\n¡La mejor calidad de vida de la región!\n\nO eso queremos creer...
+¿Sable?
+¿Sable?
+¡HISSSSSSS!\N¡NO TOQUES MI BASSSSURA!
+¡HISSSSSSS!\N¡NO TOQUES MI BASSSSURA!
+¡Ciii!
+¡Ciii!
+¡Sus ataques no nos derrumbarán!
+¡Sus ataques no nos derrumbarán!
+¡Un Pokémon ha salido de una bolsa!
+¡Un Pokémon ha salido de una bolsa!
+¡Todavía no soy lo suficientemente fuerte para derrotar a Abi!\nPero lo seguiré intentando una y otra vez.
+¡Todavía no soy lo suficientemente fuerte para derrotar a Abi!\nPero lo seguiré intentando una y otra vez.
+No voy a rendirme, ¡y espero que tú tampoco! \n¡Haz todo lo que te plantees!
+No voy a rendirme, ¡y espero que tú tampoco! \n¡Haz todo lo que te plantees!
+¡A topeee!
+¡A topeee!
+¡Es una llamada entrante del profesor Simon!
+¡Es una llamada entrante del profesor Simon!
+\tg[Simon]Oye.\n¿Cómo va todo?
+\tg[Simon]Oye.\n¿Cómo va todo?
+\tg[Simon]Parece que hay un mayor vínculo entre tus Pokémon y tú.\nNo está nada mal.
+\tg[Simon]Parece que hay un mayor vínculo entre tus Pokémon y tú.\nNo está nada mal.
+\tg[Simon]Tengo preparada una mejora para el Sistema que creo que te podría resultar útil. \nLa mandaré ahora mismo.
+\tg[Simon]Tengo preparada una mejora para el Sistema que creo que te podría resultar útil. \nLa mandaré ahora mismo.
+\..\..\..\n\..\..\..
+\..\..\..\n\..\..\..
+¡Actualización recibida!
+¡Actualización recibida!
+\tg[Simon]Esto te permitirá realizar simulaciones de ciertos movimientos sin ayuda de los Pokémon.\nAhora mismo te acabo de conceder el acceso a Corte.
+\tg[Simon]Esto te permitirá realizar simulaciones de ciertos movimientos sin ayuda de los Pokémon.\nAhora mismo te acabo de conceder el acceso a Corte.
+\tg[Simon]No dudes en probarlo si ves algún obstáculo que se pueda Cortar.\nMucha suerte, pelo-seta.
+\tg[Simon]No dudes en probarlo si ves algún obstáculo que se pueda Cortar.\nMucha suerte, pelo-seta.
+\tg[Simon]No dudes en probarlo si ves algún obstáculo que se pueda Cortar.\nMucha suerte, pelo alimonado.
+\tg[Simon]No dudes en probarlo si ves algún obstáculo que se pueda Cortar.\nMucha suerte, pelo alimonado.
+¡Se han desbloqueado más favores!\nPuedes echar un vistazo a los que están disponibles en el Menú - Favores.
+¡Se han desbloqueado más favores!\nPuedes echar un vistazo a los que están disponibles en el Menú - Favores.
+¡Vendo abono para las bayas!\n¿Te interesa?
+¡Vendo abono para las bayas!\n¿Te interesa?
+El Pokémon parece tan concentrado que no reacciona ante ti.
+El Pokémon parece tan concentrado que no reacciona ante ti.
+Le di un caramelo a mi Wooper y ahora se ha vuelto hiperactivo.
+Le di un caramelo a mi Wooper y ahora se ha vuelto hiperactivo.
+No responde a mi llamada, parece poseído.
+No responde a mi llamada, parece poseído.
+Esta ciudad está limpia gracias a los impuestos de mis padres.
+Esta ciudad está limpia gracias a los impuestos de mis padres.
+¡Es importante mantener una salud de hierro!\nSi te encuentras mal, ve al hospital.
+¡Es importante mantener una salud de hierro!\nSi te encuentras mal, ve al hospital.
+Soy el motero Juancho, he venido desde Teselia con mi chati buscando entrenadores fuertes.
+Soy el motero Juancho, he venido desde Teselia con mi chati buscando entrenadores fuertes.
+Mi nieto no entiende que todos los ciudadanos contribuimos.
+Mi nieto no entiende que todos los ciudadanos contribuimos.
+Tiene una visión demasiado egocéntrica de la realidad.
+Tiene una visión demasiado egocéntrica de la realidad.
+\tg[Owen]¡\PN!\NParece que te he adelantado, je, je, je.
+\tg[Owen]¡\PN!\NParece que te he adelantado, je, je, je.
+\tg[Owen]Ya tengo mi primera flamante medalla.\n¡Ahora, a por la siguiente!
+\tg[Owen]Ya tengo mi primera flamante medalla.\n¡Ahora, a por la siguiente!
+\tg[Owen]No te preocupes, no tengo fuerzas para combatir contigo ahora mismo.\NMis Pokémon están agotados tras el combate contra el líder de gimnasio.
+\tg[Owen]No te preocupes, no tengo fuerzas para combatir contigo ahora mismo.\NMis Pokémon están agotados tras el combate contra el líder de gimnasio.
+\tg[Owen]¡Nos veremos las caras en la próxima!\n¡Mucha suerte!
+\tg[Owen]¡Nos veremos las caras en la próxima!\n¡Mucha suerte!
+No valoramos lo que tenemos, he llegado a encontrar de todo en la basura.
+No valoramos lo que tenemos, he llegado a encontrar de todo en la basura.
+Esos chicos llevan peleando 2 días como pasmarotes.
+Esos chicos llevan peleando 2 días como pasmarotes.
+¡Ya veo, ya veo!\nConque esta es Ciudad Cornalina.
+¡Ya veo, ya veo!\nConque esta es Ciudad Cornalina.
+Aquí hay un Gimnasio especializado en el tipo bicho...\nSuena interesante, quizás vaya a retarlo después.
+Aquí hay un Gimnasio especializado en el tipo bicho...\nSuena interesante, quizás vaya a retarlo después.
+Mi Juancho solo entiende de motos, sus neuronas se ahogaron con el humo de la moto.
+Mi Juancho solo entiende de motos, sus neuronas se ahogaron con el humo de la moto.
+¡Menos mal que a mí me encantan también!
+¡Menos mal que a mí me encantan también!
+Ciudad Cornalina.\n¡La mejor calidad de vida de la región!\nO eso queremos creer...
+Ciudad Cornalina.\n¡La mejor calidad de vida de la región!\nO eso queremos creer...
+Sí
+Sí
+No
+No
+[Map15]
+Al este -> Ruta 5
+Al este -> Ruta 5
+\tg[Elliot]¡\PN!\n¿Qué tal estás?
+\tg[Elliot]¡\PN!\n¿Qué tal estás?
+\tg[Elliot]P-perdona.\nNo era mi intención asustarte, de veras.
+\tg[Elliot]P-perdona.\nNo era mi intención asustarte, de veras.
+\tg[Elliot]¡Oh, ya tienes una medalla!\n¡Eso es genial!
+\tg[Elliot]¡Oh, ya tienes una medalla!\n¡Eso es genial!
+\tg[Elliot]Yo he estado haciendo un montón de fotos en el Bosque Lucerna.\n¡Es un lugar precioso!
+\tg[Elliot]Yo he estado haciendo un montón de fotos en el Bosque Lucerna.\n¡Es un lugar precioso!
+\tg[Elliot]Ahora me dirijo a Ciudad Jade.\nEs una ciudad de estilo oriental, estoy seguro de que habrá muchos lugares interesantes a los que echar fotos.
+\tg[Elliot]Ahora me dirijo a Ciudad Jade.\nEs una ciudad de estilo oriental, estoy seguro de que habrá muchos lugares interesantes a los que echar fotos.
+\tg[Elliot]Si vas a por tu segunda medalla, probablemente nos veamos por allí.\nAh, ¡y toma esto!
+\tg[Elliot]Si vas a por tu segunda medalla, probablemente nos veamos por allí.\nAh, ¡y toma esto!
+\tg[Elliot]Siempre llevo algunas por si encuentro algún Pokémon al que dárselas. \n¡Seguro que a los tuyos también les gustan!
+\tg[Elliot]Siempre llevo algunas por si encuentro algún Pokémon al que dárselas. \n¡Seguro que a los tuyos también les gustan!
+\tg[Elliot]Y... ¡creo que eso es todo!\n¡Hasta luego, \PN!
+\tg[Elliot]Y... ¡creo que eso es todo!\n¡Hasta luego, \PN!
+¿Qué es, qué es?\n¿¡Un nuevo Pokémon que investigar!?
+¿Qué es, qué es?\n¿¡Un nuevo Pokémon que investigar!?
+¿Qué habrá bajo el disfraz de un Mimikyu?\n¿Crees que algún día alguien será capaz de mirar bajo uno de ellos?
+¿Qué habrá bajo el disfraz de un Mimikyu?\n¿Crees que algún día alguien será capaz de mirar bajo uno de ellos?
+¡Alto en el nombre de la naturaleza!
+¡Alto en el nombre de la naturaleza!
+El paisaje comienza a ponerse rojizo a partir de este punto.\n¡Es muy bonito!
+El paisaje comienza a ponerse rojizo a partir de este punto.\n¡Es muy bonito!
+[Map16]
+Owen está ocupado luchando ahí fuera.\nTengo que hablar con Jeremiah.
+Owen está ocupado luchando ahí fuera.\nTengo que hablar con Jeremiah.
+Tengo que copiar los datos de los ordenadores a mi Sistema.
+Tengo que copiar los datos de los ordenadores a mi Sistema.
+Copiaré los datos del ordenador al Sistema, tal y como me dijo Simon.
+Copiaré los datos del ordenador al Sistema, tal y como me dijo Simon.
+\..\..\..\n\..\..\..
+\..\..\..\n\..\..\..
+¡Hecho!
+¡Hecho!
+\tg[Jeremiah]La única forma de crear vínculos más fuertes e irrompibles\..\..\..\nSi tan solo pudiese investigar a ese Pokémon\..\..\..
+\tg[Jeremiah]La única forma de crear vínculos más fuertes e irrompibles\..\..\..\nSi tan solo pudiese investigar a ese Pokémon\..\..\..
+\tg[Jeremiah]Ugh, esta investigación va a salir cara.\nProbablemente incluso tenga que navegar al fondo del mar\..\..\..
+\tg[Jeremiah]Ugh, esta investigación va a salir cara.\nProbablemente incluso tenga que navegar al fondo del mar\..\..\..
+\tg[Jeremiah]Y para colmo el Sistema parece seguir malfuncionando de vez en cuando sin importar cuántas veces lo estabilicemos.\nNo parece tener mucha importancia, pero\..\..\..
+\tg[Jeremiah]Y para colmo el Sistema parece seguir malfuncionando de vez en cuando sin importar cuántas veces lo estabilicemos.\nNo parece tener mucha importancia, pero\..\..\..
+\tg[Jeremiah]Mmm\..\..\..
+\tg[Jeremiah]Mmm\..\..\..
+\tg[Jeremiah]¡AAAH!
+\tg[Jeremiah]¡AAAH!
+\tg[Jeremiah]¿¡Tú!?\n¿¡Cómo has llegado tú aquí!?
+\tg[Jeremiah]¿¡Tú!?\n¿¡Cómo has llegado tú aquí!?
+\tg[Jeremiah]Justo lo que me faltaba.\nNo importa, ¡esta vez te obligaré a que nos dejes en paz de una vez por todas!
+\tg[Jeremiah]Justo lo que me faltaba.\nNo importa, ¡esta vez te obligaré a que nos dejes en paz de una vez por todas!
+\tg[Jeremiah]Ugh\..\..\..\nAhora comprendo, tu Sistema interfiere con los nuestros al ganar en los combates.
+\tg[Jeremiah]Ugh\..\..\..\nAhora comprendo, tu Sistema interfiere con los nuestros al ganar en los combates.
+\tg[Jeremiah]Maldito Simon.\n¡Sabe lo que hace!
+\tg[Jeremiah]Maldito Simon.\n¡Sabe lo que hace!
+\tg[Jeremiah]Aunque también tengo parte de la culpa.\nNo tomé en cuenta que podrías hacerte mucho más fuerte en el tiempo que consiguiera evadir un combate contra ti.
+\tg[Jeremiah]Aunque también tengo parte de la culpa.\nNo tomé en cuenta que podrías hacerte mucho más fuerte en el tiempo que consiguiera evadir un combate contra ti.
+\tg[Jeremiah]Pierdes el tiempo, de todas formas.\nEl servidor puede que esté aquí, pero tenemos un backup de todos los datos y la energía que vamos a utilizar para sostenerlo se encuentra en otra parte.
+\tg[Jeremiah]Pierdes el tiempo, de todas formas.\nEl servidor puede que esté aquí, pero tenemos un backup de todos los datos y la energía que vamos a utilizar para sostenerlo se encuentra en otra parte.
+\tg[Jeremiah]Ah, ¿no vienes por eso?\n¿Qué quiéres, entonces?
+\tg[Jeremiah]Ah, ¿no vienes por eso?\n¿Qué quiéres, entonces?
+\tg[Jeremiah]\..\..\..\n\..\..\..
+\tg[Jeremiah]\..\..\..\n\..\..\..
+\tg[Jeremiah]Así que Teresa te lo ha contado.\n¿Y dices que sospechas de que realmente tengamos intención de hacer que los entrenadores controlen por completo a sus Pokémon?
+\tg[Jeremiah]Así que Teresa te lo ha contado.\n¿Y dices que sospechas de que realmente tengamos intención de hacer que los entrenadores controlen por completo a sus Pokémon?
+\tg[Jeremiah]Pues bien, desde luego que no.\nSe lo prometí a Teresa; nunca haría nada que ella no quisiese.
+\tg[Jeremiah]Pues bien, desde luego que no.\nSe lo prometí a Teresa; nunca haría nada que ella no quisiese.
+\tg[Jeremiah]Puedes investigar a fondo todo lo que quieras si no me crees.\nYo tengo prisa, así que me retiro.
+\tg[Jeremiah]Puedes investigar a fondo todo lo que quieras si no me crees.\nYo tengo prisa, así que me retiro.
+\tg[Jeremiah]Realmente aprecio mucho tu preocupación por los Pokémon.\nPuedo ver por qué Teresa llegó a contártelo.
+\tg[Jeremiah]Realmente aprecio mucho tu preocupación por los Pokémon.\nPuedo ver por qué Teresa llegó a contártelo.
+\tg[Jeremiah]Espero que puedas salir de dudas de una vez por todas.\nAdiós.
+\tg[Jeremiah]Espero que puedas salir de dudas de una vez por todas.\nAdiós.
+[Map17]
+\tg[Recluta]¡Señor!\n¡Es un placer poder darle la bienvenida!
+\tg[Recluta]¡Señor!\n¡Es un placer poder darle la bienvenida!
+\tg[Recluta]El informe que pidió estará listo para entregar en breves.\nLe rogamos que espere un momento.
+\tg[Recluta]El informe que pidió estará listo para entregar en breves.\nLe rogamos que espere un momento.
+\tg[???]Ya veo.\nSin problema, tomaos el tiempo que necesitéis.
+\tg[???]Ya veo.\nSin problema, tomaos el tiempo que necesitéis.
+\tg[???]Esa revisión es realmente importante.\nSi nos descuidamos, los servidores podrían...
+\tg[???]Esa revisión es realmente importante.\nSi nos descuidamos, los servidores podrían...
+\tg[???]Vaya...\nQué inoportuna.
+\tg[???]Vaya...\nQué inoportuna.
+\tg[???]Buenos días, <b>Lilliana</b>.\nNo esperaba una llamada tuya tan temprano.
+\tg[???]Buenos días, <b>Lilliana</b>.\nNo esperaba una llamada tuya tan temprano.
+\tg[???]Siendo honesto, me encuentro algo atareado por la central petrolífera en estos momentos.\nApreciaría que esta conversación fuese lo más amena posible.
+\tg[???]Siendo honesto, me encuentro algo atareado por la central petrolífera en estos momentos.\nApreciaría que esta conversación fuese lo más amena posible.
+\tg[Lilliana]<i>Cielos, <b>Jeremiah</b>.\n¿Qué estás haciendo por esa dichosa plataforma ahora?</i>
+\tg[Lilliana]<i>Cielos, <b>Jeremiah</b>.\n¿Qué estás haciendo por esa dichosa plataforma ahora?</i>
+\tg[Lilliana]<i>¡Vas a perderte uno de los mayores acontecimientos en la historia de la Corporación!\n¿¡Acaso no quieres presenciar los frutos de nuestro trabajo!?</i>
+\tg[Lilliana]<i>¡Vas a perderte uno de los mayores acontecimientos en la historia de la Corporación!\n¿¡Acaso no quieres presenciar los frutos de nuestro trabajo!?</i>
+\tg[Jeremiah]Lilliana, lamento recordarte que actualmente existen ciertas... prioridades.
+\tg[Jeremiah]Lilliana, lamento recordarte que actualmente existen ciertas... prioridades.
+\tg[Jeremiah]Los servidores siguen inestables y mantenerlos está consumiendo más energía de la que esperábamos.
+\tg[Jeremiah]Los servidores siguen inestables y mantenerlos está consumiendo más energía de la que esperábamos.
+\tg[Jeremiah]Por no mencionar que aún queda un largo camino por recorrer en cuanto al proceso de investigación y...
+\tg[Jeremiah]Por no mencionar que aún queda un largo camino por recorrer en cuanto al proceso de investigación y...
+\tg[Lilliana]<i>Bah, haz lo que quieras.\n¡Oh, ya está a punto de empezar!</i>
+\tg[Lilliana]<i>Bah, haz lo que quieras.\n¡Oh, ya está a punto de empezar!</i>
+\tg[Jeremiah]<fs=20>Esa interrupción ha dolido...</fs>\nHablaremos más tarde, pues.\nYo también tengo ciertos quehaceres que atender.
+\tg[Jeremiah]<fs=20>Esa interrupción ha dolido...</fs>\nHablaremos más tarde, pues.\nYo también tengo ciertos quehaceres que atender.
+\tg[Lilliana]<i>Tan aburrido como de costumbre.\nEstá bien, cuento contigo para mantenerlo todo bajo control.</i>
+\tg[Lilliana]<i>Tan aburrido como de costumbre.\nEstá bien, cuento contigo para mantenerlo todo bajo control.</i>
+\tg[Jeremiah]Recibido.\nCortaré la comunicación ahora.
+\tg[Jeremiah]Recibido.\nCortaré la comunicación ahora.
+\tg[Jeremiah]Ese "experimento" tuyo será un fracaso.\nY espero que te sirva de lección, Lilliana.
+\tg[Jeremiah]Ese "experimento" tuyo será un fracaso.\nY espero que te sirva de lección, Lilliana.
+\tg[Jeremiah]No cabe duda de que el Sistema cambiará nuestra forma de convivir con los Pokémon por completo...\nAunque de nada servirán nuestros esfuerzos si nos precipitamos.
+\tg[Jeremiah]No cabe duda de que el Sistema cambiará nuestra forma de convivir con los Pokémon por completo...\nAunque de nada servirán nuestros esfuerzos si nos precipitamos.
+\tg[Recluta]Señor Jeremiah...\nEl informe ya está terminado.
+\tg[Recluta]Señor Jeremiah...\nEl informe ya está terminado.
+\tg[Jeremiah]Muy bien.\nDéjame echarle un vistazo.
+\tg[Jeremiah]Muy bien.\nDéjame echarle un vistazo.
+\tg[Jeremiah]O-oye...\nEste documento debe contener un craso error.
+\tg[Jeremiah]O-oye...\nEste documento debe contener un craso error.
+\tg[Jeremiah]Aquí consta que las reservas son prácticamente nulas.\nSerá mejor que lo reviséis.
+\tg[Jeremiah]Aquí consta que las reservas son prácticamente nulas.\nSerá mejor que lo reviséis.
+\tg[Recluta]M-mucho me temo que no, señor.\nNos hemos asegurado de que no contenga el más mínimo fallo.
+\tg[Recluta]M-mucho me temo que no, señor.\nNos hemos asegurado de que no contenga el más mínimo fallo.
+\tg[Jeremiah]¿¡Cómo dices!?\n¡Imposible!
+\tg[Jeremiah]¿¡Cómo dices!?\n¡Imposible!
+\tg[Jeremiah]No puede ser...\n¡Esto estaba totalmente fuera de mis cálculos!
+\tg[Jeremiah]No puede ser...\n¡Esto estaba totalmente fuera de mis cálculos!
+\tg[Jeremiah]¡Contactad de inmediato con la Sede!\nTendremos que tomar medidas imprevistas en la región...
+\tg[Jeremiah]¡Contactad de inmediato con la Sede!\nTendremos que tomar medidas imprevistas en la región...
+\tg[Jeremiah]Yo hablaré con Teresa.\nHemos llegado demasiado lejos como para que todo se nos eche abajo por algo así.
+\tg[Jeremiah]Yo hablaré con Teresa.\nHemos llegado demasiado lejos como para que todo se nos eche abajo por algo así.
+\tg[Jeremiah]Pronto, muy pronto... \nPodremos mostrar al mundo algo nunca antes visto, ¡algo revolucionario!
+\tg[Jeremiah]Pronto, muy pronto... \nPodremos mostrar al mundo algo nunca antes visto, ¡algo revolucionario!
+\tg[Jeremiah]¡Todos serán testigos de lo que es capaz el Sistema Realidea!
+\tg[Jeremiah]¡Todos serán testigos de lo que es capaz el Sistema Realidea!
+\w[]\l[1]Región de Esoteria - Pueblo Jaspe
+\w[]\l[1]Región de Esoteria - Pueblo Jaspe
+¿Qué papel te gustaría desempeñar en esta historia?
+¿Qué papel te gustaría desempeñar en esta historia?
+Por favor, escribe tu nombre.
+Por favor, escribe tu nombre.
+[Map18]
+¿¡Intrusos!?\n¡Sistema Realidea, activado!
+¿¡Intrusos!?\n¡Sistema Realidea, activado!
+Debes accionar las palancas en el orden correcto si quieres pasar a la sala de ahí arriba.
+Debes accionar las palancas en el orden correcto si quieres pasar a la sala de ahí arriba.
+Estoy en la P-1.\n¿A qué planta voy?
+Estoy en la P-1.\n¿A qué planta voy?
+Sí, ¿qué pas-...?\n¡Oye, tú no eres de por aquí!
+Sí, ¿qué pas-...?\n¡Oye, tú no eres de por aquí!
+A mí solo me tienen para hacer recados :(
+A mí solo me tienen para hacer recados :(
+Hay unos papeles tirados en el suelo\..\..\..\nDicen "A=7"
+Hay unos papeles tirados en el suelo\..\..\..\nDicen "A=7"
+Las outlines de esta papelera están un poco más fuertes que las del resto de tiles.
+Las outlines de esta papelera están un poco más fuertes que las del resto de tiles.
+"7 Ultraballs, 2 Hiperpociones, 4 Bayas Zidra\..\..\.."
+"7 Ultraballs, 2 Hiperpociones, 4 Bayas Zidra\..\..\.."
+Parece\..\..\..\n¿Una lista de la compra?
+Parece\..\..\..\n¿Una lista de la compra?
+Hay listas de la compra tiradas en la papelera.
+Hay listas de la compra tiradas en la papelera.
+"La primera palanca no es roja"
+"La primera palanca no es roja"
+"La última palanca no es amarilla"
+"La última palanca no es amarilla"
+Mmm\..\..\..\n¿¡Mmm!?
+Mmm\..\..\..\n¿¡Mmm!?
+Deberían graduarlas para las miopes como yo.
+Deberían graduarlas para las miopes como yo.
+"La palanca amarilla va después de la morada"
+"La palanca amarilla va después de la morada"
+PB
+PB
+P-2
+P-2
+P-3
+P-3
+P-4
+P-4
+[Map19]
+[Map20]
+Esta persona está morida.
+Esta persona está morida.
+Ya has activado el cristal.
+Ya has activado el cristal.
+La antorcha está apagada.
+La antorcha está apagada.
+El fuego de la antorcha brilla con fuerza...
+El fuego de la antorcha brilla con fuerza...
+[Map21]
+Hay un tipo bastante siniestro en la academia, siempre anda con un Joltik en la cabeza.
+Hay un tipo bastante siniestro en la academia, siempre anda con un Joltik en la cabeza.
+Vine a vivir aquí porque tiene el aire más puro de toda la región.\n¡Nunca me he sentido tan joven!
+Vine a vivir aquí porque tiene el aire más puro de toda la región.\n¡Nunca me he sentido tan joven!
+¡Rawr!
+¡Rawr!
+\tg[Elliot]¡Hola, \PN!\N¿Ya has ido a la academia?
+\tg[Elliot]¡Hola, \PN!\N¿Ya has ido a la academia?
+\tg[Elliot]Yo me estoy preparando para ir al Bosque Lucerna, que está justo atravesando la Ruta 2.\n¡Dicen que un Pokémon legendario vive allí!
+\tg[Elliot]Yo me estoy preparando para ir al Bosque Lucerna, que está justo atravesando la Ruta 2.\n¡Dicen que un Pokémon legendario vive allí!
+Una papelera solitaria.
+Una papelera solitaria.
+Si te quedas sin espacio en el equipo tus Pokémon serán trasladados al sistema de almacenamiento.
+Si te quedas sin espacio en el equipo tus Pokémon serán trasladados al sistema de almacenamiento.
+¿Te lo puedes creer?
+¿Te lo puedes creer?
+¡Tilín, tilín!
+¡Tilín, tilín!
+[Map22]
+¡Es un peluche de Aipom!\nMe lo regaló un amigo de una región lejana.
+¡Es un peluche de Aipom!\nMe lo regaló un amigo de una región lejana.
+Es una radio.\nNo funciona, está de adorno.
+Es una radio.\nNo funciona, está de adorno.
+Un calendario.\nNo hay ninguna fecha próxima importante.
+Un calendario.\nNo hay ninguna fecha próxima importante.
+¡Un peluche de Azurill!\nEs un regalo de papá.
+¡Un peluche de Azurill!\nEs un regalo de papá.
+No hay mucho de comer en el frigorífico... \nHabrá que hacer la compra.
+No hay mucho de comer en el frigorífico... \nHabrá que hacer la compra.
+Guardo muchos libros sobre Pokémon y entrenadores famosos.
+Guardo muchos libros sobre Pokémon y entrenadores famosos.
+\tg[Mamá]¡Si vas a salir, no olvides las Zapatillas!\nLas tienes en tu cuarto, donde siempre.
+\tg[Mamá]¡Si vas a salir, no olvides las Zapatillas!\nLas tienes en tu cuarto, donde siempre.
+Una consola pasada de moda que todavía guardamos por algún motivo.
+Una consola pasada de moda que todavía guardamos por algún motivo.
+Solo es una mesita.
+Solo es una mesita.
+Un despertador.\nDe no ser por él, mamá se quedaría dormida hasta tarde.
+Un despertador.\nDe no ser por él, mamá se quedaría dormida hasta tarde.
+\tg[TV]¡Increíble!\n¡Tras un combate muy reñido, Sara se alza con la victoria una vez más!
+\tg[TV]¡Increíble!\n¡Tras un combate muy reñido, Sara se alza con la victoria una vez más!
+\tg[TV]Parece que la Campeona se acerca a intercambiar unas palabras con la aspirante y...\n¿Cómo?
+\tg[TV]Parece que la Campeona se acerca a intercambiar unas palabras con la aspirante y...\n¿Cómo?
+\tg[TV]¿Cortar la retransmisión?\n¿¡Justo ahora!?
+\tg[TV]¿Cortar la retransmisión?\n¿¡Justo ahora!?
+\tg[TV]Sí, de acuerdo...\n¡Pues parece que se nos acaba el tiempo, señoras y señores!
+\tg[TV]Sí, de acuerdo...\n¡Pues parece que se nos acaba el tiempo, señoras y señores!
+\tg[TV]¡Nos veremos en el próximo programa con aún más noticias!\n¡Que tengan un buen día!
+\tg[TV]¡Nos veremos en el próximo programa con aún más noticias!\n¡Que tengan un buen día!
+\tg[Mamá]¡\PN, te has perdido uno de los mejores combates jamás librados!\nHa sido espectacular, incluso la magnífica Sara se veía en apuros.
+\tg[Mamá]¡\PN, te has perdido uno de los mejores combates jamás librados!\nHa sido espectacular, incluso la magnífica Sara se veía en apuros.
+\tg[Mamá]¡Y la aspirante no era más que una chiquilla!\nCualquiera juzga por las apariencias hoy en día...
+\tg[Mamá]¡Y la aspirante no era más que una chiquilla!\nCualquiera juzga por las apariencias hoy en día...
+\tg[Mamá]A todo esto, hace poco ha llamado tu amigo Elliot.\nDecía que tenía algo muy importante que contarte.
+\tg[Mamá]A todo esto, hace poco ha llamado tu amigo Elliot.\nDecía que tenía algo muy importante que contarte.
+\tg[Mamá]Creo que ya debe estar afuera, esperándote.\N¡Venga, ve a ver qué quiere!
+\tg[Mamá]Creo que ya debe estar afuera, esperándote.\N¡Venga, ve a ver qué quiere!
+\tg[Mamá]Si vas a salir, no olvides las Zapatillas.\nLas tienes en tu cuarto, donde siempre.
+\tg[Mamá]Si vas a salir, no olvides las Zapatillas.\nLas tienes en tu cuarto, donde siempre.
+Rico queso de Mareep.
+Rico queso de Mareep.
+\tg[Purugly]Puuuurrr...
+\tg[Purugly]Puuuurrr...
+Parece que quiere comida.\nPurugly SIEMPRE quiere comida.
+Parece que quiere comida.\nPurugly SIEMPRE quiere comida.
+Es el fregadero.\n¿Quieres abrir el grifo?
+Es el fregadero.\n¿Quieres abrir el grifo?
+El grifo del fregadero está abierto.\n¿Quieres cerrarlo?
+El grifo del fregadero está abierto.\n¿Quieres cerrarlo?
+Será mejor cerrarlo.\nNo quiero que mamá se lleve un disgusto al ver la factura del agua...
+Será mejor cerrarlo.\nNo quiero que mamá se lleve un disgusto al ver la factura del agua...
+AQUÍ DERROCHANDO AGUA, SÍ SEÑOR.
+AQUÍ DERROCHANDO AGUA, SÍ SEÑOR.
+\tg[Mamá]¡Anda, \PN!\N¡Por fin has despertado!
+\tg[Mamá]¡Anda, \PN!\N¡Por fin has despertado!
+\tg[Mamá]Esto... ¿Purugly, gordito?\n¿Puedes moverte un poco?
+\tg[Mamá]Esto... ¿Purugly, gordito?\n¿Puedes moverte un poco?
+\tg[Mamá]Es tan difícil moverlo de su sitio...\n¿Pero y tú qué tal?
+\tg[Mamá]Es tan difícil moverlo de su sitio...\n¿Pero y tú qué tal?
+\tg[Mamá]Llegaste supercansado...\n¿¡No me digas!?
+\tg[Mamá]Llegaste supercansado...\n¿¡No me digas!?
+\tg[Mamá]Llegaste supercansada...\n¿¡No me digas!?
+\tg[Mamá]Llegaste supercansada...\n¿¡No me digas!?
+\tg[Mamá]¿¡No me digas... que ya tienes tu primera medalla de Gimnasio!?\n¡Dime que sí!
+\tg[Mamá]¿¡No me digas... que ya tienes tu primera medalla de Gimnasio!?\n¡Dime que sí!
+\tg[Mamá]Ah...\nYa tienes todas las medallas...
+\tg[Mamá]Ah...\nYa tienes todas las medallas...
+\tg[Mamá]¿Y por qué no he visto tu batalla con la Campeona por la tele?\n¿No has ido a la Liga todavía?
+\tg[Mamá]¿Y por qué no he visto tu batalla con la Campeona por la tele?\n¿No has ido a la Liga todavía?
+\tg[Mamá]¡Deberías ir!\n¡Ya sabes que tu mamá te apoya!
+\tg[Mamá]¡Deberías ir!\n¡Ya sabes que tu mamá te apoya!
+\tg[Mamá]Esto...\nA la Liga se va por la Ruta 18, ¿no?
+\tg[Mamá]Esto...\nA la Liga se va por la Ruta 18, ¿no?
+\tg[Mamá]Está al oeste de la Región.\nCreo que podrías llegar por Pueblo Amberino.
+\tg[Mamá]Está al oeste de la Región.\nCreo que podrías llegar por Pueblo Amberino.
+\tg[Mamá]¡Venga, un esfuerzo más!\n¡Tú puedes!
+\tg[Mamá]¡Venga, un esfuerzo más!\n¡Tú puedes!
+Solo es un trozo de pan.
+Solo es un trozo de pan.
+Mi armario.\nHoy me he puesto mi ropa preferida.
+Mi armario.\nHoy me he puesto mi ropa preferida.
+Hay muchos libros en esta estantería, pero ninguno llama mi atención.
+Hay muchos libros en esta estantería, pero ninguno llama mi atención.
+Solo es una maceta.
+Solo es una maceta.
+\tg[Mamá]Elliot te está esperando fuera. \n¡Venga, ve a ver qué quiere!
+\tg[Mamá]Elliot te está esperando fuera. \n¡Venga, ve a ver qué quiere!
+\tg[Mamá]¿Oh?\n¡Tienes un Pokémon a tu lado!
+\tg[Mamá]¿Oh?\n¡Tienes un Pokémon a tu lado!
+\tg[Mamá]\PN...\n¿No me digas...?
+\tg[Mamá]\PN...\n¿No me digas...?
+\tg[Mamá]Así que la profesora Haya te lo ha dado, ¿eh?\n¡Me alegro por ti!
+\tg[Mamá]Así que la profesora Haya te lo ha dado, ¿eh?\n¡Me alegro por ti!
+\tg[Mamá]Aunque sé lo que eso significa... \nQuerrás irte de casa con él para convertirte en un gran entrenador.
+\tg[Mamá]Aunque sé lo que eso significa... \nQuerrás irte de casa con él para convertirte en un gran entrenador.
+\tg[Mamá]Aunque sé lo que eso significa... \nQuerrás irte de casa con él para convertirte en una gran entrenadora.
+\tg[Mamá]Aunque sé lo que eso significa... \nQuerrás irte de casa con él para convertirte en una gran entrenadora.
+\tg[Mamá]Está bien.\nSiempre fue tu sueño y yo te ofrezco todo mi apoyo como madre.
+\tg[Mamá]Está bien.\nSiempre fue tu sueño y yo te ofrezco todo mi apoyo como madre.
+\tg[Mamá]Aunque no te dejaré que te vayas así. \nPurugly, trae aquello de mi armario, por favor.
+\tg[Mamá]Aunque no te dejaré que te vayas así. \nPurugly, trae aquello de mi armario, por favor.
+\tg[Purugly]Puuurr...
+\tg[Purugly]Puuurr...
+¡Purugly te ha traído algo!
+¡Purugly te ha traído algo!
+\tg[Mamá]¡Adiós, \PN!\nNo olvides que aquí siempre tendrás un lugar al que volver.
+\tg[Mamá]¡Adiós, \PN!\nNo olvides que aquí siempre tendrás un lugar al que volver.
+\tg[Mamá]Si tu equipo alguna vez se encuentra cansado, acuérdate de tu madre.\nMe encargaré de que quedéis como nuevos.
+\tg[Mamá]Si tu equipo alguna vez se encuentra cansado, acuérdate de tu madre.\nMe encargaré de que quedéis como nuevos.
+\tg[Mamá]¡Gracias, Purugly!
+\tg[Mamá]¡Gracias, Purugly!
+\tg[Mamá]¡Ten, \PN!
+\tg[Mamá]¡Ten, \PN!
+\tg[Mamá]¡Descansa un poco, \PN!
+\tg[Mamá]¡Descansa un poco, \PN!
+\tg[Mamá]Ahora se encuentran mucho mejor, ¡qué alegría veros así!
+\tg[Mamá]Ahora se encuentran mucho mejor, ¡qué alegría veros así!
+Mamá me prohíbe tocar el piano por algún motivo...
+Mamá me prohíbe tocar el piano por algún motivo...
+¿Por qué tiré esto aquí?\nNo dolerá llevarlo en la mochila, supongo.
+¿Por qué tiré esto aquí?\nNo dolerá llevarlo en la mochila, supongo.
+Ya no hay nada.\nIgual encuentro cosas en las demás papeleras que añadir al album.
+Ya no hay nada.\nIgual encuentro cosas en las demás papeleras que añadir al album.
+No puedo beber vino... todavía.
+No puedo beber vino... todavía.
+\tg[TV]¡Noticias de última hora!\n¡Un aspirante acaba de vencer al Alto Mando y está a punto de enfrentarse a la Campeona!
+\tg[TV]¡Noticias de última hora!\n¡Un aspirante acaba de vencer al Alto Mando y está a punto de enfrentarse a la Campeona!
+\tg[TV]¡Hacía mucho tiempo que nadie lograba algo así!\n¡No se lo pierdan, damas y caballeros!
+\tg[TV]¡Hacía mucho tiempo que nadie lograba algo así!\n¡No se lo pierdan, damas y caballeros!
+\tg[TV]¡A un lado tenemos a la joven aspirante, que ha arrasado con los cuatro miembros del Alto Mando con suma facilidad!
+\tg[TV]¡A un lado tenemos a la joven aspirante, que ha arrasado con los cuatro miembros del Alto Mando con suma facilidad!
+[1]
+It doesn't affect {1}...
+It doesn't affect {1}...
+The Misty Terrain prevented {1} from being poisoned!
+The Misty Terrain prevented {1} from being poisoned!
+{1}'s {2} prevents poisoning!
+{1}'s {2} prevents poisoning!
+{1}'s partner's {2} prevents poisoning!
+{1}'s partner's {2} prevents poisoning!
+{1}'s {2} had no effect on {3}!
+{1}'s {2} had no effect on {3}!
+{1}'s {2} prevents {3}'s {4} from working!
+{1}'s {2} prevents {3}'s {4} from working!
+{1} was badly poisoned!
+{1} was badly poisoned!
+{1} was poisoned!
+{1} was poisoned!
+{1} already has a burn.
+{1} already has a burn.
+The Misty Terrain prevented {1} from being burned!
+The Misty Terrain prevented {1} from being burned!
+{1}'s {2} prevents burns!
+{1}'s {2} prevents burns!
+{1}'s partner's {2} prevents burns!
+{1}'s partner's {2} prevents burns!
+{1} was burned!
+{1} was burned!
+{1} is already paralyzed!
+{1} is already paralyzed!
+The Misty Terrain prevented {1} from being paralyzed!
+The Misty Terrain prevented {1} from being paralyzed!
+{1}'s {2} prevents paralysis!
+{1}'s {2} prevents paralysis!
+{1}'s partner's {2} prevents paralysis!
+{1}'s partner's {2} prevents paralysis!
+{1} is paralyzed! It may be unable to move!
+{1} is paralyzed! It may be unable to move!
+{1} is already frozen solid!
+{1} is already frozen solid!
+The Misty Terrain prevented {1} from being frozen!
+The Misty Terrain prevented {1} from being frozen!
+{1}'s {2} prevents freezing!
+{1}'s {2} prevents freezing!
+{1}'s partner's {2} prevents freezing!
+{1}'s partner's {2} prevents freezing!
+{1} was frozen solid!
+{1} was frozen solid!
+{1} is fast asleep.
+{1} is fast asleep.
+{1} was hurt by poison!
+{1} was hurt by poison!
+{1} was hurt by its burn!
+{1} was hurt by its burn!
+{1} is paralyzed! It can't move!
+{1} is paralyzed! It can't move!
+{1} is frozen solid!
+{1} is frozen solid!
+{1} woke up!
+{1} woke up!
+{1} was cured of paralysis.
+{1} was cured of paralysis.
+{1} thawed out!
+{1} thawed out!
+{1} is already confused!
+{1} is already confused!
+{1}'s {2} prevents confusion!
+{1}'s {2} prevents confusion!
+{1} became confused!
+{1} became confused!
+{1} is confused!
+{1} is confused!
+{1} snapped out of confusion!
+{1} snapped out of confusion!
+{1}'s {2} prevents romance!
+{1}'s {2} prevents romance!
+{1} fell in love!
+{1} fell in love!
+{1} is in love with {2}!
+{1} is in love with {2}!
+{1} is immobilized by love!
+{1} is immobilized by love!
+{1}'s {2} won't go any higher!
+{1}'s {2} won't go any higher!
+{1}'s {2} activated!
+{1}'s {2} activated!
+{1}'s {2} rose!
+{1}'s {2} rose!
+{1}'s {2} rose sharply!
+{1}'s {2} rose sharply!
+{1}'s {2} rose drastically!
+{1}'s {2} rose drastically!
+{1}'s {2} raised its {3}!
+{1}'s {2} raised its {3}!
+{1}'s {2} sharply raised its {3}!
+{1}'s {2} sharply raised its {3}!
+{1}'s {2} went way up!
+{1}'s {2} went way up!
+{1}'s {2} raised {3}'s {4}!
+{1}'s {2} raised {3}'s {4}!
+{1}'s {2} sharply raised {3}'s {4}!
+{1}'s {2} sharply raised {3}'s {4}!
+{1}'s {2} drastically raised {3}'s {4}!
+{1}'s {2} drastically raised {3}'s {4}!
+{1} is protected by Mist!
+{1} is protected by Mist!
+{1}'s {2} prevents stat loss!
+{1}'s {2} prevents stat loss!
+{1}'s {2} prevents {3}'s stat loss!
+{1}'s {2} prevents {3}'s stat loss!
+{1}'s {2} prevents Attack loss!
+{1}'s {2} prevents Attack loss!
+{1}'s {2} prevents Defense loss!
+{1}'s {2} prevents Defense loss!
+{1}'s {2} prevents accuracy loss!
+{1}'s {2} prevents accuracy loss!
+{1}'s {2} won't go any lower!
+{1}'s {2} won't go any lower!
+{1}'s {2} fell!
+{1}'s {2} fell!
+{1}'s {2} harshly fell!
+{1}'s {2} harshly fell!
+{1}'s {2} severely fell!
+{1}'s {2} severely fell!
+{1}'s {2} lowered its {3}!
+{1}'s {2} lowered its {3}!
+{1}'s {2} harshly lowered its {3}!
+{1}'s {2} harshly lowered its {3}!
+{1}'s {2} severely lowered its {3}!
+{1}'s {2} severely lowered its {3}!
+{1}'s {2} lowered {3}'s {4}!
+{1}'s {2} lowered {3}'s {4}!
+{1}'s {2} harshly lowered {3}'s {4}!
+{1}'s {2} harshly lowered {3}'s {4}!
+{1}'s {2} severely lowered {3}'s {4}!
+{1}'s {2} severely lowered {3}'s {4}!
+{1}'s substitute protected it from {2}'s {3}!
+{1}'s substitute protected it from {2}'s {3}!
+{1} is protected from {2}'s {3} by Mist!
+{1} is protected from {2}'s {3} by Mist!
+{1}'s {2} prevented {3}'s {4} from working!
+{1}'s {2} prevented {3}'s {4} from working!
+{1}'s {2} made {3} ineffective!
+{1}'s {2} made {3} ineffective!
+{1}'s {2} restored its HP!
+{1}'s {2} restored its HP!
+{1}'s {2} made {3} useless!
+{1}'s {2} made {3} useless!
+{1}'s {2} raised its Fire power!
+{1}'s {2} raised its Fire power!
+{1} avoids attacks by its ally Pokémon!
+{1} avoids attacks by its ally Pokémon!
+The {1} strengthened {2}'s power!
+The {1} strengthened {2}'s power!
+The substitute took damage for {1}!
+The substitute took damage for {1}!
+{1}'s substitute faded!
+{1}'s substitute faded!
+A critical hit on {1}!
+A critical hit on {1}!
+A critical hit!
+A critical hit!
+{1} endured the hit!
+{1} endured the hit!
+{1} hung on with Sturdy!
+{1} hung on with Sturdy!
+{1} hung on using its Focus Sash!
+{1} hung on using its Focus Sash!
+{1} hung on using its Focus Band!
+{1} hung on using its Focus Band!
+{1} is damaged by recoil!
+{1} is damaged by recoil!
+But nothing happened!
+But nothing happened!
+{1} made {2} drowsy!
+{1} made {2} drowsy!
+But it failed because of {1}'s {2}!
+But it failed because of {1}'s {2}!
+{1} healed its burn!
+{1} healed its burn!
+{1} cured its poisoning!
+{1} cured its poisoning!
+{1} cured its paralysis!
+{1} cured its paralysis!
+A soothing aroma wafted through the area!
+A soothing aroma wafted through the area!
+A bell chimed!
+A bell chimed!
+{1}'s sleep was woken.
+{1}'s sleep was woken.
+{1} was cured of its poisoning.
+{1} was cured of its poisoning.
+{1}'s burn was healed.
+{1}'s burn was healed.
+{1} was thawed out.
+{1} was thawed out.
+{1} was woken from its sleep.
+{1} was woken from its sleep.
+Your team became cloaked in a mystical veil!
+Your team became cloaked in a mystical veil!
+The opposing team became cloaked in a mystical veil!
+The opposing team became cloaked in a mystical veil!
+{1} woke up.
+{1} woke up.
+{1} began charging power!
+{1} began charging power!
+{1} is getting pumped!
+{1} is getting pumped!
+{1}'s stats won't go any higher!
+{1}'s stats won't go any higher!
+{1} became nimble!
+{1} became nimble!
+{1} cut its own HP and minimized its Attack!
+{1} cut its own HP and minimized its Attack!
+{1} cut its own HP and maximized its Attack!
+{1} cut its own HP and maximized its Attack!
+{1}'s stats won't go any lower!
+{1}'s stats won't go any lower!
+{1}'s stat changes were removed!
+{1}'s stat changes were removed!
+All stat changes were eliminated!
+All stat changes were eliminated!
+{1} switched all changes to its Attack and Sp. Atk with the target!
+{1} switched all changes to its Attack and Sp. Atk with the target!
+{1} switched all changes to its Defense and Sp. Def with the target!
+{1} switched all changes to its Defense and Sp. Def with the target!
+{1} switched stat changes with the target!
+{1} switched stat changes with the target!
+{1} copied {2}'s stat changes!
+{1} copied {2}'s stat changes!
+Your team became shrouded in mist!
+Your team became shrouded in mist!
+The opposing team became shrouded in mist!
+The opposing team became shrouded in mist!
+{1} switched its Attack and Defense!
+{1} switched its Attack and Defense!
+{1} shared its power with the target!
+{1} shared its power with the target!
+{1} shared its guard with the target!
+{1} shared its guard with the target!
+The battlers shared their pain!
+The battlers shared their pain!
+The tailwind blew from behind your team!
+The tailwind blew from behind your team!
+The tailwind blew from behind the opposing team!
+The tailwind blew from behind the opposing team!
+{1} learned {2}!
+{1} learned {2}!
+{1}'s type changed to match {2}'s!
+{1}'s type changed to match {2}'s!
+{1} acquired {2}!
+{1} acquired {2}!
+{1} copied {2}'s {3}!
+{1} copied {2}'s {3}!
+{1} swapped its {2} Ability with its target's {3} Ability!
+{1} swapped its {2} Ability with its target's {3} Ability!
+{1}'s Ability was suppressed!
+{1}'s Ability was suppressed!
+{1} was protected by {2}!
+{1} was protected by {2}!
+{1} is unaffected!
+{1} is unaffected!
+It's a one-hit KO!
+It's a one-hit KO!
+The bursting flame hit {1}
+The bursting flame hit {1}
+{1} had its HP restored.
+{1} had its HP restored.
+Magnitude {1}!
+Magnitude {1}!
+{1} is ready to help {2}!
+{1} is ready to help {2}!
+Electricity's power was weakened!
+Electricity's power was weakened!
+Fire's power was weakened!
+Fire's power was weakened!
+The Lucky Chant shielded your team from critical hits!
+The Lucky Chant shielded your team from critical hits!
+The Lucky Chant shielded the opposing team from critical hits!
+The Lucky Chant shielded the opposing team from critical hits!
+Reflect raised your team's Defense!
+Reflect raised your team's Defense!
+Reflect raised the opposing team's Defense!
+Reflect raised the opposing team's Defense!
+Light Screen raised your team's Special Defense!
+Light Screen raised your team's Special Defense!
+Light Screen raised the opposing team's Special Defense!
+Light Screen raised the opposing team's Special Defense!
+{1} took aim at {2}!
+{1} took aim at {2}!
+{1} was identified!
+{1} was identified!
+Quick Guard protected your team!
+Quick Guard protected your team!
+Quick Guard protected the opposing team!
+Quick Guard protected the opposing team!
+Wide Guard protected your team!
+Wide Guard protected your team!
+Wide Guard protected the opposing team!
+Wide Guard protected the opposing team!
+The mirror move failed!
+The mirror move failed!
+{1} shrouded itself with Magic Coat!
+{1} shrouded itself with Magic Coat!
+{1} waits for a target to make a move!
+{1} waits for a target to make a move!
+{1} turned into {2}!
+{1} turned into {2}!
+{1} was subjected to torment!
+{1} was subjected to torment!
+{1} sealed the opponent's move(s)!
+{1} sealed the opponent's move(s)!
+{1}'s {2} was disabled!
+{1}'s {2} was disabled!
+{1} fell for the taunt!
+{1} fell for the taunt!
+{1} was prevented from healing!
+{1} was prevented from healing!
+{1} received an encore!
+{1} received an encore!
+{1} whipped up a whirlwind!
+{1} whipped up a whirlwind!
+{1} became fully charged due to its Power Herb!
+{1} became fully charged due to its Power Herb!
+{1} took in sunlight!
+{1} took in sunlight!
+{1} became cloaked in a freezing light!
+{1} became cloaked in a freezing light!
+{1} became cloaked in freezing air!
+{1} became cloaked in freezing air!
+{1} became cloaked in a harsh light!
+{1} became cloaked in a harsh light!
+{1} tucked in its head!
+{1} tucked in its head!
+{1} flew up high!
+{1} flew up high!
+{1} burrowed its way under the ground!
+{1} burrowed its way under the ground!
+{1} hid underwater!
+{1} hid underwater!
+{1} sprang up!
+{1} sprang up!
+{1} vanished instantly!
+{1} vanished instantly!
+{1} took {2} into the sky!
+{1} took {2} into the sky!
+{1} was freed from the Sky Drop!
+{1} was freed from the Sky Drop!
+{1} was squeezed by {2}!
+{1} was squeezed by {2}!
+{1} clamped {2}!
+{1} clamped {2}!
+{1} was trapped in the fiery vortex!
+{1} was trapped in the fiery vortex!
+{1} became trapped by Magma Storm!
+{1} became trapped by Magma Storm!
+{1} became trapped by Sand Tomb!
+{1} became trapped by Sand Tomb!
+{1} was wrapped by {2}!
+{1} was wrapped by {2}!
+{1} has been afflicted with an infestation by {2}!
+{1} has been afflicted with an infestation by {2}!
+{1} was trapped in the vortex!
+{1} was trapped in the vortex!
+{1} became trapped in the vortex!
+{1} became trapped in the vortex!
+{1} caused an uproar!
+{1} caused an uproar!
+{1} became confused due to fatigue!
+{1} became confused due to fatigue!
+{1} unleashed energy!
+{1} unleashed energy!
+{1} is storing energy!
+{1} is storing energy!
+{1}'s HP is full!
+{1}'s HP is full!
+{1}'s HP was restored.
+{1}'s HP was restored.
+{1} slept and became healthy!
+{1} slept and became healthy!
+{1} surrounded itself with a veil of water!
+{1} surrounded itself with a veil of water!
+{1} planted its roots!
+{1} planted its roots!
+{1} was seeded!
+{1} was seeded!
+{1} sucked up the liquid ooze!
+{1} sucked up the liquid ooze!
+{1} had its energy drained!
+{1} had its energy drained!
+{1}'s {2} prevents {3} from using {4}!
+{1}'s {2} prevents {3} from using {4}!
+All Pokémon hearing the song will faint in three turns!
+All Pokémon hearing the song will faint in three turns!
+{1} wants its target to bear a grudge!
+{1} wants its target to bear a grudge!
+{1} is trying to take its foe down with it!
+{1} is trying to take its foe down with it!
+{1} braced itself!
+{1} braced itself!
+{1} fled from battle!
+{1} fled from battle!
+{1} anchored itself with {2}!
+{1} anchored itself with {2}!
+{1} anchored itself with its roots!
+{1} anchored itself with its roots!
+{1} can no longer escape!
+{1} can no longer escape!
+{1} dropped its {2}!
+{1} dropped its {2}!
+{1} stole {2}'s {3}!
+{1} stole {2}'s {3}!
+{1} switched items with its opponent!
+{1} switched items with its opponent!
+{1} obtained {2}.
+{1} obtained {2}.
+{1} received {2} from {3}!
+{1} received {2} from {3}!
+{1} stole and ate its target's {2}!
+{1} stole and ate its target's {2}!
+{1}'s {2} was incinerated!
+{1}'s {2} was incinerated!
+{1} found one {2}!
+{1} found one {2}!
+{1} flung its {2}!
+{1} flung its {2}!
+{1} got over its infatuation.
+{1} got over its infatuation.
+{1}'s status is returned to normal!
+{1}'s status is returned to normal!
+{1} can't use items anymore!
+{1} can't use items anymore!
+The area returned to normal!
+The area returned to normal!
+It created a bizarre area in which Pokémon's held items lose their effects!
+It created a bizarre area in which Pokémon's held items lose their effects!
+There is no relief from this heavy rain!
+There is no relief from this heavy rain!
+The extremely harsh sunlight was not lessened at all!
+The extremely harsh sunlight was not lessened at all!
+The mysterious air current blows on regardless!
+The mysterious air current blows on regardless!
+The sunlight turned harsh!
+The sunlight turned harsh!
+It started to rain!
+It started to rain!
+A sandstorm brewed!
+A sandstorm brewed!
+It started to hail!
+It started to hail!
+Spikes were scattered all around the opposing team's feet!
+Spikes were scattered all around the opposing team's feet!
+Spikes were scattered all around your team's feet!
+Spikes were scattered all around your team's feet!
+Poison spikes were scattered all around the opposing team's feet!
+Poison spikes were scattered all around the opposing team's feet!
+Poison spikes were scattered all around your team's feet!
+Poison spikes were scattered all around your team's feet!
+Pointed stones float in the air around the opposing team!
+Pointed stones float in the air around the opposing team!
+Pointed stones float in the air around your team!
+Pointed stones float in the air around your team!
+The two moves have become one! It's a combined move!
+The two moves have become one! It's a combined move!
+A sea of fire enveloped the opposing team!
+A sea of fire enveloped the opposing team!
+A sea of fire enveloped your team!
+A sea of fire enveloped your team!
+A swamp enveloped the opposing team!
+A swamp enveloped the opposing team!
+A swamp enveloped your team!
+A swamp enveloped your team!
+{1} is waiting for {2}'s move...
+{1} is waiting for {2}'s move...
+A rainbow appeared in the sky on your team's side!
+A rainbow appeared in the sky on your team's side!
+A rainbow appeared in the sky on the opposing team's side!
+A rainbow appeared in the sky on the opposing team's side!
+Coins were scattered everywhere!
+Coins were scattered everywhere!
+The opposing team's Reflect wore off!
+The opposing team's Reflect wore off!
+Your team's Reflect wore off!
+Your team's Reflect wore off!
+The opposing team's Light Screen wore off!
+The opposing team's Light Screen wore off!
+Your team's Light Screen wore off!
+Your team's Light Screen wore off!
+{1} already has a substitute!
+{1} already has a substitute!
+It was too weak to make a substitute!
+It was too weak to make a substitute!
+{1} put in a substitute!
+{1} put in a substitute!
+{1} cut its own HP and laid a curse on {2}!
+{1} cut its own HP and laid a curse on {2}!
+It reduced the PP of {1}'s {2} by {3}!
+It reduced the PP of {1}'s {2} by {3}!
+{1} began having a nightmare!
+{1} began having a nightmare!
+{1} got free of {2}'s {3}!
+{1} got free of {2}'s {3}!
+{1} shed Leech Seed!
+{1} shed Leech Seed!
+{1} blew away stealth rocks!
+{1} blew away stealth rocks!
+{1} blew away Spikes!
+{1} blew away Spikes!
+{1} blew away poison spikes!
+{1} blew away poison spikes!
+{1} blew away sticky webs!
+{1} blew away sticky webs!
+{1} foresaw an attack!
+{1} foresaw an attack!
+{1} chose Doom Desire as its destiny!
+{1} chose Doom Desire as its destiny!
+{1} can't stockpile any more!
+{1} can't stockpile any more!
+{1} stockpiled {2}!
+{1} stockpiled {2}!
+{1}'s stockpiled effect wore off!
+{1}'s stockpiled effect wore off!
+But it failed to swallow a thing!
+But it failed to swallow a thing!
+{1} lost its focus and couldn't move!
+{1} lost its focus and couldn't move!
+{1} became the center of attention!
+{1} became the center of attention!
+Gravity intensified!
+Gravity intensified!
+{1} levitated with electromagnetism!
+{1} levitated with electromagnetism!
+{1} was hurled into the air!
+{1} was hurled into the air!
+{1} fell straight down!
+{1} fell straight down!
+{1} took the kind offer!
+{1} took the kind offer!
+{1}'s move was postponed!
+{1}'s move was postponed!
+{1} reverted the dimensions!
+{1} reverted the dimensions!
+{1} twisted the dimensions!
+{1} twisted the dimensions!
+{1} and {2} switched places!
+{1} and {2} switched places!
+{1} was unaffected!
+{1} was unaffected!
+Wonder Room wore off, and the Defense and Sp. Def stats returned to normal!
+Wonder Room wore off, and the Defense and Sp. Def stats returned to normal!
+It created a bizarre area in which the Defense and Sp. Def stats are swapped!
+It created a bizarre area in which the Defense and Sp. Def stats are swapped!
+Congratulations, {1}!
+Congratulations, {1}!
+{1}'s stats were reversed!
+{1}'s stats were reversed!
+{1} was electrified!
+{1} was electrified!
+The Ion Deluge started!
+The Ion Deluge started!
+{1} is covered in powder!
+{1} is covered in powder!
+{1} intends to flip up a mat and block incoming attacks!
+{1} intends to flip up a mat and block incoming attacks!
+Crafty Shield protected your team!
+Crafty Shield protected your team!
+Crafty Shield protected the opposing team!
+Crafty Shield protected the opposing team!
+{1} is absorbing power!
+{1} is absorbing power!
+No one will be able to run away during the next turn!
+No one will be able to run away during the next turn!
+A sticky web has been laid out beneath the opposing team's feet!
+A sticky web has been laid out beneath the opposing team's feet!
+A sticky web has been laid out beneath your team's feet!
+A sticky web has been laid out beneath your team's feet!
+An electric current runs across the battlefield!
+An electric current runs across the battlefield!
+Grass grew to cover the battlefield!
+Grass grew to cover the battlefield!
+Mist swirled about the battlefield!
+Mist swirled about the battlefield!
+Everyone is caught up in the happy atmosphere!
+Everyone is caught up in the happy atmosphere!
+Would you like to give a nickname to {1}?
+Would you like to give a nickname to {1}?
+{1}'s nickname?
+{1}'s nickname?
+Box "{1}" on {2}'s PC was full.
+Box "{1}" on {2}'s PC was full.
+Box "{1}" on someone's PC was full.
+Box "{1}" on someone's PC was full.
+{1} was transferred to box "{2}".
+{1} was transferred to box "{2}".
+{1} was transferred to {2}'s PC.
+{1} was transferred to {2}'s PC.
+{1} was transferred to someone's PC.
+{1} was transferred to someone's PC.
+It was stored in box "{1}".
+It was stored in box "{1}".
+{1} threw one {2}!
+{1} threw one {2}!
+The Trainer blocked the Ball!<<n>>Don't be a thief!
+The Trainer blocked the Ball!<<n>>Don't be a thief!
+Oh no! The Pokémon broke free!
+Oh no! The Pokémon broke free!
+Aww... It appeared to be caught!
+Aww... It appeared to be caught!
+Aargh! Almost had it!
+Aargh! Almost had it!
+Gah! It was so close, too!
+Gah! It was so close, too!
+Gotcha! {1} was caught!
+Gotcha! {1} was caught!
+{1}'s data was added to the Pokédex.
+{1}'s data was added to the Pokédex.
+Party 1 has no Pokémon.
+Party 1 has no Pokémon.
+Party 2 has no Pokémon.
+Party 2 has no Pokémon.
+Wild battles with more than two Pokémon are not allowed.
+Wild battles with more than two Pokémon are not allowed.
+The foe {1}
+The foe {1}
+Mega Net
+Mega Net
+Mega Ring
+Mega Ring
+There's no PP left for this move!
+There's no PP left for this move!
+The effects of the {1} prevent status moves from being used!
+The effects of the {1} prevent status moves from being used!
+{1} allows the use of only {2}!
+{1} allows the use of only {2}!
+{1} can't use the same move twice in a row due to the torment!
+{1} can't use the same move twice in a row due to the torment!
+{1} hasn't eaten any held berry, so it can't possibly belch!
+{1} hasn't eaten any held berry, so it can't possibly belch!
+{1} has no moves left!
+{1} has no moves left!
+{1}'s {2} let it move first!
+{1}'s {2} let it move first!
+An Egg can't battle!
+An Egg can't battle!
+You can't switch {1}'s Pokémon with one of yours!
+You can't switch {1}'s Pokémon with one of yours!
+{1} has no energy left to battle!
+{1} has no energy left to battle!
+{1} is already in battle!
+{1} is already in battle!
+{1} has already been selected.
+{1} has already been selected.
+{1} can't be switched out!
+{1} can't be switched out!
+{1}'s {2} prevents switching!
+{1}'s {2} prevents switching!
+{1} is about to send in {2}.
+{1} is about to send in {2}.
+Will {1} change Pokémon?
+Will {1} change Pokémon?
+{1}, that's enough! Come back!
+{1}, that's enough! Come back!
+Use next Pokémon?
+Use next Pokémon?
+Go! {1}!
+Go! {1}!
+Do it! {1}!
+Do it! {1}!
+Go for it, {1}!
+Go for it, {1}!
+Your opponent's weak!<<n>>Get 'em, {1}!
+Your opponent's weak!<<n>>Get 'em, {1}!
+{1} sent<<n>>out {2}!
+{1} sent<<r>><<n>>out {2}!
+{1} used the<<n>>{2}.
+{1} used the<<r>><<n>>{2}.
+But it had no effect!
+But it had no effect!
+Couldn't return unused item to Bag somehow.
+Couldn't return unused item to Bag somehow.
+Embargo's effect prevents the item's use on {1}!
+Embargo's effect prevents the item's use on {1}!
+Couldn't return unusable item to Bag somehow.
+Couldn't return unusable item to Bag somehow.
+It's impossible to aim without being focused!
+It's impossible to aim without being focused!
+{1} used the<<n>>{2}!
+{1} used the<<r>><<n>>{2}!
+{1} became healthy!
+{1} became healthy!
+Treat this battle as a win?
+Treat this battle as a win?
+Treat this battle as a loss?
+Treat this battle as a loss?
+No! There's no running from a Trainer battle!
+No! There's no running from a Trainer battle!
+Would you like to forfeit the match and quit now?
+Would you like to forfeit the match and quit now?
+{1} forfeited the match!
+{1} forfeited the match!
+Got away safely!
+Got away safely!
+Can't escape!
+Can't escape!
+{1} escaped using Run Away!
+{1} escaped using Run Away!
+{1} escaped using its {2}!
+{1} escaped using its {2}!
+{1}'s fervent wish has reached {2}!
+{1}'s fervent wish has reached {2}!
+{1}'s {2} is reacting to {3}'s {4}!
+{1}'s {2} is reacting to {3}'s {4}!
+Mega {1}
+Mega {1}
+{1} has Mega Evolved into {2}!
+{1} has Mega Evolved into {2}!
+{1}'s Primal Reversion!<<n>>It reverted to its primal form!
+{1}'s Primal Reversion!<<n>>It reverted to its primal form!
+{1} called {2}!
+{1} called {2}!
+{1}!
+{1}!
+{1} came to its senses from the Trainer's call!
+{1} came to its senses from the Trainer's call!
+The rest of your team gained Exp. Points thanks to the {1}!
+The rest of your team gained Exp. Points thanks to the {1}!
+{1} gained a boosted {2} Exp. Points!
+{1} gained a boosted {2} Exp. Points!
+{1} gained {2} Exp. Points!
+{1} gained {2} Exp. Points!
+The new level ({1}) is less than the Pokémon's<<n>>current level ({2}), which shouldn't happen.<<n>><<[>>Debug: {3}<<]>>
+The new level ({1}) is less than the Pokémon's<<r>><<n>>current level ({2}), which shouldn't happen.<<r>><<n>><<[>>Debug: {3}<<]>>
+{1} grew to Level {2}!
+{1} grew to Level {2}!
+{1} is trying to learn {2}.
+{1} is trying to learn {2}.
+But {1} can't learn more than four moves.
+But {1} can't learn more than four moves.
+Delete a move to make room for {1}?
+Delete a move to make room for {1}?
+Which move should be forgotten?
+Which move should be forgotten?
+1, 2, and... ... ...
+1,  2, and... ... ...
+Poof!
+Poof!
+{1} forgot {2}.
+{1} forgot {2}.
+And...
+And...
+Should {1} stop learning {2}?
+Should {1} stop learning {2}?
+{1} did not learn {2}.
+{1} did not learn {2}.
+Oh!<<n>>A Shadow Pokémon!
+Oh!<<n>>A Shadow Pokémon!
+The healing wish came true for {1}!
+The healing wish came true for {1}!
+{1} became cloaked in mystical moonlight!
+{1} became cloaked in mystical moonlight!
+{1} is hurt by the spikes!
+{1} is hurt by the spikes!
+Pointed stones dug into {1}!
+Pointed stones dug into {1}!
+{1} absorbed the poison spikes!
+{1} absorbed the poison spikes!
+{1} was badly poisoned by the poison spikes!
+{1} was badly poisoned by the poison spikes!
+{1} was poisoned by the poison spikes!
+{1} was poisoned by the poison spikes!
+{1} was caught in a sticky web!
+{1} was caught in a sticky web!
+Party 1 has more than {1} Pokémon.
+Party 1 has more than {1} Pokémon.
+Party 2 has more than {1} Pokémon.
+Party 2 has more than {1} Pokémon.
+Only two wild Pokémon are allowed in double battles
+Only two wild Pokémon are allowed in double battles
+Wild {1} appeared!
+Wild {1} appeared!
+Only one wild Pokémon is allowed in single battles
+Only one wild Pokémon is allowed in single battles
+Wild {1} and<<n>>{2} appeared!
+Wild {1} and<<r>><<n>>{2} appeared!
+Only one or two wild Pokémon are allowed
+Only one or two wild Pokémon are allowed
+Opponents with zero or more than two people are not allowed
+Opponents with zero or more than two people are not allowed
+Player trainers with zero or more than two people are not allowed
+Player trainers with zero or more than two people are not allowed
+\tg<<[>>#{@nombreenemigo}<<]>>¿En qué estás pensando?<<n>>Huir en tu primer duelo sería ridículo.
+\tg<<[>>#{@nombreenemigo}<<]>>¿En qué estás pensando?<<n>>Huir en tu primer duelo sería ridículo.
+\tg<<[>>#{@nombreenemigo}<<]>>Esa respuesta es ridícula.<<n>>¡Te acabo de decir lo que tienes que responder!
+\tg<<[>>#{@nombreenemigo}<<]>>Esa respuesta es ridícula.<<n>>¡Te acabo de decir lo que tienes que responder!
+\tg<<[>>#{@nombreenemigo}<<]>>Esa respuesta es ridícula.<<n>>¡Te acabo de explicar cómo debes responder!
+\tg<<[>>#{@nombreenemigo}<<]>>Esa respuesta es ridícula.<<n>>¡Te acabo de explicar cómo debes responder!
+\tg<<[>>#{@nombreenemigo}<<]>>Esa provocación es ridícula.<<n>>¡Prueba con la que acabas de aprender!
+\tg<<[>>#{@nombreenemigo}<<]>>Esa provocación es ridícula.<<n>>¡Prueba con la que acabas de aprender!
+\tg<<[>>Edward<<]>>Parece que lo captas.<<n>>Al responder correctamente una provocación, tu enemigo perderá la concentración.
+\tg<<[>>Edward<<]>>Parece que lo captas.<<n>>Al responder correctamente una provocación, tu enemigo perderá la concentración.
+\tg<<[>>Edward<<]>>Por el contrario, si eres incapaz de responder correctamente a tus adversarios...<<n>>Serás tú el que acabe perdiendo, por supuesto.
+\tg<<[>>Edward<<]>>Por el contrario, si eres incapaz de responder correctamente a tus adversarios...<<n>>Serás tú el que acabe perdiendo, por supuesto.
+\tg<<[>>Edward<<]>>Es tu turno de lanzar una provocación.<<n>>Prueba con la que acabas de aprender.
+\tg<<[>>Edward<<]>>Es tu turno de lanzar una provocación.<<n>>Prueba con la que acabas de aprender.
+\tg<<[>>Edward<<]>>Si quieres recuperar tus enseres tendrás que derrotarme en un duelo.<<n>>Sin experiencia, nunca lo conseguirás.
+\tg<<[>>Edward<<]>>Si quieres recuperar tus enseres tendrás que derrotarme en un duelo.<<n>>Sin experiencia, nunca lo conseguirás.
+\tg[Edward]Prueba a retar a otros piratas y vuelve a verme cuando estés preparado...
+\tg[Edward]Prueba a retar a otros piratas y vuelve a verme cuando estés preparado...
+\tg<<[>>#{@nombreenemigo}<<]>>¿En qué estás pensando?<<n>>Intentar huir en tu primer duelo es realmente patético.
+\tg<<[>>#{@nombreenemigo}<<]>>¿En qué estás pensando?<<n>>Intentar huir en tu primer duelo es realmente patético.
+\tg<<[>>Edward<<]>>Tal y como era de esperar.<<n>>Tu repertorio de provocaciones y contestaciones está prácticamente vacío.
+\tg<<[>>Edward<<]>>Tal y como era de esperar.<<n>>Tu repertorio de provocaciones y contestaciones está prácticamente vacío.
+\tg<<[>>Edward<<]>>La victoria es mía.<<n>>¡Y tu mapa también!
+\tg<<[>>Edward<<]>>La victoria es mía.<<n>>¡Y tu mapa también!
+\tg<<[>>Edward<<]>>Bien, hora de ponernos serios.<<n>>¡No esperes merced de quien aspira a convertirse en el nuevo Punmaster!
+\tg<<[>>Edward<<]>>Bien, hora de ponernos serios.<<n>>¡No esperes merced de quien aspira a convertirse en el nuevo Punmaster!
+\tg<<[>>Edward<<]>>Tal y como esperaba.<<n>>Tu repertorio de provocaciones y contestaciones está prácticamente vacío.
+\tg<<[>>Edward<<]>>Tal y como esperaba.<<n>>Tu repertorio de provocaciones y contestaciones está prácticamente vacío.
+\tg<<[>>Edward<<]>>La victoria es mía.<<n>>¡Y siento decirte que tu mapa también!
+\tg<<[>>Edward<<]>>La victoria es mía.<<n>>¡Y siento decirte que tu mapa también!
+\tg<<[>>Edward<<]>>Bien, hora de ponernos serios.<<n>>¡No esperes piedad de quien aspira a convertirse en el nuevo Punmaster!
+\tg<<[>>Edward<<]>>Bien, hora de ponernos serios.<<n>>¡No esperes piedad de quien aspira a convertirse en el nuevo Punmaster!
+\tg[Edward]¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!
+\tg[Edward]¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!
+\tg<<[>>Edward<<]>>He dicho &quot;¡ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot.<<n>>¿No sabes cómo funcionan los combates en la mar?
+\tg<<[>>Edward<<]>>He dicho &quot;¡ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot.<<n>>¿No sabes cómo funcionan los combates en la mar?
+\tg[Edward]Cuando yo digo &quot;¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot; tu respuesta sería algo así...
+\tg[Edward]Cuando yo digo &quot;¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot; tu respuesta sería algo así...
+\tg[Edward]&quot;Con tu forma de combatir, lo que me extraña es que no acabe en una catástrofe <b>Absoluta</b>.&quot;!
+\tg[Edward]&quot;Con tu forma de combatir, lo que me extraña es que no acabe en una catástrofe <b>Absoluta</b>.&quot;!
+\tg<<[>>Edward<<]>>He dicho &quot;¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot;<<n>>¿No sabes cómo funcionan los combates en la mar?
+\tg<<[>>Edward<<]>>He dicho &quot;¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot;<<n>>¿No sabes cómo funcionan los combates en la mar?
+\tg[Edward]&quot;Con tu forma de combatir, lo que me extraña es que no acabe en una catástrofe <b>Absoluta</b>.&quot;
+\tg[Edward]&quot;Con tu forma de combatir, lo que me extraña es que no acabe en una catástrofe <b>Absoluta</b>.&quot;
+\tg<<[>>Edward<<]>>Tal y como esperaba.<<n>>Tu repertorio de provocaciones y contestaciones es prácticamente nulo.
+\tg<<[>>Edward<<]>>Tal y como esperaba.<<n>>Tu repertorio de provocaciones y contestaciones es prácticamente nulo.
+\tg[Edward]Prueba a retar a otros navegantes y vuelve a verme cuando estés preparado...
+\tg[Edward]Prueba a retar a otros navegantes y vuelve a verme cuando estés preparado...
+¡Has perdido 10 Cherubíes al huir!
+¡Has perdido 10 Cherubíes al huir!
+¡Has perdido 20 Cherubíes por la derrota!
+¡Has perdido 20 Cherubíes por la derrota!
+¡Has ganado 50 Cherubíes por la victoria!
+¡Has ganado 50 Cherubíes por la victoria!
+\tg[\PN]Ah, ¿¡qué es eso que hay detrás tuya!?
+\tg[\PN]Ah, ¿¡qué es eso que hay detrás tuya!?
+\tg[#{@nombreenemigo}]¿Detrás mía?
+\tg[#{@nombreenemigo}]¿Detrás mía?
+Habilidad Asignada (tecla M)
+Habilidad Asignada (tecla M)
+Habilidad (tecla M): Despejar
+Habilidad (tecla M): Despejar
+A #{$Trainer.party[0].name} no parece gustarle el frío...
+A #{$Trainer.party[0].name} no parece gustarle el frío...
+-#{hpchange} PS
+-#{hpchange} PS
+Poco eficaz...<<n>>-#{hpchange} PS
+Poco eficaz...<<n>>-#{hpchange} PS
+¡Muy eficaz!<<n>>-#{hpchange} PS
+¡Muy eficaz!<<n>>-#{hpchange} PS
+Poco eficaz...
+Poco eficaz...
+¡Muy eficaz!
+¡Muy eficaz!
+- #{hpchange} PS
+- #{hpchange} PS
+¡{1} subió al nivel {2}!<<n>>¡Sus stats aumentaron!
+¡{1} subió al nivel {2}!<<n>>¡Sus stats aumentaron!
+¡Crítico!
+¡Crítico!
+Graphics/Pictures/typesbw
+Graphics/Pictures/typesbw
+Graphics/Pictures/categorybw
+Graphics/Pictures/categorybw
+x{1:2d}
+x{1:2d}
+Usando el objeto...
+Usando el objeto...
+{1} ha recuperado los PS.
+{1} ha recuperado los PS.
+No tendrá ningún efecto.
+No tendrá ningún efecto.
+Monedas: {1}
+Monedas: {1}
+Has desactivado el Repartir Exp.
+Has desactivado el Repartir Exp.
+Has activado el Repartir Exp.
+Has activado el Repartir Exp.
+... ... ... ...¡Nada!<<n>>No responde.
+... ... ... ...¡Nada!<<r>><<n>>No responde.
+¡El {1} indica algo justo bajo los pies!<<1>>
+¡El {1} indica algo justo bajo los pies!<<1>>
+¡Alto!<<n>>¡El {1} está respondiendo!<<1>>
+¡Alto!<<n>>¡El {1} está respondiendo!<<1>>
+¡Hay algo enterrado muy cerca!
+¡Hay algo enterrado muy cerca!
+{1} se ha despertado.
+{1} se ha despertado.
+{1} se curó del envenenamiento.
+{1} se curó del envenenamiento.
+La quemadura de {1} ha sido curada.
+La quemadura de {1} ha sido curada.
+{1} ha sido liberado de la parálisis.
+{1} ha sido liberado de la parálisis.
+{1} ha sido descongelado.
+{1} ha sido descongelado.
+{1} ha recuperado su salud.
+{1} ha recuperado su salud.
+{1} ha recuperado {2} PS.
+{1} ha recuperado {2} PS.
+¿Qué movimiento recuperar?
+¿Qué movimiento recuperar?
+Los PP han sido restaurados.
+Los PP han sido restaurados.
+¿A qué movimiento subir los PP?
+¿A qué movimiento subir los PP?
+Se incrementaron los PP de {1}.
+Se incrementaron los PP de {1}.
+Se incrementaron los PS de {1}.
+Se incrementaron los PS de {1}.
+El Ataque de {1} se ha incrementado.
+El Ataque de {1} se ha incrementado.
+La Defensa de {1} se ha incrementado.
+La Defensa de {1} se ha incrementado.
+El Ataque Especial de {1} se ha incrementado.
+El Ataque Especial de {1} se ha incrementado.
+La Defensa Especial de {1} se ha incrementado.
+La Defensa Especial de {1} se ha incrementado.
+La Velocidad de {1} se ha incrementado.
+La Velocidad de {1} se ha incrementado.
+Los PS de {1} se incrementaron.
+Los PS de {1} se incrementaron.
+¡{1} te adora! ¡Pero sus PS de base han disminuido!
+¡{1} te adora! ¡Pero sus PS de base han disminuido!
+{1} se ha vuelto más amable. ¡Sus PS de base ya no pueden bajar más!
+{1} se ha vuelto más amable. ¡Sus PS de base ya no pueden bajar más!
+{1} se ha vuelto más amable. ¡Pero tiene menos PS de base!
+{1} se ha vuelto más amable. ¡Pero tiene menos PS de base!
+¡{1} te adora! ¡Pero su Ataque de base ha disminuido!
+¡{1} te adora! ¡Pero su Ataque de base ha disminuido!
+{1} se ha vuelto más amable. ¡Su Ataque de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Su Ataque de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Pero tiene menos Ataque de base!
+{1} se ha vuelto más amable. ¡Pero tiene menos Ataque de base!
+¡{1} te adora! ¡Pero su Defensa de base ha disminuido!
+¡{1} te adora! ¡Pero su Defensa de base ha disminuido!
+{1} se ha vuelto más amable. ¡Su Defensa de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Su Defensa de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Pero tiene menos Defensa de base!
+{1} se ha vuelto más amable. ¡Pero tiene menos Defensa de base!
+¡{1} te adora! ¡Pero su Ataque Especial de base ha disminuido!
+¡{1} te adora! ¡Pero su Ataque Especial de base ha disminuido!
+{1} se ha vuelto más amable. ¡Su Ataque Especial de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Su Ataque Especial de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Pero tiene menos Ataque Especial de base!
+{1} se ha vuelto más amable. ¡Pero tiene menos Ataque Especial de base!
+¡{1} te adora! ¡Pero su Defensa Especial de base ha disminuido!
+¡{1} te adora! ¡Pero su Defensa Especial de base ha disminuido!
+{1} se ha vuelto más amable. ¡Su Defensa Especial de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Su Defensa Especial de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Pero tiene menos Defensa Especial de base!
+{1} se ha vuelto más amable. ¡Pero tiene menos Defensa Especial de base!
+¡{1} te adora! ¡Pero su Velocidad de base ha disminuido!
+¡{1} te adora! ¡Pero su Velocidad de base ha disminuido!
+{1} se ha vuelto más amable. ¡Su Velocidad de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Su Velocidad de base ya no puede bajar más!
+{1} se ha vuelto más amable. ¡Pero tiene menos Velocidad de base!
+{1} se ha vuelto más amable. ¡Pero tiene menos Velocidad de base!
+¡{1} ha cambiado de forma!
+¡{1} ha cambiado de forma!
+No se puede usar en un Pokémon debilitado.
+No se puede usar en un Pokémon debilitado.
+No tuvo efecto.
+No tuvo efecto.
+No tienes espacio para separar a los Pokémon.
+No tienes espacio para separar a los Pokémon.
+¿Fusionar con qué Pokémon?
+¿Fusionar con qué Pokémon?
+No se puede fusionar con un Huevo.
+No se puede fusionar con un Huevo.
+No se puede fusionar con un Pokémon debilitado.
+No se puede fusionar con un Pokémon debilitado.
+No se puede fusionar con sí mismo.
+No se puede fusionar con sí mismo.
+No se puede fusionar con ese Pokémon.
+No se puede fusionar con ese Pokémon.
+No se puede utilizar en un Pokémon debilitado.
+No se puede utilizar en un Pokémon debilitado.
+¡{1} ha cambiando de forma!
+¡{1} ha cambiando de forma!
+¿Quieres cambiar la habilidad de {1} a {2}?
+¿Quieres cambiar la habilidad de {1} a {2}?
+¡La habilidad de {1} se ha cambiado a {2}!
+¡La habilidad de {1} se ha cambiado a {2}!
+{1} ya no está confuso.
+{1} ya no está confuso.
+¡Tu equipo ha sido cubierto por una Neblina!
+¡Tu equipo ha sido cubierto por una Neblina!
+¡El equipo enemigo ha sido cubierto por una Neblina!
+¡El equipo enemigo ha sido cubierto por una Neblina!
+¡Esto no es bueno! ¡No se puede apuntar cuando hay más de un Pokémon!
+¡Esto no es bueno! ¡No se puede apuntar cuando hay más de un Pokémon!
+¡No hay espacio en la PC!
+¡No hay espacio en la PC!
+No se puede usar en la bicicleta.
+No se puede usar en la bicicleta.
+¡Se ha agotado la batería!<<n>>Para recargarlo, necesitas caminar otros {1} pasos.
+¡Se ha agotado la batería!<<n>>Para recargarlo, necesitas caminar otros {1} pasos.
+Las hojas de la hierba están quietas...
+Las hojas de la hierba están quietas...
+El número de nivel ({1}) no es válido.
+El número de nivel ({1}) no es válido.
+Método de modificación de felicidad desconocido.
+Método de modificación de felicidad desconocido.
+El número de especie (núm. {1} de {2}) no es válido.
+El número de especie (núm. {1} de {2}) no es válido.
+\se<<[>><<]>>1,\wt<<[>>4<<]>> 2,\wt<<[>>4<<]>> y...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ¡Puf!\se<<[>>balldrop<<]>><<1>>
+\se<<[>><<]>>1,\wt<<[>>4<<]>> 2,\wt<<[>>4<<]>> y...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ¡Puf!\se<<[>>balldrop<<]>><<1>>
+{1} ha olvidado cómo<<n>>usar {2}.<<1>>
+{1} ha olvidado cómo<<r>><<n>>usar {2}.<<1>>
+Huh?<<1>>
+Huh?<<1>>
+...<<1>>
+...<<1>>
+... .... .....<<1>>
+... .... .....<<1>>
+{1} hatched from the Egg!
+{1} hatched from the Egg!
+{1:s}<<n>>ID: {2:05d} OT: {3:s}\wtnp<<[>>0<<]>>
+{1:s}<<r>><<n>>ID: {2:05d}   OT: {3:s}\wtnp<<[>>0<<]>>
+For {1}'s {2},<<n>>{3} sends {4}.<<1>>
+For {1}'s {2},<<r>><<n>>{3} sends {4}.<<1>>
+{1} bids farewell to {2}.
+{1} bids farewell to {2}.
+{1:s}<<n>>ID: {2:05d} OT: {3:s}<<1>>
+{1:s}<<r>><<n>>ID: {2:05d}   OT: {3:s}<<1>>

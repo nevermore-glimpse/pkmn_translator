@@ -123,17 +123,19 @@ def strip_prefix(text):
 # ================================================================
 # 保护 / 还原
 # ================================================================
-def protect(text):
+def protect(text, drop_newline=True):
     """
     保护控制码、标签、占位符。返回 (安全文本, maps)。
 
     ★ 占位符编号按文本从左到右的顺序分配，保证 @0@ @1@ @2@ ...
+    ★ drop_newline=False 时保留 \\n（中文润色流程需要原样保住换行控制码）
     """
     maps = []
     counter = [0]
 
     # ① 先删 \n（小写），\N（大写）保留
-    text = re.sub(r'\\n', '', text)
+    if drop_newline:
+        text = re.sub(r'\\n', '', text)
 
     # ② 冲突检测
     left, right = _PH_L_DEFAULT, _PH_R_DEFAULT
@@ -346,6 +348,87 @@ def protect(text):
     return result, maps
 
 
+# ================================================================
+# 控制码回退：译文里缺失 / 未原样保留的控制码，按原文补回
+# ================================================================
+def control_symbols(text, ignore_newline=True):
+    """
+    列出 text 里所有可识别的控制码（按出现顺序，可重复）。
+    \\n（小写）是换行符，由重排逻辑另行处理，默认不计入。
+    """
+    if not text:
+        return []
+    out = []
+    for c in CTRL_RE.findall(text):
+        if ignore_newline and c == "\\n":
+            continue
+        out.append(c)
+    out += ANGLE_CMD_RE.findall(text)
+    out += HTML_TAG_RE.findall(text)
+    out += re.findall(_HTML_ENTITY_PAT, text)
+    return out
+
+
+def _insert_ctrl_by_src(text, ctrl, src):
+    """按原文里相邻控制码的位置，把缺失的控制码插回译文。"""
+    src_list = control_symbols(src)
+    try:
+        i = src_list.index(ctrl)
+    except ValueError:
+        i = 0
+
+    # ① 前一个控制码 → 插到它后面
+    for j in range(i - 1, -1, -1):
+        prev = src_list[j]
+        pos = text.find(prev)
+        if pos != -1:
+            end = pos + len(prev)
+            return text[:end] + ctrl + text[end:]
+
+    # ② 后一个控制码 → 插到它前面
+    for j in range(i + 1, len(src_list)):
+        nxt = src_list[j]
+        pos = text.find(nxt)
+        if pos != -1:
+            return text[:pos] + ctrl + text[pos:]
+
+    # ③ 找不到锚点：按它在原文里的相对位置插回（比直接追加更贴近原句）
+    idx = src.find(ctrl)
+    ratio = idx / max(1, len(src))
+    if ratio <= 0.02:
+        return ctrl + text
+    if ratio >= 0.98:
+        return text + ctrl
+    pos = int(round(len(text) * ratio))
+    pos = max(0, min(len(text), pos))
+    return text[:pos] + ctrl + text[pos:]
+
+
+def repair_missing_controls(src, dst):
+    """
+    比对原文与译文的控制码，把译文中缺失的按原文原样补回。
+    返回 (新译文, 补回的控制码列表)。
+
+    例：原文含 \\PN（玩家名），模型把它翻没了 / 翻成别的 →
+        这里把 \\PN 原样插回译文，避免检查报告报「符号不匹配」。
+    """
+    if not src or not dst:
+        return dst, []
+
+    from collections import Counter
+    missing = Counter(control_symbols(src)) - Counter(control_symbols(dst))
+    if not missing:
+        return dst, []
+
+    fixed = list(missing.elements())
+    text = dst
+    for ctrl in fixed:
+        if ctrl in text:
+            continue
+        text = _insert_ctrl_by_src(text, ctrl, src)
+    return text, fixed
+
+
 def detect_unknown_ctrl(safe_text):
     """
     在 protect() 处理后的文本中，找出未被识别的控制码。
@@ -478,11 +561,40 @@ def verify(text, maps):
 
 # ================================================================
 # 术语表
+#   ★ 性能：术语表动辄 4000+ 条，若整体拼成一个超长 alternation 正则，
+#     每条句子做一次 finditer 都要试遍全部分支，慢且容易撞上正则规模上限。
+#     这里拆成两条路：
+#        · 单词类术语（不含空格/标点）→ 直接切词后查哈希表，O(n)
+#        · 多词 / 含标点的术语     → 单独一个小正则
+#     语义与原来的"词边界 + 大小写不敏感"完全一致，速度提升一个数量级。
 # ================================================================
 _TERMS = []
 _TERM_MAP = {}
 _TERM_MAP_LOWER = {}
-_COMBINED_RE = None
+_COMBINED_RE = None          # 保留：兼容旧调用方
+
+_TERM_SINGLE = {}            # {小写单词: (原文, 译文)}
+_TERM_MULTI = []             # [(原文, 译文), ...]  多词 / 含标点
+_MULTI_RE = None
+_MULTI_MAP = {}
+_MULTI_MAP_LOWER = {}
+
+_WORD_CHARS = r'\w\u00C0-\u024F'
+_TOKEN_RE = re.compile(r'[' + _WORD_CHARS + r']+')
+_PLAIN_TERM_RE = re.compile(r'^[' + _WORD_CHARS + r']+$')
+
+# ★ 占位符 token 正则：@0@ @1@ … 与 ⟦0⟧ ⟦1⟧ …
+#   这些是被 protect() 生成的脱敏锚点，绝非可翻译词条。
+#   若混入术语表，会被 find_terms 当作命中术语注入 prompt，反向教模型
+#   把 @0@ 翻成中文（导致占位符丢失）。因此术语加载/匹配时一律排除。
+_PH_TOKEN_RE = re.compile(r'^[@\u27e6]\d+[@\u27e7]$')
+
+
+def _is_placeholder_token(s):
+    """判断字符串是否为占位符 token（@N@ / ⟦N⟧）。"""
+    return bool(isinstance(s, str) and _PH_TOKEN_RE.match(s))
+
+_TERMS_LOADED_KEY = None     # (路径, mtime, size, APPLY_TERMS)
 
 
 def _check_case_conflicts(terms):
@@ -503,19 +615,41 @@ def _check_case_conflicts(terms):
             log.warning("  … 其余 %d 组省略", len(conflicts) - 10)
 
 
-def load_terms():
+def _terms_file_key():
+    try:
+        st = os.stat(config.TERM_FILE)
+        return (config.TERM_FILE, st.st_mtime, st.st_size,
+                bool(config.APPLY_TERMS))
+    except OSError:
+        return (config.TERM_FILE, 0, 0, bool(config.APPLY_TERMS))
+
+
+def load_terms(force=False):
+    """
+    加载术语表。
+    文件未变化（路径 + mtime + 大小）时直接复用内存结果，避免反复 exec 大文件。
+    """
     global _TERMS, _TERM_MAP, _TERM_MAP_LOWER, _COMBINED_RE
-    _TERMS = []
-    _TERM_MAP = {}
-    _TERM_MAP_LOWER = {}
-    _COMBINED_RE = None
+    global _TERM_SINGLE, _TERM_MULTI, _MULTI_RE
+    global _MULTI_MAP, _MULTI_MAP_LOWER, _TERMS_LOADED_KEY
 
     if not config.APPLY_TERMS:
+        if _TERMS or _TERM_SINGLE:
+            _TERMS, _TERM_MAP, _TERM_MAP_LOWER = [], {}, {}
+            _TERM_SINGLE, _TERM_MULTI = {}, []
+            _MULTI_RE, _MULTI_MAP, _MULTI_MAP_LOWER = None, {}, {}
+            _COMBINED_RE = None
+            _TERMS_LOADED_KEY = None
         log.info("术语替换已关闭（APPLY_TERMS=False）")
         return
+
     if not os.path.exists(config.TERM_FILE):
         log.warning("术语表 %s 不存在，跳过", config.TERM_FILE)
         return
+
+    key = _terms_file_key()
+    if not force and key == _TERMS_LOADED_KEY:
+        return          # 文件没变，内存里已有
 
     ns = {}
     with open(config.TERM_FILE, "r", encoding="utf-8") as f:
@@ -524,74 +658,167 @@ def load_terms():
 
     good = []
     skipped_short = 0
+    skipped_ph = 0
     for k, v in td.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
         if "\\" in k or "[" in k or "]" in k:
+            continue
+        # ★ 占位符 token（@0@ / ⟦0⟧）不是词条，混入会污染 prompt，直接排除
+        if _is_placeholder_token(k):
+            skipped_ph += 1
             continue
         if len(k) <= 3 and k.isascii() and k.isalpha():
             skipped_short += 1
             continue
         good.append((k, v))
+    if skipped_ph:
+        log.info("术语表跳过 %d 条占位符型伪术语（@0@ 等）", skipped_ph)
 
     good.sort(key=lambda x: -len(x[0]))
+
     _TERMS = good
     _TERM_MAP = dict(good)
-
-    if good:
-        word_chars = r'\w\u00C0-\u024F'
-        alternation = '|'.join(re.escape(k) for k, _ in good)
-        pattern = (r'(?<![' + word_chars + r'])('
-                   + alternation +
-                   r')(?![' + word_chars + r'])')
-        try:
-            _COMBINED_RE = re.compile(pattern, re.IGNORECASE)
-        except re.error as e:
-            log.error("术语表合并正则失败：%s（将退化为逐条匹配）", e)
-            _COMBINED_RE = None
-
     _TERM_MAP_LOWER = {k.lower(): v for k, v in good}
-    _check_case_conflicts(good)
 
-    log.info("术语表加载：%d 条（跳过短词 %d 条，大小写不敏感）",
-             len(_TERMS), skipped_short)
+    # ---- 拆分：单词类 / 多词类 ----
+    _TERM_SINGLE = {}
+    _TERM_MULTI = []
+    seen_single = set()
+    for k, v in good:
+        if _PLAIN_TERM_RE.match(k):
+            lk = k.lower()
+            if lk in seen_single:
+                continue
+            seen_single.add(lk)
+            _TERM_SINGLE[lk] = (k, v)
+        else:
+            _TERM_MULTI.append((k, v))
+
+    _MULTI_MAP = dict(_TERM_MULTI)
+    _MULTI_MAP_LOWER = {k.lower(): v for k, v in _TERM_MULTI}
+    _MULTI_RE = None
+    if _TERM_MULTI:
+        alternation = '|'.join(re.escape(k) for k, _ in _TERM_MULTI)
+        pattern = (r'(?<![' + _WORD_CHARS + r'])('
+                   + alternation +
+                   r')(?![' + _WORD_CHARS + r'])')
+        try:
+            _MULTI_RE = re.compile(pattern, re.IGNORECASE)
+        except re.error as e:
+            log.error("多词术语正则失败：%s（这部分术语将用逐条匹配）", e)
+            _MULTI_RE = None
+
+    # 兼容：仍提供合并正则给可能的旧调用方
+    _COMBINED_RE = _MULTI_RE
+    _TERMS_LOADED_KEY = key
+
+    _check_case_conflicts(good)
+    log.info("术语表加载：%d 条（单词 %d / 多词 %d，跳过短词 %d 条）",
+             len(_TERMS), len(_TERM_SINGLE), len(_TERM_MULTI), skipped_short)
+
+
+def _multi_repl(m):
+    matched = m.group(1)
+    dst = _MULTI_MAP.get(matched)
+    if dst is None:
+        dst = _MULTI_MAP_LOWER.get(matched.lower())
+    return dst if dst else matched
 
 
 def find_terms(text):
     """
     找出 text 中命中的术语，返回 [(原文, 译文), ...]（去重，保持出现顺序）。
+
+    ★ 多词术语优先：命中 "Profesor Oak" 时不再单独报 "Profesor"。
     """
-    if not _COMBINED_RE or not text:
+    if not text or (not _TERM_SINGLE and not _MULTI_RE):
         return []
 
     seen = set()
     result = []
-    for m in _COMBINED_RE.finditer(text):
-        matched = m.group(1)
-        dst = _TERM_MAP.get(matched)
-        if dst is None:
-            dst = _TERM_MAP_LOWER.get(matched.lower())
-        if not dst:
-            continue
-        key = matched.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append((matched, dst))
+    spans = []
+
+    if _MULTI_RE:
+        for m in _MULTI_RE.finditer(text):
+            matched = m.group(1)
+            dst = _MULTI_MAP.get(matched)
+            if dst is None:
+                dst = _MULTI_MAP_LOWER.get(matched.lower())
+            if not dst:
+                continue
+            spans.append((m.start(1), m.end(1)))
+            key = matched.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append((matched, dst))
+
+    if _TERM_SINGLE:
+        for m in _TOKEN_RE.finditer(text):
+            s, e = m.start(), m.end()
+            if any(a <= s and e <= b for a, b in spans):
+                continue
+            hit = _TERM_SINGLE.get(m.group(0).lower())
+            if not hit:
+                continue
+            key = hit[0].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(hit)
+
     return result
 
 
 def apply_terms(text):
-    """术语兜底替换：把 text 里命中的术语原文替换为术语表译文。"""
-    if not _COMBINED_RE or not text:
+    """
+    术语兜底替换：把 text 里命中的术语原文替换为术语表译文。
+
+    ★ 多词术语优先：先用占位标记锁住多词结果，再跑单词替换，最后回填，
+      避免 "Profesor Oak" 被拆成 "教授 Oak"。
+    """
+    if not text or (not _TERM_SINGLE and not _MULTI_RE):
         return text
 
-    def _replace(m):
-        matched = m.group(1)
-        dst = _TERM_MAP.get(matched)
-        if dst is None:
-            dst = _TERM_MAP_LOWER.get(matched.lower())
-        return dst if dst else matched
+    out = text
+    marks = {}
 
-    return _COMBINED_RE.sub(_replace, text)
+    if _MULTI_RE:
+        counter = [0]
+
+        def _mark(m):
+            matched = m.group(1)
+            dst = _MULTI_MAP.get(matched)
+            if dst is None:
+                dst = _MULTI_MAP_LOWER.get(matched.lower())
+            if not dst:
+                return m.group(0)
+            key = f"\x00{counter[0]}\x00"
+            counter[0] += 1
+            marks[key] = dst
+            return key
+
+        out = _MULTI_RE.sub(_mark, out)
+
+    if _TERM_SINGLE and marks:
+        # 只有存在被锁定的多词结果时才需要保护单词扫描
+        def _repl(m):
+            hit = _TERM_SINGLE.get(m.group(0).lower())
+            return hit[1] if hit else m.group(0)
+        out = _TOKEN_RE.sub(_repl, out)
+        for k, v in marks.items():
+            out = out.replace(k, v)
+    elif _TERM_SINGLE:
+        def _repl2(m):
+            hit = _TERM_SINGLE.get(m.group(0).lower())
+            return hit[1] if hit else m.group(0)
+        out = _TOKEN_RE.sub(_repl2, out)
+    elif marks:
+        for k, v in marks.items():
+            out = out.replace(k, v)
+
+    return out
 
 
 # ================================================================
@@ -777,13 +1004,14 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None,
 # ================================================================
 # 一步到位
 # ================================================================
-def prepare(text):
+def prepare(text, drop_newline=True):
     """
     返回 (safe_text, maps, breaks, hit_terms)。
       hit_terms: [(原文, 译文), ...]  文本中命中的术语，交由 prompt 参考
+      drop_newline=False → 保留 \\n（润色流程用）
     """
     breaks = analyze_breaks(text)
-    safe, maps = protect(text)
+    safe, maps = protect(text, drop_newline=drop_newline)
     hit_terms = find_terms(safe)
     return safe, maps, breaks, hit_terms
 

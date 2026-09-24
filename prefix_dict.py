@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 句首控制码字典：
   · 缓存句子开头的连续控制码串（如 \w[speech hgss 3]\tg[???]）
   · 用户手工翻译后复用
@@ -106,6 +106,40 @@ def apply_prefix(prefix):
     """
     t = get_translation(prefix)
     return t if t else prefix
+
+
+def set_translation(prefix, translation):
+    """写入/覆盖一条前缀译文（GUI 编辑后调用）。"""
+    _load()
+    if not prefix:
+        return False
+    _entries[prefix] = translation or ""
+    return True
+
+
+def update_many(mapping):
+    """批量写入 {前缀原文: 译文}，返回改动条数。"""
+    _load()
+    n = 0
+    for k, v in (mapping or {}).items():
+        if not k:
+            continue
+        if _entries.get(k) != v:
+            _entries[k] = v or ""
+            n += 1
+    return n
+
+
+def remove(prefix):
+    """删除一条前缀。"""
+    _load()
+    return _entries.pop(prefix, None) is not None
+
+
+def all_entries():
+    """返回 {前缀原文: 译文} 的副本。"""
+    _load()
+    return dict(_entries)
 
 
 def save():

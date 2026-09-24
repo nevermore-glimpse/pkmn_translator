@@ -64,25 +64,41 @@ python main.py
 Double-click `启动.bat` (or `宝可梦翻译工具.exe` if using the release build), or run:
 
 ```bash
-python main.py
+python main.py          # acrylic GUI (default)
+python main.py --cli    # command-line menu
 ```
 
 On startup, the tool automatically checks your Python environment, dependencies,
 Ollama service, and the required model. If Ollama is not running, it will offer to
 launch it for you (Ollama Desktop App is preferred, with `ollama serve` as fallback).
 
-You will see the menu:
+GUI pages:
+
+```
+1. Translate            5. Chinese polish
+2. Re-translate report  6. Excel to terminology
+3. Re-translate terms   7. Settings
+4. Prefix dictionary    8. Log
+```
+
+Pages 1–5 have a file checklist sidebar on the right; add files via
+"Single file" or "Whole folder".
+
+Command-line menu:
 
 ```
 1. Translate
-2. Re-translate untranslated content
-3. Excel to terminology
-4. Switch input file
-5. Re-translate after terminology update
-6. Settings
-7. Re-check environment
+2. Re-translate check report
+3. Re-translate after terminology update
+4. Prefix dictionary (view / apply)
+5. Chinese polish
+6. Excel to terminology
+7. Settings
+8. Log / environment check
 0. Exit
 ```
+
+Menus 2 / 3 / 4 ask for "single file / whole folder" first.
 
 ### Create Desktop Shortcut (Optional)
 
@@ -96,7 +112,7 @@ A shortcut named *Pokémon Fan Game Translation Tool* will be created on your de
 3. A check report is generated next to the output file: `<filename>_translated_report.txt`
 4. If problems remain, select `2` to auto re-translate the untranslated lines, or fix manually
 
-### Re-translate Untranslated Content (Menu 2)
+### Re-translate Check Report (Menu 2)
 
 Runs a fresh check on the output file, then:
 
@@ -118,16 +134,16 @@ You can also use mine:
 
 Select menu `3` → choose the Excel file → choose source/target languages → `term_dict.py` is generated automatically.
 
-### Re-translate After Adding New Terms (Menu 5)
+### Re-translate After Adding New Terms (Menu 3)
 
 After editing `term_dict.py` (or regenerating from Excel):
 
-1. Select `5`
+1. Select `3`
 2. The tool compares the current terminology list against the last snapshot
 3. Newly added terms are identified; sentences containing them are located in the cache
 4. Those cache entries are deleted and re-translated with the new terminology
 
-The first time you run menu `5`, it records the current terminology list as the baseline.
+The first time you run menu `3`, it records the current terminology list as the baseline.
 Every subsequent run compares against it.
 
 ### Input File Format
@@ -237,7 +253,7 @@ Open a Command Prompt in the exe folder and run it manually to see the error:
 ```bash
 pip install pyinstaller
 pyinstaller --onefile --name "宝可梦翻译工具" --icon=start.ico ^
-    --hidden-import openpyxl --hidden-import tkinter main.py
+    --hidden-import openpyxl --hidden-import tkinter --hidden-import PIL main.py
 ```
 
 Then copy `start.ico` next to the produced exe in `dist\`.

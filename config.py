@@ -15,6 +15,20 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+# ================================================================
+# 应用信息
+# ================================================================
+VERSION     = "1.2.0"
+APP_NAME    = "宝可梦同人游戏翻译工具"
+APP_TITLE   = f"{APP_NAME}v{VERSION}"
+
+AUTHOR_NAME     = "玛俐大小姐想让我告白"
+AUTHOR_GITHUB   = "https://github.com/nevermore-glimpse"
+AUTHOR_BILIBILI = ("https://space.bilibili.com/3546602748775226"
+                   "?spm_id_from=333.1007.0.0")
+AVATAR_FILE     = os.path.join(BASE_DIR, "玛俐大小姐.jpg")
+
+
 # ---------- 文件（默认，可在运行时覆盖） ----------
 INPUT_FILE   = os.path.join(BASE_DIR, "intl.txt")
 OUTPUT_FILE  = os.path.join(BASE_DIR, "intl_translated.txt")
@@ -33,12 +47,14 @@ class Runtime:
     input_file  = INPUT_FILE
     output_file = OUTPUT_FILE
     cache_file  = CACHE_FILE
+    last_dir    = BASE_DIR      # ★ 最近一次浏览的目录（GUI 用）
 
     @classmethod
     def reset(cls):
         cls.input_file  = INPUT_FILE
         cls.output_file = OUTPUT_FILE
         cls.cache_file  = CACHE_FILE
+        cls.last_dir    = BASE_DIR
 
     @classmethod
     def set_input(cls, path):
@@ -47,21 +63,29 @@ class Runtime:
         parent = os.path.dirname(os.path.abspath(path))
         cls.output_file = os.path.join(parent, f"{stem}_translated.txt")
         cls.cache_file  = os.path.join(parent, f"{stem}_cache.json")
+        cls.last_dir    = parent
+
+    @classmethod
+    def set_dir(cls, path):
+        if path and os.path.isdir(path):
+            cls.last_dir = path
 
     @classmethod
     def save(cls):
-        """可选：把当前输入路径持久化到 .runtime.json"""
+        """把当前输入路径 / 最近目录持久化到 .runtime.json"""
         import json
         try:
             with open(os.path.join(BASE_DIR, ".runtime.json"),
                       "w", encoding="utf-8") as f:
-                json.dump({"input_file": cls.input_file}, f,
+                json.dump({"input_file": cls.input_file,
+                           "last_dir":   cls.last_dir}, f,
                           ensure_ascii=False)
         except Exception:
             pass
 
     @classmethod
     def load(cls):
+        """启动时恢复上次使用的文件与目录（CLI 与 GUI 都会调用）。"""
         import json
         p = os.path.join(BASE_DIR, ".runtime.json")
         if not os.path.exists(p):
@@ -69,6 +93,9 @@ class Runtime:
         try:
             with open(p, "r", encoding="utf-8") as f:
                 d = json.load(f)
+            ld = d.get("last_dir")
+            if ld and os.path.isdir(ld):
+                cls.last_dir = ld
             ip = d.get("input_file")
             if ip and os.path.exists(ip):
                 cls.set_input(ip)
@@ -83,13 +110,22 @@ Runtime.reset()
 INPUT_ENCODING  = "utf-8-sig"
 OUTPUT_ENCODING = "utf-8-sig"
 
+# ---------- 翻译模式 ----------
+TRANSLATE_MODE = "ollama"    # "ollama" = 本地 Ollama；"api" = 云端 API（OpenAI 兼容）
+API_BASE_URL   = "https://api.openai.com/v1"
+API_KEY        = ""
+API_MODEL      = "gpt-4o-mini"
+API_TIMEOUT    = 120
+
 # ---------- Ollama ----------
 OLLAMA_URL  = "http://localhost:11434/api/chat"
 MODEL       = "qwen3.5:4b"
-TIMEOUT     = 600
-NUM_CTX     = 4096
+TIMEOUT     = 600.0
+NUM_CTX     = 8192
 NUM_PREDICT = 1024
 TEMPERATURE = 0.25
+TOP_P       = 0.9
+KEEP_ALIVE  = "30m"
 THINK       = False
 
 # ---------- 翻译策略 ----------
@@ -99,6 +135,15 @@ BATCH_SIZE       = 10
 BATCH_RETRIES    = 2
 SINGLE_RETRIES   = 3
 CACHE_SAVE_EVERY = 1
+
+# ★ 自适应分批：单批原文总字符超过该值就提前切批，避免超长句撑爆上下文
+MAX_BATCH_CHARS  = 1400
+# ★ 按长度排序后再分批：同批句子长度接近，输出更稳定、更少截断
+SORT_TODO_BY_LEN = True
+# ★ 单批注入 prompt 的术语上限
+MAX_TERMS_IN_PROMPT = 80
+# ★ 模型原样回显原文时视为失败，触发重试
+TREAT_ECHO_AS_FAIL = True
 
 # ---------- 换行重排 ----------
 REWRAP_ENABLE  = True
@@ -118,6 +163,12 @@ PLAYER_PLACEHOLDER = "玛俐大小姐"  # 送模型时的替换文本（含罕�
 # ---------- 自动术语提取 ----------
 AUTO_EXTRACT_TERMS    = True    # 翻译时自动提取专有名词
 AUTO_EXTRACT_MIN_LEN  = 3       # 术语最短长度（过滤单字母/双字母）
+
+# ---------- 中文润色重翻 ----------
+POLISH_ENABLE      = True    # 启用「中文润色重翻」
+POLISH_BATCH_SIZE  = 8
+POLISH_TEMPERATURE = 0.35    # 比翻译略高，给润色一点自由度
+POLISH_MIN_LEN     = 4       # 短于该长度的译文不润色（多为控制码/拟声词）
 # ---------- Excel ----------
 EXCEL_SOURCE_LANG = "西班牙文"
 EXCEL_TARGET_LANG = "简体中文"

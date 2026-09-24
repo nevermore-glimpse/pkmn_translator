@@ -58,6 +58,28 @@ def pick_text_file(initial_dir=None, title="选择文本文件"):
         return _input_path_cli(title)
 
 
+def pick_dir(initial_dir=None, title="选择文件夹"):
+    """选文件夹，返回路径或 None。"""
+    if not _HAS_TK:
+        print(f"\n{title}（直接回车放弃）")
+        raw = input("路径：").strip().strip('"').strip("'")
+        if not raw:
+            return None
+        return raw if os.path.isdir(raw) else None
+
+    try:
+        root = _disable_root_icon()
+        path = filedialog.askdirectory(
+            title=title,
+            initialdir=_initial_dir(initial_dir),
+        )
+        root.destroy()
+        return path or None
+    except Exception as e:
+        log.warning("tkinter 弹窗失败：%s", e)
+        return None
+
+
 def pick_excel_file(initial_dir=None):
     """选 Excel 文件。"""
     if not _HAS_TK:
@@ -90,45 +112,3 @@ def _input_path_cli(title):
         return None
     return raw
 
-def pick_path(initial_dir=None, title="选择文件或文件夹"):
-    """
-    弹窗让用户选文件或文件夹。
-    返回 (path, is_dir) 或 (None, None)。
-    """
-    if not _HAS_TK:
-        print(f"\n{title}（直接回车放弃）")
-        raw = input("路径：").strip().strip('"').strip("'")
-        if not raw:
-            return None, None
-        return raw, os.path.isdir(raw)
-
-    try:
-        # 先问用户选什么
-        print(f"\n{title}")
-        print("  1. 选择单个 .txt 文件")
-        print("  2. 选择包含多个 .txt 的文件夹")
-        choice = input("请选择 [1]: ").strip() or "1"
-
-        root = _disable_root_icon()
-        if choice == "2":
-            path = filedialog.askdirectory(
-                title="选择文件夹",
-                initialdir=_initial_dir(initial_dir),
-            )
-            root.destroy()
-            if path:
-                return path, True
-            return None, None
-        else:
-            path = filedialog.askopenfilename(
-                title="选择文本文件",
-                initialdir=_initial_dir(initial_dir),
-                filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
-            )
-            root.destroy()
-            if path:
-                return path, False
-            return None, None
-    except Exception as e:
-        log.warning("tkinter 弹窗失败：%s", e)
-        return None, None

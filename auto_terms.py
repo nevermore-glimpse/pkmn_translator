@@ -48,6 +48,10 @@ def _validate(terms, min_len):
             continue
         if "\\" in k or "[" in k or "]" in k:
             continue
+        # ★ 占位符 token（@0@ / ⟦0⟧）不是术语，严禁进入术语表
+        #   否则会被 find_terms 当作命中术语注入 prompt，反向教模型翻译占位符
+        if re.fullmatch(r'[@\u27e6]\d+[@\u27e7]', k):
+            continue
         # 译文必须含中文（过滤未翻译项）
         if not re.search(r'[\u4e00-\u9fff]', v):
             continue

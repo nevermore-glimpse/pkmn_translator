@@ -29,6 +29,13 @@ USER_CONFIG_PATH = config.USER_CONFIG_FILE
 # key, 显示名, 类型, 说明
 # 顺序对应菜单里显示的序号
 EDITABLE = [
+    # ---------- 翻译模式 ----------
+    ("TRANSLATE_MODE",     "翻译模式",          "str",   "ollama=本地  /  api=云端"),
+    ("API_BASE_URL",       "API 服务地址",      "str",   "OpenAI 兼容，如 .../v1"),
+    ("API_KEY",            "API 密钥",          "str",   "Bearer sk-...，留空则不带"),
+    ("API_MODEL",          "API 模型名",        "str",   "如 gpt-4o-mini"),
+    ("API_TIMEOUT",        "API 超时(秒)",      "float", "云端请求超时"),
+
     # ---------- Ollama 连接 ----------
     ("MODEL",              "Ollama 模型名",     "str",   "如 qwen2.5:14b"),
     ("OLLAMA_URL",         "Ollama 服务地址",   "str",   "一般不动"),
@@ -36,10 +43,15 @@ EDITABLE = [
     ("NUM_CTX",            "上下文长度",        "int",   "至少大于2000+每批条数x100"),
     ("NUM_PREDICT",        "最大生成 token",    "int",   "限制模型输出上限（超限直接断开）"),
     ("TEMPERATURE",        "采样温度",          "float", "0.0-1.0,越大模型自由度越高"),
+    ("TOP_P",              "top_p",             "float", "0.0-1.0"),
+    ("KEEP_ALIVE",         "模型驻留时长",      "str",   "如 30m；-1 表示常驻显存"),
     ("THINK",              "推理模式",        "bool",  "True/False"),
 
     # ---------- 翻译策略 ----------
     ("BATCH_SIZE",         "每批条数",          "int",   "建议 10-30"),
+    ("MAX_BATCH_CHARS",    "单批字符上限",      "int",   "自适应分批：超过就提前切批"),
+    ("SORT_TODO_BY_LEN",   "按长度排序分批",    "bool",  "同批长度接近，输出更稳定"),
+    ("MAX_TERMS_IN_PROMPT","prompt 术语上限",   "int",   "单批发给模型的术语条数"),
     ("BATCH_RETRIES",      "整批重试次数",      "int",   "失败时重试"),
     ("SINGLE_RETRIES",     "单条重试次数",      "int",   "失败时重试"),
     ("CACHE_SAVE_EVERY",   "缓存保存间隔",      "int",   "每 N 批保存一次"),
@@ -61,8 +73,128 @@ EDITABLE = [
     ("EXCEL_SOURCE_LANG",  "Excel 源语言列",    "str",   ""),
     ("EXCEL_TARGET_LANG",  "Excel 目标语言列",  "str",   ""),
     ("AUTO_EXTRACT_TERMS", "自动提取术语", "bool", "翻译时提取专有名词"),
-    ("AUTO_EXTRACT_MIN_LEN", "术语最短长度", "int", "")
+    ("AUTO_EXTRACT_MIN_LEN", "术语最短长度", "int", ""),
+
+    # ---------- 中文润色 ----------
+    ("POLISH_ENABLE",      "启用中文润色",     "bool",  "菜单 5 是否可用"),
+    ("POLISH_BATCH_SIZE",  "润色每批条数",     "int",   "建议 6-12"),
+    ("POLISH_TEMPERATURE", "润色采样温度",     "float", "略高于翻译，给润色自由度"),
+    ("POLISH_MIN_LEN",     "润色最短长度",     "int",   "短于该长度不润色"),
 ]
+
+def list_ollama_models():
+    """自动检测本机已安装的 Ollama 模型名列表。"""
+    try:
+        import env_check
+        return env_check.list_ollama_models()
+    except Exception:
+        return []
+
+
+def list_api_models():
+    """云端模式下尝试拉取可用模型（失败返回空列表，不打扰用户）。"""
+    try:
+        import requests
+        base = str(getattr(config, "API_BASE_URL", "") or "").rstrip("/")
+        if not base:
+            return []
+        headers = {}
+        key = getattr(config, "API_KEY", "") or ""
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        r = requests.get(base + "/models", headers=headers, timeout=5)
+        r.raise_for_status()
+        data = r.json() or {}
+        names = [m.get("id", "") for m in data.get("data", [])
+                 if isinstance(m, dict)]
+        return sorted(n for n in names if n)
+    except Exception:
+        return []
+
+
+def list_models():
+    """按当前翻译模式返回可用模型名。"""
+    if str(getattr(config, "TRANSLATE_MODE", "ollama")).lower() == "api":
+        models = list_api_models()
+        if models:
+            return models
+        cur = getattr(config, "API_MODEL", "")
+        return [cur] if cur else []
+    return list_ollama_models()
+
+
+# ================================================================
+# 翻译模式切换：同步调整为「适配云端 / 更省 token」的参数
+# ================================================================
+MODE_PRESETS = {
+    "ollama": {
+        "MAX_TERMS_IN_PROMPT": 80,
+        "TIMEOUT":             600,
+        "NUM_CTX":             8192,
+        "NUM_PREDICT":         1024,
+        "BATCH_SIZE":          10,
+        "MAX_BATCH_CHARS":     1400,
+    },
+    "api": {
+        "MAX_TERMS_IN_PROMPT": 2560,     # 少发术语，省 prompt token
+        "TIMEOUT":             2560,
+        "NUM_CTX":             256000,   # 云端按量计费，上下文收窄
+        "NUM_PREDICT":         220000,
+        "BATCH_SIZE":          2000,     # 批次更大，减少请求次数
+        "MAX_BATCH_CHARS":     220000,
+    },
+}
+
+PRESET_LABELS = {
+    "MAX_TERMS_IN_PROMPT": "术语上限（条）",
+    "TIMEOUT":             "请求超时（秒）",
+    "NUM_CTX":             "上下文长度",
+    "NUM_PREDICT":         "最大生成长度",
+    "BATCH_SIZE":          "每批条数",
+    "MAX_BATCH_CHARS":     "单批字符上限",
+    "TRANSLATE_MODE":      "翻译模式",
+}
+
+MODE_LABELS = {"ollama": "本地 Ollama", "api": "云端 API"}
+
+
+def normalize_mode(mode):
+    return "api" if str(mode).strip().lower() == "api" else "ollama"
+
+
+def current_mode():
+    return normalize_mode(getattr(config, "TRANSLATE_MODE", "ollama"))
+
+
+def set_mode(mode):
+    """
+    切换翻译模式，并把相关参数同步到该模式的推荐值。
+    返回 [(显示名, 旧值, 新值), ...]，供界面弹窗提示。
+    """
+    import config as _cfg
+
+    mode = normalize_mode(mode)
+    old_mode = current_mode()
+    changes = []
+
+    preset = MODE_PRESETS.get(mode, {})
+    for key, new_val in preset.items():
+        old_val = getattr(_cfg, key, None)
+        if old_val == new_val:
+            continue
+        ok, _msg, _ = set_value(key, new_val)
+        if ok:
+            changes.append((PRESET_LABELS.get(key, key), old_val, new_val))
+
+    if mode != old_mode:
+        ok, _msg, _ = set_value("TRANSLATE_MODE", mode)
+        if ok:
+            changes.append(("翻译模式",
+                            MODE_LABELS.get(old_mode, old_mode),
+                            MODE_LABELS.get(mode, mode)))
+
+    log.info("翻译模式切换：%s → %s（同步 %d 项）", old_mode, mode, len(changes))
+    return changes
 
 
 # ================================================================
