@@ -86,6 +86,12 @@ EDITABLE = [
     ("POLISH_MIN_LEN",     "润色最短长度",     "int",   "短于该长度不润色"),
 ]
 
+# ★ 密钥类配置永远不写进 config.py —— 那是会提交进仓库的源码文件。
+#   统一写 user_config.json（已在 .gitignore 中）；config.py 末尾会自动读取它
+#   并覆盖同名变量，所以两种模式的行为完全一致。
+SECRET_KEYS = {"API_KEY"}
+
+
 def list_ollama_models():
     """自动检测本机已安装的 Ollama 模型名列表。"""
     try:
@@ -311,9 +317,13 @@ def get_all():
             v = getattr(config, key, None)
             out[key] = str(v) if v is not None else "（未找到）"
     else:
-        # 源码模式：解析 config.py 文本
+        # 源码模式：解析 config.py 文本（密钥类改从 user_config.json 取）
         text = _read_source()
+        overrides = _load_user_overrides()
         for key, *_ in EDITABLE:
+            if key in SECRET_KEYS and key in overrides:
+                out[key] = str(overrides[key])
+                continue
             m = _pattern(key).search(text)
             out[key] = _strip_quotes(m.group(2)) if m else "（未找到）"
 
@@ -379,7 +389,8 @@ def set_value(key, new_value):
         return False, f"格式错误：{e}", None
 
     try:
-        if IS_FROZEN:
+        if IS_FROZEN or key in SECRET_KEYS:
+            # 密钥类一律落 user_config.json，绝不写进会被提交的 config.py
             _set_in_user_config(key, value_obj)
         else:
             if not _set_in_source(key, literal):
@@ -441,7 +452,8 @@ def show_menu():
             print(f"✘ {msg}")
             continue
 
-        where = "user_config.json" if IS_FROZEN else "config.py"
+        where = ("user_config.json"
+                 if (IS_FROZEN or key in SECRET_KEYS) else "config.py")
         print(f"✔ 已更新：{key} = {msg}  （已写回 {where}，当前会话立即生效）")
 
 def set_internal(key, value):

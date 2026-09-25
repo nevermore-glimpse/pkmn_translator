@@ -18,7 +18,7 @@ else:
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.2.0"
+VERSION     = "1.2.1"
 APP_NAME    = "宝可梦同人游戏翻译工具"
 APP_TITLE   = f"{APP_NAME}v{VERSION}"
 
@@ -112,9 +112,11 @@ OUTPUT_ENCODING = "utf-8-sig"
 
 # ---------- 翻译模式 ----------
 TRANSLATE_MODE = "ollama"    # "ollama" = 本地 Ollama；"api" = 云端 API（OpenAI 兼容）
-API_BASE_URL   = "https://api.deepseek.com/anthropic"
-API_KEY        = "sk-f02d7c100f714200b069f97c4d859850"
-API_MODEL      = "deepseek-flash"
+API_BASE_URL   = "https://api.deepseek.com"
+# ★ 不要把密钥写在这里（config.py 会提交到仓库）！
+#   请在「设置」里填写，它会写入 user_config.json（已在 .gitignore 中）。
+API_KEY        = ""
+API_MODEL      = "deepseek-chat"
 API_TIMEOUT    = 120.0
 
 # ---------- Ollama ----------
