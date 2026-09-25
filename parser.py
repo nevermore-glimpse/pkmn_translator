@@ -17,12 +17,44 @@ intl.txt 专用解析器。
 """
 import re
 
+import config
+
 BLOCK_RE = re.compile(r'^\s*\[[^\]]*\]\s*$')
 NUM_RE   = re.compile(r'^\s*\d+\s*$')
 
 
 def is_block(s):  return bool(BLOCK_RE.match(s))
 def is_number(s): return bool(NUM_RE.match(s))
+
+
+def pair_similarity(a, b):
+    """
+    计算两行的「头尾匹配度」：
+      最长公共前缀 + 最长公共后缀（两者不重叠、不重复计数），再按较长行长度归一。
+
+    典型场景：两行只差一个控制码（例如多一个 <<r>>），
+    前缀配到 <<r>> 之前、后缀从 <<n>> 配起，匹配度很高 ——
+    应视为同一组，而不是「文本不同」的特殊行。
+    """
+    if a == b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+
+    m = min(len(a), len(b))
+
+    # 最长公共前缀
+    p = 0
+    while p < m and a[p] == b[p]:
+        p += 1
+
+    # 最长公共后缀：限制在剩余长度内，避免与前缀重叠
+    s = 0
+    limit = m - p
+    while s < limit and a[len(a) - 1 - s] == b[len(b) - 1 - s]:
+        s += 1
+
+    return (p + s) / max(len(a), len(b))
 
 # 区块符模式判断
 _BLOCK_MAP_RE = re.compile(r'^\s*\[map\d+\]\s*$', re.IGNORECASE)
@@ -97,7 +129,18 @@ def extract_entries(lines):
             i += 2
             continue
 
-        # 情况 3：下一行不同 → 特殊情况
+        # 情况 3：下一行不同 → 先看头尾匹配度够不够高（近似配对）
+        sim = 0.0
+        pairable = bool(next_s) and not is_block(next_s) and not is_number(next_s)
+        if pairable:
+            sim = pair_similarity(s, next_s)
+            if sim >= getattr(config, "PAIR_SIMILARITY_MIN", 0.8):
+                # 视为同一组：保留第一行，把第二行替换为对应译文
+                entries.append((i + 1, next_s))
+                i += 2
+                continue
+
+        # 仍不能配对 → 特殊情况
         if not next_s:
             reason = '下一行为空行'
         elif is_block(next_s):
@@ -105,7 +148,7 @@ def extract_entries(lines):
         elif is_number(next_s):
             reason = '下一行为纯数字'
         else:
-            reason = '下一行文本不同'
+            reason = f'下一行文本不同（头尾匹配度 {sim:.0%}）'
 
         special.append({
             'line_no':      i,

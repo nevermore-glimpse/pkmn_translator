@@ -85,27 +85,61 @@ def get_translation(prefix):
     return v or None      # 空串视为未翻译
 
 
-def register_prefix(prefix):
+def register_prefix(prefix, fill_by_terms=True):
     """
     注册新前缀。已存在返回 False；新增返回 True。
+
+    ★ fill_by_terms=True：若该前缀里命中术语字典，直接把「术语替换后的前缀」
+      作为它的译文填进去（不用再手工翻一遍）。
+      例：\\tg[Owen] 命中术语 Owen=欧文 → 译文直接写成 \\tg[欧文]。
+      没命中任何术语时仍保持空值（= 待翻译）。
     """
     _load()
     if not prefix:
         return False
     if prefix in _entries:
         return False
-    _entries[prefix] = ""
+
+    value = ""
+    if fill_by_terms:
+        sub = substitute_terms(prefix)
+        if sub and sub != prefix:
+            value = sub
+            log.info("新前缀 %r 命中术语，已自动填入译文 %r", prefix, sub)
+
+    _entries[prefix] = value
     return True
+
+
+def substitute_terms(prefix):
+    """
+    前缀里命中术语字典的部分，替换为术语译文。
+    典型场景：\\tg[Owen] 中的 Owen 命中术语 → \\tg[欧文]。
+
+    术语表不可用、或替换过程中出错时原样返回，绝不让前缀处理拖垮主流程。
+    """
+    if not prefix:
+        return prefix
+    try:
+        import processor as _PR          # 惰性导入，避免与 processor 形成循环依赖
+        _PR.load_terms()
+        out = _PR.apply_terms(prefix)
+        return out if out else prefix
+    except Exception as e:               # 术语表损坏/未配置都不影响翻译
+        log.debug("前缀术语替换失败（已回退原前缀）：%s", e)
+        return prefix
 
 
 def apply_prefix(prefix):
     """
     返回应使用的译后前缀：
       · 已翻译 → 译后前缀
-      · 未翻译 → 原前缀
+      · 未翻译 → 原前缀，但其中命中术语的部分先替换成术语译文
     """
     t = get_translation(prefix)
-    return t if t else prefix
+    if t:
+        return t
+    return substitute_terms(prefix)
 
 
 def set_translation(prefix, translation):

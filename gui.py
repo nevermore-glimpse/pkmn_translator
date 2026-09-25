@@ -5,9 +5,9 @@
 布局：
   左侧  圆形头像（悬停显示作者信息）+ 标题 + 8 个菜单（悬停放大 + 底部阴影）
   右侧  各功能页面
-    · 菜单 1/2/3/4/5 右侧带「待操作文件」勾选侧边栏
+    · 菜单 1/2/3/4/5/6 右侧带「待操作文件」勾选侧边栏
     · 底部常驻状态条（进度 + 取消）
-  菜单 8 为日志页，任务启动后自动跳转过去。
+  菜单 9 为日志页，任务启动后自动跳转过去。
 """
 import os
 import queue
@@ -68,14 +68,16 @@ MENU_ITEMS = [
     ("3", "术语更新后重翻"),
     ("4", "前缀字典"),
     ("5", "中文润色"),
-    ("6", "Excel 转术语表"),
-    ("7", "设置"),
-    ("8", "日志"),
+    ("6", "换行重排"),
+    ("7", "Excel 转术语表"),
+    ("8", "设置"),
+    ("9", "日志"),
 ]
 
 MENU_KEYS = {
     "1": "translate", "2": "report", "3": "terms", "4": "prefix",
-    "5": "polish", "6": "excel", "7": "settings", "8": "log",
+    "5": "polish", "6": "reflow", "7": "excel", "8": "settings",
+    "9": "log",
 }
 
 
@@ -228,6 +230,11 @@ class RoundCard(tk.Canvas):
             self.itemconfig(self._win,
                             width=max(10, w - self.pad * 2 - 6),
                             height=max(10, h - self.pad * 2 - 8))
+
+
+# 术语列表复选框（Treeview 首列以字符呈现勾选状态）
+TERM_CHECK_ON = "☑"
+TERM_CHECK_OFF = "☐"
 
 
 class GlassButton(tk.Canvas):
@@ -873,6 +880,8 @@ class App:
         self.term_edits = {}       # 原文 → 新译文
         self.term_deletes = set()  # 待删除原文集合（应用前可撤回）
         self.term_delete_stack = []  # 删除操作栈，支持逐步撤回
+        self.term_checks = set()   # 勾选的术语原文（供批量删除使用）
+        self._term_visible = []    # 当前过滤后可见的术语原文（顺序同列表）
         self.prefix_rows = {}      # 前缀表：iid → [原文, 译文]
         self.prefix_edits = {}
         self.sheet_vars = {}       # Excel sheet → BooleanVar
@@ -1013,6 +1022,7 @@ class App:
         self._page_terms()
         self._page_prefix()
         self._page_polish()
+        self._page_reflow()
         self._page_excel()
         self._page_settings()
         self._page_log()
@@ -1059,6 +1069,8 @@ class App:
             self._load_term_rows()
         elif key == "prefix":
             self._load_prefix_rows()
+        elif key == "reflow":
+            self._load_reflow_blocks()
         elif key == "log":
             pass
 
@@ -1197,6 +1209,12 @@ class App:
         if (settings.current_mode() == "ollama" and self.models
                 and self.model_var.get() not in self.models):
             self.model_var.set(self.models[0])
+        # ★ 云端检测失败时把原因写进运行日志，避免「只显示一个模型」却不知为何
+        if settings.current_mode() == "api" and not self.models:
+            reason = settings.api_models_error() or "未知原因"
+            self._append_log(
+                f"[模型检测] 未能获取云端模型列表：{reason}"
+                f"（当前只显示已填写的模型 {cur}）")
 
     def _env_check_async(self):
         def work():
@@ -1587,21 +1605,41 @@ class App:
                     font=FONT_SMALL,
                     command=self._load_term_rows).pack(side="left", padx=8)
 
+        # 全选 / 取消全选（表头开关，支持半选 indeterminate）
+        selbar = tk.Frame(c2.body, bg=CARD)
+        selbar.pack(fill="x", pady=(2, 0))
+        self.term_all_var = tk.IntVar(value=0)
+        # ★ 用经典 tk.Checkbutton：ttk 的不保证支持 tristatevalue，
+        #   而半选状态必须靠 -1 这个 tristatevalue 呈现
+        self.term_all_chk = tk.Checkbutton(
+            selbar, text="全选", variable=self.term_all_var,
+            onvalue=1, offvalue=0, tristatevalue=-1,
+            bg=CARD, fg=TEXT, activebackground=CARD,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            command=self._on_term_toggle_all)
+        self.term_all_chk.pack(side="left")
+        self.term_check_stat = tk.Label(selbar, text="已选 0 条", bg=CARD,
+                                        fg=TEXT_DIM, font=FONT_SMALL)
+        self.term_check_stat.pack(side="left", padx=8)
+
         wrap = tk.Frame(c2.body, bg=CARD)
         wrap.pack(fill="both", expand=True)
-        cols = ("origin", "src", "dst")
+        cols = ("sel", "origin", "src", "dst")
         tree = ttk.Treeview(wrap, columns=cols, show="headings",
                             height=10, selectmode="extended")
-        for c, w, t in (("origin", 86, "来源"), ("src", 240, "原文"),
-                        ("dst", 240, "译文（可编辑）")):
+        for c, w, t in (("sel", 34, "✓"), ("origin", 86, "来源"),
+                        ("src", 210, "原文"), ("dst", 210, "译文（可编辑）")):
             tree.heading(c, text=t)
-            tree.column(c, width=w, anchor="w")
+            tree.column(c, width=w,
+                        anchor="center" if c == "sel" else "w")
         sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        bind_tree_edit(tree, {"#3": True}, on_commit=self._on_term_edit)
+        # ★ 多了一列复选，译文可编辑列由 #3 变为 #4
+        bind_tree_edit(tree, {"#4": True}, on_commit=self._on_term_edit)
         bind_tree_wheel(tree)
+        tree.bind("<Button-1>", self._on_term_tree_click)
         self.term_tree = tree
 
         bottom = tk.Frame(c2.body, bg=CARD)
@@ -1617,10 +1655,11 @@ class App:
                     font=FONT_SMALL,
                     command=self._on_term_delete_selected).pack(side="left",
                                                                 padx=4)
-        GlassButton(right_b, "批量删除", width=84, height=32, bg=CARD,
-                    font=FONT_SMALL,
-                    command=self._on_term_batch_delete).pack(side="left",
-                                                            padx=4)
+        self.term_batch_btn = GlassButton(
+            right_b, "批量删除", width=84, height=32, bg=CARD,
+            font=FONT_SMALL, command=self._on_term_batch_delete)
+        self.term_batch_btn.pack(side="left", padx=4)
+        self.term_batch_btn.set_enabled(False)   # 未勾选任何术语时禁用
         GlassButton(right_b, "撤回", width=64, height=32, bg=CARD,
                     font=FONT_SMALL,
                     command=self._on_term_undo_delete).pack(side="left", padx=4)
@@ -1666,6 +1705,7 @@ class App:
         kw = (self.term_search.get() or "").strip().lower()
         mode = self.term_filter.get()
         n = 0
+        visible = []
         for origin, k, v in getattr(self, "_term_all", []):
             if k in self.term_deletes:
                 continue  # 待删除：从列表隐藏
@@ -1676,9 +1716,13 @@ class App:
                 continue
             if kw and kw not in str(k).lower() and kw not in str(v).lower():
                 continue
+            visible.append(k)
             tree.insert("", "end",
-                        values=(origin + ("·改" if edited else ""), k, v))
+                        values=(TERM_CHECK_ON if k in self.term_checks
+                                else TERM_CHECK_OFF,
+                                origin + ("·改" if edited else ""), k, v))
             n += 1
+        self._term_visible = visible
         if hasattr(self, "term_stat"):
             total = len(getattr(self, "_term_all", []))
             parts = [f"显示 {n} 条 / 共 {total} 条"]
@@ -1690,11 +1734,14 @@ class App:
                     parts.append(f"（可撤回 {len(self.term_delete_stack)} 次）")
             self.term_stat.config(text="，".join(parts))
 
+        # 同步表头全选状态（含半选）与批量删除按钮可用性
+        self._sync_term_all_state()
+
     def _on_term_edit(self, row, col, value):
         try:
             item = self.term_tree.item(row)
-            src = item["values"][1]
-            origin = str(item["values"][0]).replace("·改", "")
+            src = item["values"][2]          # ★ 首列是复选框，索引顺移
+            origin = str(item["values"][1]).replace("·改", "")
             self.term_edits[src] = value
             self.term_deletes.discard(src)  # 编辑与删除冲突时，编辑优先
             self.term_tree.set(row, "origin", origin + "·改")
@@ -1720,7 +1767,7 @@ class App:
         keys = []
         for iid in sel:
             try:
-                keys.append(self.term_tree.item(iid)["values"][1])
+                keys.append(self.term_tree.item(iid)["values"][2])
             except Exception:
                 pass
         if not keys:
@@ -1729,22 +1776,90 @@ class App:
         self._mark_delete(keys)
 
     def _on_term_batch_delete(self):
-        """删除当前过滤后可见的全部术语（批量操作，需确认）。"""
-        keys = []
-        for iid in self.term_tree.get_children():
-            try:
-                keys.append(self.term_tree.item(iid)["values"][1])
-            except Exception:
-                pass
+        """只删除已勾选的术语（批量操作，需确认）。"""
+        vis = list(getattr(self, "_term_visible", []) or [])
+        keys = [k for k in vis if k in self.term_checks]
         if not keys:
-            messagebox.showinfo("提示", "当前没有可见的术语可批量删除")
+            messagebox.showinfo(
+                "提示",
+                "请先勾选要删除的术语：\n"
+                "· 点每行最前面的复选框单独勾选\n"
+                "· 或点列表上方「全选」一次性勾选")
             return
         if not messagebox.askyesno(
                 "确认批量删除",
-                f"确定批量删除当前显示的 {len(keys)} 条术语？\n"
-                "（删除前可在「应用术语」前点「撤回」取消）"):
+                f"确定删除已勾选的 {len(keys)} 条术语？\n"
+                "（在「应用术语」之前都可以点「撤回」取消）"):
             return
         self._mark_delete(keys)
+        # 已删除的术语从勾选集合里移除，再刷新列表与全选状态
+        self.term_checks.difference_update(keys)
+        self._filter_terms()
+
+    # ---------- 勾选：行复选框 / 表头全选 ----------
+    def _on_term_tree_click(self, event):
+        """点首列复选框切换勾选；其它列保持正常选中与双击编辑。"""
+        tree = self.term_tree
+        if tree.identify_column(event.x) != "#1":
+            return
+        iid = tree.identify_row(event.y)
+        if not iid:
+            return
+        try:
+            k = tree.item(iid)["values"][2]
+        except Exception:
+            return
+        if k in self.term_checks:
+            self.term_checks.discard(k)
+        else:
+            self.term_checks.add(k)
+        tree.set(iid, "sel",
+                 TERM_CHECK_ON if k in self.term_checks else TERM_CHECK_OFF)
+        self._sync_term_all_state()
+        return "break"
+
+    def _on_term_toggle_all(self):
+        """表头全选 / 取消全选；半选（indeterminate）时点击 = 全选。"""
+        vis = list(getattr(self, "_term_visible", []) or [])
+        if not vis:
+            self._sync_term_all_state()
+            return
+        if self.term_all_var.get() == 0:
+            self.term_checks.difference_update(vis)   # 取消全选
+        else:
+            self.term_checks.update(vis)              # 全选
+        self._refresh_term_checks()
+
+    def _refresh_term_checks(self):
+        """只刷新每行的勾选标记，不重建列表（保留滚动位置）。"""
+        tree = self.term_tree
+        for iid in tree.get_children():
+            try:
+                k = tree.item(iid)["values"][2]
+            except Exception:
+                continue
+            tree.set(iid, "sel",
+                     TERM_CHECK_ON if k in self.term_checks
+                     else TERM_CHECK_OFF)
+        self._sync_term_all_state()
+
+    def _sync_term_all_state(self):
+        """按可见行的勾选情况，同步全选框三态与批量删除按钮可用性。"""
+        vis = list(getattr(self, "_term_visible", []) or [])
+        n = sum(1 for k in vis if k in self.term_checks)
+        if vis and n >= len(vis):
+            state = 1        # 全部勾选
+        elif n == 0 or not vis:
+            state = 0        # 一个都没勾
+        else:
+            state = -1       # 半选（indeterminate）
+        if hasattr(self, "term_all_var"):
+            self.term_all_var.set(state)
+        if hasattr(self, "term_check_stat"):
+            self.term_check_stat.config(
+                text=(f"已选 {n} / {len(vis)} 条" if vis else "已选 0 条"))
+        if hasattr(self, "term_batch_btn"):
+            self.term_batch_btn.set_enabled(n > 0)
 
     def _on_term_undo_delete(self):
         """撤回上一次删除操作，恢复被标记删除的术语。"""
@@ -1761,6 +1876,7 @@ class App:
         self.term_edits.clear()
         self.term_deletes.clear()
         self.term_delete_stack.clear()
+        self.term_checks.clear()
         try:
             self._load_term_rows()
         except Exception:
@@ -2012,7 +2128,200 @@ class App:
                        label="中文润色中…", done_label="润色完成")
 
     # ================================================================
-    # 页面 6：Excel 转术语表
+    # 页面 6：换行重排
+    # ================================================================
+    def _page_reflow(self):
+        page = self.pages["reflow"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+        page.grid_rowconfigure(1, weight=1)
+
+        self.reflow_cfgs = {}
+        self.reflow_lists = {}
+        self.reflow_previews = {}
+        self.reflow_stats = {}
+        self._reflow_data = {"newline": [], "space": []}
+
+        specs = (
+            ("newline", 0, "[map*] 区块的换行重排（\\n）",
+             (("WRAP_CHARS_MIN", "换行下限", 15),
+              ("WRAP_CHARS_MAX", "换行上限", 18),
+              ("WRAP_MIN_GAP",   "换行最小间隔", 10))),
+            ("space", 1, "其它区块标记的空格重排（空格）",
+             (("WRAP_SPACE_MIN", "空格下限", 8),
+              ("WRAP_SPACE_MAX", "空格上限", 10),
+              ("WRAP_SPACE_MIN_GAP", "空格最小间隔", 5))),
+        )
+        for mode, row, title, fields in specs:
+            card = RoundCard(page, radius=16, pad=14)
+            card.grid(row=row, column=0, sticky="nsew", pady=(0, 8))
+            self._build_reflow_half(card.body, mode, title, fields)
+
+        fp_holder = RoundCard(page, radius=16, pad=8, width=252)
+        fp_holder.grid(row=0, column=1, rowspan=2, sticky="nsew")
+        fp_holder.grid_propagate(False)
+        self.fp_reflow = self._make_file_panel(fp_holder, "source")
+
+        # 右下角：开始重排
+        bottom = tk.Frame(page, bg=BG_BASE)
+        bottom.grid(row=2, column=0, columnspan=2, sticky="ew")
+        tk.Label(bottom,
+                 text="· 只重排换行方式，不改动译文文字、不调用模型；"
+                      "两种重排各用一套参数（会保存到设置）",
+                 bg=BG_BASE, fg=TEXT_FAINT, font=FONT_SMALL).pack(side="left")
+        GlassButton(bottom, "开始重排", width=160, height=42, primary=True,
+                    bg=BG_BASE,
+                    command=self._do_reflow).pack(side="right", pady=(6, 0))
+
+    def _build_reflow_half(self, body, mode, title, fields):
+        """构建半屏重排面板：上=参数，左=区块列表，右=区块文本。"""
+        head = tk.Frame(body, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text=title, bg=CARD, fg=TEXT,
+                 font=FONT_B).pack(side="left")
+        stat = tk.Label(head, text="", bg=CARD, fg=TEXT_DIM, font=FONT_SMALL)
+        stat.pack(side="right")
+
+        cfgrow = tk.Frame(body, bg=CARD)
+        cfgrow.pack(fill="x", pady=(6, 6))
+        varmap = {}
+        for key, name, default in fields:
+            tk.Label(cfgrow, text=name, bg=CARD, fg=TEXT_DIM,
+                     font=FONT_SMALL).pack(side="left", padx=(0, 4))
+            var = tk.StringVar(value=str(getattr(config, key, default)))
+            ttk.Entry(cfgrow, textvariable=var, width=6).pack(
+                side="left", padx=(0, 12))
+            varmap[key] = var
+        GlassButton(cfgrow, "刷新列表", width=84, height=26, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._load_reflow_blocks).pack(side="left")
+
+        mid = tk.Frame(body, bg=CARD)
+        mid.pack(fill="both", expand=True)
+
+        left = tk.Frame(mid, bg=CARD)
+        left.pack(side="left", fill="both")
+        tree = ttk.Treeview(left, columns=("block", "count"),
+                            show="headings", height=5)
+        tree.heading("block", text="区块")
+        tree.heading("count", text="条数")
+        tree.column("block", width=132, anchor="w")
+        tree.column("count", width=46, anchor="center")
+        sb = ttk.Scrollbar(left, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        bind_tree_wheel(tree)
+        tree.bind("<<TreeviewSelect>>",
+                  lambda _e, m=mode: self._render_reflow_block(m))
+
+        right = tk.Frame(mid, bg=CARD)
+        right.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        tk.Label(right, text="区块文本（原文 / 译文）", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL).pack(anchor="w")
+        box = tk.Text(right, height=5, wrap="none", font=FONT_MONO,
+                      bg="#FFFFFF", fg=TEXT, relief="flat",
+                      highlightthickness=1, highlightbackground=CARD_BORDER)
+        vsb = ttk.Scrollbar(right, orient="vertical", command=box.yview)
+        box.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        box.pack(side="left", fill="both", expand=True)
+        box.configure(state="disabled")
+
+        self.reflow_cfgs[mode] = varmap
+        self.reflow_lists[mode] = tree
+        self.reflow_previews[mode] = box
+        self.reflow_stats[mode] = stat
+
+    def _load_reflow_blocks(self):
+        """扫描已选文件，按 [map*] / 其它区块 填入两半的列表。"""
+        paths = []
+        fp = getattr(self, "fp_reflow", None)
+        if fp is not None:
+            try:
+                paths = fp.ensure() or []
+            except Exception:
+                paths = []
+
+        try:
+            self._reflow_data = (commands.scan_reflow_blocks(paths) if paths
+                                 else {"newline": [], "space": []})
+        except Exception:
+            log.error("重排扫描失败：\n%s", traceback.format_exc())
+            self._reflow_data = {"newline": [], "space": []}
+
+        for mode in ("newline", "space"):
+            tree = self.reflow_lists.get(mode)
+            if tree is None or not tree.winfo_exists():
+                continue
+            for iid in tree.get_children():
+                tree.delete(iid)
+            blocks = self._reflow_data.get(mode, [])
+            total = 0
+            for b in blocks:
+                tree.insert("", "end",
+                            values=(f"{b['file']} · {b['block']}", b["total"]))
+                total += b["total"]
+            self.reflow_stats[mode].config(
+                text=f"{len(blocks)} 个区块 / {total} 条译文")
+            self._render_reflow_block(mode)
+
+    def _render_reflow_block(self, mode):
+        """把选中区块的原文 / 译文摘要填到右侧预览框。"""
+        tree = self.reflow_lists.get(mode)
+        box = self.reflow_previews.get(mode)
+        if tree is None or box is None:
+            return
+        blocks = self._reflow_data.get(mode, [])
+        lines = []
+        sel = tree.selection()
+        if sel:
+            pos = tree.index(sel[0])
+            if 0 <= pos < len(blocks):
+                b = blocks[pos]
+                lines.append(f"{b['file']}   {b['block']}   "
+                             f"共 {b['total']} 条（下面显示前 {len(b['pairs'])} 条）")
+                lines.append("")
+                for n, (src, dst) in enumerate(b["pairs"], 1):
+                    lines.append(f"{n}. 原文：{src}")
+                    lines.append(f"   译文：{dst}")
+                    lines.append("")
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+        box.insert("1.0", "\n".join(lines))
+        box.configure(state="disabled")
+
+    def _do_reflow(self):
+        paths = self.fp_reflow.ensure()
+        if not paths:
+            messagebox.showwarning("提示", "请先选择要重排的文件")
+            return
+
+        # 先把两套参数写回设置（同时校验格式）
+        for mode in ("newline", "space"):
+            for key, var in self.reflow_cfgs.get(mode, {}).items():
+                raw = (var.get() or "").strip()
+                if not raw:
+                    continue
+                ok, msg, _v = settings.set_value(key, raw)
+                if not ok:
+                    messagebox.showwarning("参数有误", f"{key}：{msg}")
+                    return
+
+        newline_cfg = {"min": config.WRAP_CHARS_MIN,
+                       "max": config.WRAP_CHARS_MAX,
+                       "gap": getattr(config, "WRAP_MIN_GAP", 10)}
+        space_cfg = {"min": getattr(config, "WRAP_SPACE_MIN", 8),
+                     "max": getattr(config, "WRAP_SPACE_MAX", 10),
+                     "gap": getattr(config, "WRAP_SPACE_MIN_GAP", 5)}
+
+        self.show("log")
+        self.run_async(
+            lambda: commands.reflow_paths(paths, newline_cfg, space_cfg),
+            label="换行重排中…", done_label="换行重排完成")
+
+    # ================================================================
+    # 页面 7：Excel 转术语表
     # ================================================================
     def _page_excel(self):
         page = self.pages["excel"]

@@ -35,9 +35,10 @@ BANNER = """\
   3. 术语更新后重翻
   4. 前缀字典（查看 / 应用）
   5. 中文润色重翻
-  6. Excel 转术语表
-  7. 设置
-  8. 日志 / 环境检查
+  6. 换行重排
+  7. Excel 转术语表
+  8. 设置
+  9. 日志 / 环境检查
   0. 退出
 ====================================================================
 """
@@ -152,10 +153,12 @@ def run_cli():
             elif choice == "5":
                 commands.cmd_polish()
             elif choice == "6":
-                commands.cmd_build_terms()
+                commands.cmd_reflow()
             elif choice == "7":
-                settings.show_menu()
+                commands.cmd_build_terms()
             elif choice == "8":
+                settings.show_menu()
+            elif choice == "9":
                 commands.cmd_show_logs()
             elif choice == "0":
                 log.info("用户退出")

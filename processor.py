@@ -406,26 +406,41 @@ def _insert_ctrl_by_src(text, ctrl, src):
 
 def repair_missing_controls(src, dst):
     """
-    比对原文与译文的控制码，把译文中缺失的按原文原样补回。
-    返回 (新译文, 补回的控制码列表)。
+    比对原文与译文的控制码，把译文中「整个丢失」的控制码按原文原样补回。
+    返回 (新译文, 实际补回的控制码列表)。
 
     例：原文含 \\PN（玩家名），模型把它翻没了 / 翻成别的 →
         这里把 \\PN 原样插回译文，避免检查报告报「符号不匹配」。
+
+    ★ 调用方注意：src 只应传「真正参与翻译的那部分原文」。
+      句首前缀若已交给前缀字典单独处理（可能已被改写成另一套控制码），
+      调用方必须先把前缀剔除，否则字典改写过的前缀会被误判成"译文缺失控制码"。
+
+    ★ 只有译文中一次都没出现的控制码才算丢失并补回；
+      出现次数变少但不为 0 的，保持现状、不重复插入，
+      也不会被谎报成"已按原文补回"（旧实现会报，导致日志与结果对不上）。
     """
     if not src or not dst:
         return dst, []
 
     from collections import Counter
-    missing = Counter(control_symbols(src)) - Counter(control_symbols(dst))
+    src_cnt = Counter(control_symbols(src))
+    dst_cnt = Counter(control_symbols(dst))
+    missing = src_cnt - dst_cnt
     if not missing:
         return dst, []
 
-    fixed = list(missing.elements())
     text = dst
-    for ctrl in fixed:
-        if ctrl in text:
+    fixed = []
+    for ctrl, need in missing.items():
+        if dst_cnt.get(ctrl, 0) > 0:
+            # 译文里还有，只是次数比原文少：不重复插入，避免错位或重复
+            log.debug("控制码 %r 出现次数少于原文（差 %d 次），保持现状",
+                      ctrl, need)
             continue
-        text = _insert_ctrl_by_src(text, ctrl, src)
+        for _ in range(need):
+            text = _insert_ctrl_by_src(text, ctrl, src)
+        fixed.extend([ctrl] * need)
     return text, fixed
 
 
@@ -850,6 +865,36 @@ def apply_terms(text):
 # ================================================================
 _PUNCT_SET = set(".!?。！？")
 
+# ★ 省略号单元：英文连续 2 个以上句点（...），或中文省略号 …（1 个即算）。
+#   模型常把原文的 "..." 译成 "……"，若不统一识别，译文里就找不到对应的标点单元，
+#   换行会退化成按字数硬换行（出现 「…你好\n，\PN！」 这类错位）。
+_ELLIPSIS_EN_MIN = 2
+
+
+def _ellipsis_len(text, i):
+    """从 i 起读取一个省略号单元，返回其长度；不是省略号返回 0。"""
+    n = len(text)
+    ch = text[i]
+    if ch == '\u2026':                      # …（中文省略号，1 个即算）
+        j = i
+        while j < n and text[j] == '\u2026':
+            j += 1
+        return j - i
+    if ch == '.':                           # 英文句点需连续 2 个以上
+        j = i
+        while j < n and text[j] == '.':
+            j += 1
+        return (j - i) if (j - i) >= _ELLIPSIS_EN_MIN else 0
+    return 0
+
+
+def _has_break_at(text, pos, mode):
+    """pos 处是否已经存在换行符（避免重复插入）。"""
+    if mode == "newline":
+        return (pos + 1 < len(text) and
+                text[pos] == '\\' and text[pos + 1] == 'n')
+    return pos < len(text) and text[pos] == ' '
+
 
 def analyze_breaks(text):
     """
@@ -868,20 +913,18 @@ def analyze_breaks(text):
             i = m.end()
             continue
 
-        ch = text[i]
+        # 省略号（... / ……）整体作为一个标点单元
+        el = _ellipsis_len(text, i)
+        if el:
+            j = i + el
+            has_break = (j + 1 < n and
+                         text[j] == '\\' and
+                         text[j + 1] == 'n')
+            result.append(has_break)
+            i = j
+            continue
 
-        # 连续点：2 个及以上作为一组
-        if ch == '.':
-            j = i
-            while j < n and text[j] == '.':
-                j += 1
-            if j - i >= 2:
-                has_break = (j + 1 < n and
-                             text[j] == '\\' and
-                             text[j + 1] == 'n')
-                result.append(has_break)
-                i = j
-                continue
+        ch = text[i]
 
         # 单个标点
         if ch in _PUNCT_SET:
@@ -915,33 +958,25 @@ def apply_breaks(text, breaks, mode="newline"):
             i = m.end()
             continue
 
-        ch = text[i]
+        # 省略号（... / ……）整体作为一个标点单元
+        el = _ellipsis_len(text, i)
+        if el:
+            j = i + el
+            result.append(text[i:j])
+            if idx < len(breaks) and breaks[idx]:
+                if not _has_break_at(text, j, mode):
+                    result.append(insert_char)
+            idx += 1
+            i = j
+            continue
 
-        # 连续点：2 个及以上作为一组
-        if ch == '.':
-            j = i
-            while j < n and text[j] == '.':
-                j += 1
-            if j - i >= 2:
-                result.append(text[i:j])
-                if idx < len(breaks) and breaks[idx]:
-                    already = (j + 1 < n and
-                               text[j] == '\\' and
-                               text[j + 1] == 'n')
-                    if not already:
-                        result.append(insert_char)
-                idx += 1
-                i = j
-                continue
+        ch = text[i]
 
         # 单个标点
         result.append(ch)
         if ch in _PUNCT_SET:
             if idx < len(breaks) and breaks[idx]:
-                already = (i + 2 < n and
-                           text[i + 1] == '\\' and
-                           text[i + 2] == 'n')
-                if not already:
+                if not _has_break_at(text, i + 1, mode):
                     result.append(insert_char)
             idx += 1
         i += 1
@@ -951,6 +986,61 @@ def apply_breaks(text, breaks, mode="newline"):
 # ================================================================
 # 换行重排
 # ================================================================
+def unwrap(text, mode="newline"):
+    """
+    撤销上一次重排插入的换行 / 空格，使「重排」可以反复执行（幂等）。
+
+      · mode="newline" → 丢弃所有 \\n 控制码（断点稍后按原文重新补回）
+      · mode="space"   → 丢弃控制码之外的空格 / 全角空格
+
+    ★ 控制码内部一律不动（如 \\w[speech hgss 3] 里的空格必须保留）。
+    """
+    if not text:
+        return text
+
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        m = ALL_CTRL_RE.match(text, i)
+        if m:
+            token = m.group(0)
+            i = m.end()
+            if mode == "newline" and token == '\\n':
+                continue
+            out.append(token)
+            continue
+
+        ch = text[i]
+        i += 1
+        if mode == "space" and ch in " \t\u3000":
+            continue
+        out.append(ch)
+
+    return "".join(out)
+
+
+def reflow(src, dst, mode="newline", min_chars=None, max_chars=None,
+           min_gap=None, punct=None):
+    """
+    对一条已译好的译文做「换行重排」（不调用模型）：
+
+        撤销旧换行/空格 → 按原文断点重补 → 按新配置重排
+
+    因为起点总是「干净」的，同配置反复执行结果一致（幂等）。
+    """
+    if not dst:
+        return dst
+
+    base = unwrap(dst, mode=mode)
+    breaks = analyze_breaks(src or "")
+    if breaks:
+        base = apply_breaks(base, breaks, mode=mode)
+    if not config.REWRAP_ENABLE:
+        return base
+    return rewrap(base, min_chars=min_chars, max_chars=max_chars,
+                  min_gap=min_gap, punct=punct, mode=mode)
+
+
 def rewrap(text, min_chars=None, max_chars=None, punct=None,
            min_gap=None, mode="newline"):
     """
@@ -960,9 +1050,20 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None,
     """
     if not text:
         return text
-    min_chars = min_chars if min_chars is not None else config.WRAP_CHARS_MIN
-    max_chars = max_chars if max_chars is not None else config.WRAP_CHARS_MAX
-    min_gap   = min_gap   if min_gap   is not None else getattr(config, "WRAP_MIN_GAP", 10)
+
+    # ★ 空格模式（非 [map*] 区块）用独立的、更短的阈值：每 8~10 个字符插一个空格
+    if mode == "space":
+        min_chars = (min_chars if min_chars is not None
+                     else getattr(config, "WRAP_SPACE_MIN", 8))
+        max_chars = (max_chars if max_chars is not None
+                     else getattr(config, "WRAP_SPACE_MAX", 10))
+        min_gap = (min_gap if min_gap is not None
+                   else getattr(config, "WRAP_SPACE_MIN_GAP", 5))
+    else:
+        min_chars = min_chars if min_chars is not None else config.WRAP_CHARS_MIN
+        max_chars = max_chars if max_chars is not None else config.WRAP_CHARS_MAX
+        min_gap = (min_gap if min_gap is not None
+                   else getattr(config, "WRAP_MIN_GAP", 10))
 
     insert_char = '\\n' if mode == "newline" else ' '
 
@@ -972,6 +1073,14 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None,
     parts = []
     count = 0
     i, n = 0, len(text)
+
+    def _break_at(pos):
+        """
+        在 pos 处补一个换行 / 空格；若该位置本来就有（例如 apply_breaks
+        已按原文断点补过 \\n），就不再重复插入，避免出现空行。
+        """
+        if not _has_break_at(text, pos, mode):
+            parts.append(insert_char)
 
     while i < n:
         # 控制码：原样输出，不计数、不触发换行
@@ -984,17 +1093,14 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None,
                 count = 0
             continue
 
-        # 连续点：作为一个整体加入，只累计字数
-        if text[i] == '.':
-            j = i
-            while j < n and text[j] == '.':
-                j += 1
-            dots = text[i:j]
-            parts.append(dots)
-            count += (j - i)
-            i = j
+        # ★ 省略号（... / … / ……）作为一个整体，绝不在中间断行
+        el = _ellipsis_len(text, i)
+        if el:
+            parts.append(text[i:i + el])
+            count += el
+            i += el
             if count >= max_chars:
-                parts.append(insert_char)
+                _break_at(i)
                 count = 0
             continue
 
@@ -1004,14 +1110,14 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None,
         i += 1
 
         if count >= max_chars:
-            parts.append(insert_char)
+            _break_at(i)
             count = 0
             continue
 
         if count >= soft_threshold and i < n:
             next_ch = text[i]
             if next_ch in soft_punct:
-                parts.append(insert_char)
+                _break_at(i)
                 count = 0
 
     s = "".join(parts)
@@ -1042,13 +1148,16 @@ def prepare(text, drop_newline=True):
 
 def finalize(text, maps, breaks=None, mode="newline"):
     """
-    还原占位符 → 按原文换行位置补换行符 → 字数重排。
-    mode="newline" → 用 \\n
-    mode="space"   → 用空格
+    还原占位符 → 按原文换行位置补换行符。
+
+    ★ 翻译（以及润色、术语重翻）之后**不再自动做「按字数重排」**：
+      字数重排已独立成菜单 6「换行重排」，需要时手动执行。
+      这样翻译输出只保留「原文标点处记录下来的换行」，不会被动改动原文节奏。
+
+    mode="newline" → 补 \\n
+    mode="space"   → 补空格（只在按原文断点补齐时用到）
     """
     text = restore(text, maps)
     if breaks:
         text = apply_breaks(text, breaks, mode=mode)
-    if config.REWRAP_ENABLE:
-        text = rewrap(text, mode=mode)
     return text

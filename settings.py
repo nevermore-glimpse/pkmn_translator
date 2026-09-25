@@ -33,8 +33,9 @@ EDITABLE = [
     ("TRANSLATE_MODE",     "翻译模式",          "str",   "ollama=本地  /  api=云端"),
     ("API_BASE_URL",       "API 服务地址",      "str",   "OpenAI 兼容，如 .../v1"),
     ("API_KEY",            "API 密钥",          "str",   "Bearer sk-...，留空则不带"),
-    ("API_MODEL",          "API 模型名",        "str",   "如 gpt-4o-mini"),
+    ("API_MODEL",          "API 模型名",        "str",   "如 deepseek-chat"),
     ("API_TIMEOUT",        "API 超时(秒)",      "float", "云端请求超时"),
+    ("API_MAX_TOKENS",     "API 最大生成长度",  "int",   "云端 max_tokens 上限保护"),
 
     # ---------- Ollama 连接 ----------
     ("MODEL",              "Ollama 模型名",     "str",   "如 qwen2.5:14b"),
@@ -63,10 +64,13 @@ EDITABLE = [
     ("PURE_CONTROL_MIN_LEN", "纯控制符阈值", "int", "剥离后最少保留几个字"),
 
     # ---------- 换行重排 ----------
-    ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "只适用于[map*]下的翻译"),
+    ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "菜单 6 是否可用（翻译后不再自动重排）"),
     ("WRAP_CHARS_MIN",     "换行下限(字)",      "int",   ""),
     ("WRAP_CHARS_MAX",     "换行上限(字)",      "int",   ""),
     ("WRAP_MIN_GAP",       "换行最小间隔(字)",  "int",   "换行后至少 N 字才换"),
+    ("WRAP_SPACE_MIN",     "空格下限(字)",      "int",   "非 [map*] 区块：每段最少字数"),
+    ("WRAP_SPACE_MAX",     "空格上限(字)",      "int",   "非 [map*] 区块：每段最多字数"),
+    ("WRAP_SPACE_MIN_GAP", "空格最小间隔(字)",  "int",   "插空格后至少 N 字才再插"),
 
     # ---------- 术语与 Excel ----------
     ("APPLY_TERMS",        "启用术语替换",      "bool",  ""),
@@ -91,25 +95,75 @@ def list_ollama_models():
         return []
 
 
+_last_api_error = ""
+
+
+def api_models_error():
+    """上一次模型检测失败的原因（供界面提示）。"""
+    return _last_api_error
+
+
+def _models_endpoint_candidates(base):
+    """
+    可能提供 /models 的地址列表。
+
+    ★ Anthropic 兼容地址（如 https://api.deepseek.com/anthropic）没有
+      /models 接口，这里回退到同级的 OpenAI 兼容地址去探测，
+      这样用户填 /anthropic 也能正常列出该厂商的模型。
+    """
+    base = base.rstrip("/")
+    cands = [base]
+    low = base.lower()
+    for suffix in ("/anthropic", "/v1/messages", "/messages", "/v1"):
+        if low.endswith(suffix):
+            root = base[: -len(suffix)].rstrip("/")
+            if root and root not in cands:
+                cands.append(root)
+            break
+    return cands
+
+
 def list_api_models():
     """云端模式下尝试拉取可用模型（失败返回空列表，不打扰用户）。"""
+    global _last_api_error
+    _last_api_error = ""
+
     try:
         import requests
-        base = str(getattr(config, "API_BASE_URL", "") or "").rstrip("/")
-        if not base:
-            return []
-        headers = {}
-        key = getattr(config, "API_KEY", "") or ""
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        r = requests.get(base + "/models", headers=headers, timeout=5)
-        r.raise_for_status()
-        data = r.json() or {}
-        names = [m.get("id", "") for m in data.get("data", [])
-                 if isinstance(m, dict)]
-        return sorted(n for n in names if n)
-    except Exception:
+    except Exception as e:
+        _last_api_error = f"缺少 requests：{e}"
         return []
+
+    base = str(getattr(config, "API_BASE_URL", "") or "").rstrip("/")
+    if not base:
+        _last_api_error = "未填写「API 服务地址」"
+        return []
+
+    headers = {}
+    key = getattr(config, "API_KEY", "") or ""
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    last = ""
+    for b in _models_endpoint_candidates(base):
+        try:
+            r = requests.get(b + "/models", headers=headers, timeout=6)
+            if r.status_code >= 400:
+                last = f"{b}/models → HTTP {r.status_code}"
+                continue
+            data = r.json() or {}
+            names = sorted(n for n in
+                           (m.get("id", "") for m in data.get("data", [])
+                            if isinstance(m, dict)) if n)
+            if names:
+                _last_api_error = ""
+                return names
+            last = f"{b}/models 返回内容里没有模型列表"
+        except Exception as e:
+            last = f"{b}/models → {e}"
+
+    _last_api_error = last or "无法获取模型列表"
+    return []
 
 
 def list_models():
@@ -131,17 +185,19 @@ MODE_PRESETS = {
         "MAX_TERMS_IN_PROMPT": 80,
         "TIMEOUT":             600,
         "NUM_CTX":             8192,
-        "NUM_PREDICT":         1024,
-        "BATCH_SIZE":          10,
-        "MAX_BATCH_CHARS":     1400,
+        "NUM_PREDICT":         2048,
+        "BATCH_SIZE":          12,
+        "MAX_BATCH_CHARS":     2048,
     },
     "api": {
-        "MAX_TERMS_IN_PROMPT": 2560,     # 少发术语，省 prompt token
-        "TIMEOUT":             2560,
-        "NUM_CTX":             256000,   # 云端按量计费，上下文收窄
-        "NUM_PREDICT":         220000,
-        "BATCH_SIZE":          2000,     # 批次更大，减少请求次数
-        "MAX_BATCH_CHARS":     220000,
+        # ★ 云端按「请求」计费，批次过大反而更容易被截断 / 超时
+        "MAX_TERMS_IN_PROMPT": 200,
+        "TIMEOUT":             600,
+        "NUM_CTX":             65536,
+        # ★ 与 API_MAX_TOKENS 对齐：别把本地的大值透传给云端（会 400）
+        "NUM_PREDICT":         8192,
+        "BATCH_SIZE":          40,
+        "MAX_BATCH_CHARS":     12000,
     },
 }
 

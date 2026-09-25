@@ -112,17 +112,17 @@ OUTPUT_ENCODING = "utf-8-sig"
 
 # ---------- 翻译模式 ----------
 TRANSLATE_MODE = "ollama"    # "ollama" = 本地 Ollama；"api" = 云端 API（OpenAI 兼容）
-API_BASE_URL   = "https://api.openai.com/v1"
-API_KEY        = ""
-API_MODEL      = "gpt-4o-mini"
-API_TIMEOUT    = 120
+API_BASE_URL   = "https://api.deepseek.com/anthropic"
+API_KEY        = "sk-f02d7c100f714200b069f97c4d859850"
+API_MODEL      = "deepseek-flash"
+API_TIMEOUT    = 120.0
 
 # ---------- Ollama ----------
 OLLAMA_URL  = "http://localhost:11434/api/chat"
 MODEL       = "qwen3.5:4b"
 TIMEOUT     = 600.0
 NUM_CTX     = 8192
-NUM_PREDICT = 1024
+NUM_PREDICT = 2048
 TEMPERATURE = 0.25
 TOP_P       = 0.9
 KEEP_ALIVE  = "30m"
@@ -131,13 +131,13 @@ THINK       = False
 # ---------- 翻译策略 ----------
 SOURCE_LANG      = "西班牙文"
 TARGET_LANG      = "简体中文"
-BATCH_SIZE       = 10
+BATCH_SIZE       = 12
 BATCH_RETRIES    = 2
 SINGLE_RETRIES   = 3
 CACHE_SAVE_EVERY = 1
 
 # ★ 自适应分批：单批原文总字符超过该值就提前切批，避免超长句撑爆上下文
-MAX_BATCH_CHARS  = 1400
+MAX_BATCH_CHARS  = 2048
 # ★ 按长度排序后再分批：同批句子长度接近，输出更稳定、更少截断
 SORT_TODO_BY_LEN = True
 # ★ 单批注入 prompt 的术语上限
@@ -153,6 +153,15 @@ WRAP_PUNCT     = "。！？!?"
 WRAP_DOTS      = 3
 WRAP_MIN_GAP   = 10    # ★ 新增：换行后至少 N 个字才能再次换行
 
+# 空格模式（非 [map*] 区块）：每 8~10 个字符插一个空格
+WRAP_SPACE_MIN = 8
+WRAP_SPACE_MAX = 10
+WRAP_SPACE_MIN_GAP = 5   # ★ 空格重排：插空格后至少 N 字才能再次插
+
+# 特殊行配对：两行头尾匹配的相似度达到该值即视为同一组
+# （例如只差一个 <<r>> 控制码的两行），按"保留第一行、替换第二行"处理
+PAIR_SIMILARITY_MIN = 0.80
+
 # ---------- 术语 ----------
 APPLY_TERMS        = True
 ASK_LANG_EACH_TIME = True
@@ -163,6 +172,11 @@ PLAYER_PLACEHOLDER = "玛俐大小姐"  # 送模型时的替换文本（含罕�
 # ---------- 自动术语提取 ----------
 AUTO_EXTRACT_TERMS    = True    # 翻译时自动提取专有名词
 AUTO_EXTRACT_MIN_LEN  = 3       # 术语最短长度（过滤单字母/双字母）
+
+# ---------- 云端 API 保护 ----------
+# ★ 单次请求的 max_tokens 上限（防止把 NumPredict 直接透传给云端导致 400）
+#   多数 OpenAI 兼容服务上限 4K~8K；DeepSeek：chat 8K / reasoner 64K
+API_MAX_TOKENS = 8192
 
 # ---------- 中文润色重翻 ----------
 POLISH_ENABLE      = True    # 启用「中文润色重翻」
@@ -183,7 +197,7 @@ PURE_CONTROL_MIN_LEN = 2    # 剥离后至少保留多少个字母/汉字才算�
 #   exe 运行：settings.py 写 user_config.json，这里读它覆盖默认值
 # ================================================================
 USER_CONFIG_FILE = os.path.join(BASE_DIR, "user_config.json")
-SNAPSHOT_INITIALIZED = True
+SNAPSHOT_INITIALIZED = False
 
 if os.path.exists(USER_CONFIG_FILE):
     try:

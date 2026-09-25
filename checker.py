@@ -33,11 +33,15 @@ _CTRL_IGNORE = {r'\n'}
 _ENGLISH_RE = re.compile(r"[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{3,}")
 
 # 白名单：这些英文不算"未翻译"
+# ★ 比对的是 _ENGLISH_RE 抽出的纯字母词，所以 &quot 要写 "quot" 才命中；
+#   两个都放进去，兼容后续若改用整串匹配的情况。
 WHITELIST = {
     "Pokémon", "Pokemon", "Pokédex", "Pokedex",
     "Twitter", "Discord", "YouTube", "Facebook",
     "Android", "Windows", "Linux", "Nintendo", "Switch",
     "AMD", "NVIDIA", "Intel", "Haya",
+    "quot", "&quot",          # HTML 实体 &quot; / &quot
+    "amp", "&amp", "nbsp", "&nbsp",
 }
 
 # 占位符匹配

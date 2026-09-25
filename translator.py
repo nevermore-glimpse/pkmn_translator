@@ -58,7 +58,6 @@ SYSTEM_PROMPT = r"""你是专业游戏本地化译者，把{src}游戏文本翻�
 """
 
 _USER_TEMPLATE = r"""翻译下列每行，编号对应。每行格式：<编号>原文。
-{terms_block}
 要求：
 1. 每条输出两行：
 <编号>译文
@@ -67,6 +66,7 @@ _USER_TEMPLATE = r"""翻译下列每行，编号对应。每行格式：<编号>
 3. 原文中@0@ @1@ @2@ @3@等占位符在译文里必须原样保留，位置、数量不变。
 4. 术语表必须遵守，表内词无论大小写都用表中中文。
 5. 不加解释、不漏行、不多输出、不加注释，严格遵循全部规则。
+{terms_block}
 {body}
 """
 
@@ -87,10 +87,16 @@ POLISH_SYSTEM_PROMPT = r"""你是资深中文游戏本地化润色编辑。
 5. 只做语言层面的优化：让台词更自然、口语化、符合说话人身份与情绪；
    修正生硬直译、语序别扭、量词/代词误用、重复啰嗦。
 6. 已经是自然流畅的中文时，原样输出即可。
+7. 若末尾附了【参考原文】，它只是给你比对原意、检查漏译用的：
+   不要输出它，也不要照抄里面的控制码；润色结果里的占位符一律沿用待润色原文中的。
 """
 
 _POLISH_TEMPLATE = r"""润色下列每行，编号对应。每行格式：<编号>中文台词。
 {body}
+
+【输出】
+只输出 <编号>润色后文本，每行一条，编号与上面一致。
+不要输出【参考原文】，不要解释、不要空行、不要 markdown。
 """
 
 
@@ -218,6 +224,30 @@ def _is_api_mode():
     return str(getattr(config, "TRANSLATE_MODE", "ollama")).lower() == "api"
 
 
+def _is_anthropic_base(base):
+    """
+    是否 Anthropic Messages 协议的地址。
+    DeepSeek 等厂商提供两套兼容地址：
+      · OpenAI 兼容： https://api.deepseek.com        → /chat/completions
+      · Anthropic 兼容：https://api.deepseek.com/anthropic → /v1/messages
+    以 /anthropic 结尾的必须走 Anthropic 协议，否则会 404。
+    """
+    return str(base or "").rstrip("/").lower().endswith("/anthropic")
+
+
+def _api_max_tokens(want):
+    """
+    max_tokens 保护：云端各家上限差异很大（DeepSeek chat 8K），
+    这里不让 NUM_PREDICT（本地可设几十万）直接透传过去，避免 400。
+    """
+    limit = int(getattr(config, "API_MAX_TOKENS", 8192) or 8192)
+    try:
+        want = int(want or 0)
+    except (TypeError, ValueError):
+        want = 0
+    return limit if want <= 0 else min(want, limit)
+
+
 class OllamaClient:
     """翻译客户端：本地 Ollama 与云端 OpenAI 兼容 API 共用同一套接口。"""
 
@@ -230,8 +260,13 @@ class OllamaClient:
             self.model = (config.API_MODEL if self.api_mode
                           else config.MODEL)
         self._think_supported = True
-        log.info("翻译客户端初始化  模式=%s  模型=%s",
-                 "云端API" if self.api_mode else "本地Ollama", self.model)
+        proto = ""
+        if self.api_mode:
+            base = str(getattr(config, "API_BASE_URL", "") or "")
+            proto = ("，协议=Anthropic Messages"
+                     if _is_anthropic_base(base) else "，协议=OpenAI 兼容")
+        log.info("翻译客户端初始化  模式=%s%s  模型=%s",
+                 "云端API" if self.api_mode else "本地Ollama", proto, self.model)
 
     # ---------- 底层 ----------
     def _request(self, messages, temperature=None, num_predict=None):
@@ -266,6 +301,11 @@ class OllamaClient:
         base = str(getattr(config, "API_BASE_URL", "") or "").rstrip("/")
         if not base:
             raise RuntimeError("未配置 API_BASE_URL，请先到「设置」里填写")
+
+        if _is_anthropic_base(base):
+            return self._request_anthropic(base, messages, temperature,
+                                           num_predict)
+
         url = base + "/chat/completions"
 
         headers = {"Content-Type": "application/json"}
@@ -280,8 +320,8 @@ class OllamaClient:
             "temperature": (config.TEMPERATURE
                             if temperature is None else temperature),
             "top_p": getattr(config, "TOP_P", 0.9),
-            "max_tokens": (config.NUM_PREDICT
-                           if num_predict is None else num_predict),
+            "max_tokens": _api_max_tokens(
+                config.NUM_PREDICT if num_predict is None else num_predict),
         }
         timeout = getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
 
@@ -289,17 +329,76 @@ class OllamaClient:
                                  timeout=timeout)
         if resp.status_code >= 400:
             raise requests.HTTPError(
-                f"API {resp.status_code}: {resp.text[:300]}", response=resp)
+                self._http_hint(resp, url, "OpenAI 兼容"),
+                response=resp)
+        return resp.json()
+
+    def _request_anthropic(self, base, messages, temperature, num_predict):
+        """Anthropic Messages 协议：POST {base}/v1/messages。"""
+        url = base + "/v1/messages"
+
+        system = "\n".join(m.get("content", "") for m in messages
+                           if m.get("role") == "system")
+        conv = [m for m in messages if m.get("role") != "system"]
+
+        headers = {
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        key = getattr(config, "API_KEY", "") or ""
+        if key:
+            headers["x-api-key"] = key
+
+        payload = {
+            "model": self.model or getattr(config, "API_MODEL", ""),
+            "max_tokens": _api_max_tokens(num_predict),
+            "messages": conv,
+        }
+        if system:
+            payload["system"] = system
+        temp = config.TEMPERATURE if temperature is None else temperature
+        if temp is not None:
+            payload["temperature"] = temp
+
+        timeout = getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
+
+        resp = self.session.post(url, json=payload, headers=headers,
+                                 timeout=timeout)
+        if resp.status_code >= 400:
+            raise requests.HTTPError(
+                self._http_hint(resp, url, "Anthropic 兼容"),
+                response=resp)
         return resp.json()
 
     @staticmethod
+    def _http_hint(resp, url, proto):
+        """把 HTTP 错误包装成带排查建议的一句话。"""
+        body = (resp.text or "")[:300]
+        tip = ""
+        if resp.status_code == 404:
+            tip = ("；接口路径不存在：请确认「设置 → API 服务地址」用的是"
+                   "OpenAI 兼容地址（/v1 结尾亦可）还是 Anthropic 兼容地址"
+                   "（/anthropic 结尾），协议不匹配会 404")
+        elif resp.status_code == 400 and "max_tokens" in body.lower():
+            tip = ("；max_tokens 超出该模型上限，请调小"
+                   "「设置 → API 最大生成长度」")
+        elif resp.status_code in (401, 403):
+            tip = "；密钥无效或无权限，请检查「设置 → API 密钥」"
+        return f"API {resp.status_code}（{proto} {url}）：{body}{tip}"
+
+    @staticmethod
     def _content_of(data):
-        """兼容 Ollama（message.content）与 OpenAI（choices[0].message）。"""
+        """兼容 Ollama（message.content）、OpenAI（choices[0]）与 Anthropic（content[]）。"""
         if not isinstance(data, dict):
             return ""
         if data.get("choices"):
             msg = data["choices"][0].get("message") or {}
             return msg.get("content", "") or ""
+        if isinstance(data.get("content"), list):        # Anthropic Messages
+            return "".join(p.get("text", "") for p in data["content"]
+                           if isinstance(p, dict))
+        if isinstance(data.get("content"), str):
+            return data["content"]
         return (data.get("message") or {}).get("content", "") or ""
 
     def chat(self, system, user, temperature=None, num_predict=None):
@@ -367,12 +466,29 @@ class OllamaClient:
     def polish_batch(self, items):
         """
         items: [(idx, safe_text), ...]  safe_text 为已保护控制码的中文译文
+               也接受 [(idx, safe_text, safe_src), ...]：
+               第三项是原文（已保护），会作为末尾的【参考原文】交给模型比对。
         返回:  {idx: polished}
         """
         if not items:
             return {}
 
-        body = "\n".join(f"<{i}>{t}" for i, t in items)
+        body_lines, ref_lines = [], []
+        for it in items:
+            idx = it[0]
+            text = it[1]
+            src = it[2] if len(it) > 2 else None
+            body_lines.append(f"<{idx}>{text}")
+            if src:
+                ref_lines.append(f"[{idx}]{src}")
+
+        body = "\n".join(body_lines)
+        if ref_lines:
+            # ★ 原文放末尾当参考提示词：只用于比对原意，不参与输出
+            body += ("\n\n【参考原文】编号与上面一一对应，仅供比对原意、检查漏译；"
+                     "不要输出这一段，也不要照抄其中的控制码。\n"
+                     + "\n".join(ref_lines))
+
         user_msg = _POLISH_TEMPLATE.replace("{body}", body)
         system = POLISH_SYSTEM_PROMPT.replace("{tgt}", config.TARGET_LANG)
 

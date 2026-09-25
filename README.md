@@ -13,7 +13,7 @@ Supports terminology lists, placeholder protection, resume from cache, and autom
 - 💾 **Resume from cache** — Cache is saved after each batch; you can Ctrl+C and continue anytime
 - ✅ **Auto-check** — Automatically reports untranslated lines / symbol mismatches / special lines after translation
 - 🔄 **Auto re-translate** — Re-translates untranslated / suspected-untranslated sentences with one click
-- 🔀 **Line rewrapping** — Smart line breaks at 15–17 characters and sentence-ending punctuation
+- 🔀 **Line rewrapping** — Dedicated step (menu 6): by character count for `[map*]` (`\n`) and other blocks (spaces). Not applied automatically after translation.
 - 🧠 **Terminology re-translation** — Detects newly added terms and re-translates only the affected sentences
 - ⚙️ **In-app settings** — Edit all configuration values from the menu, no manual file editing
 - 🖥️ **Standalone exe** — Releases include a ready-to-run Windows executable

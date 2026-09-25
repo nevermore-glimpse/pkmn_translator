@@ -501,6 +501,7 @@ def _translate_batch(client, batch_texts, cache,
     hit_terms_all = {}
     prefix_list = {}
     new_prefixes = 0
+    new_prefix_keys = []
 
     log.info("[批 %d] 开始  %d 条", bi, len(batch_texts))
 
@@ -511,6 +512,7 @@ def _translate_batch(client, batch_texts, cache,
             prefix_list[k] = prefix
             if prefix and PFD.register_prefix(prefix):
                 new_prefixes += 1
+                new_prefix_keys.append(prefix)
         else:
             prefix_list[k] = ""
             body = txt
@@ -536,8 +538,13 @@ def _translate_batch(client, batch_texts, cache,
 
     if new_prefixes:
         PFD.save()
-        emit(f"  [前缀] 发现 {new_prefixes} 个新前缀，已加入 prefix_dict.json")
-        log.info("[批 %d] 新增前缀 %d 个", bi, new_prefixes)
+        filled = sum(1 for p in new_prefix_keys if PFD.get_translation(p))
+        msg = (f"  [前缀] 发现 {new_prefixes} 个新前缀，已加入 prefix_dict.json")
+        if filled:
+            msg += f"（其中 {filled} 个命中术语，已自动填入译文）"
+        emit(msg)
+        log.info("[批 %d] 新增前缀 %d 个（术语自动填入 %d 个）",
+                 bi, new_prefixes, filled)
 
     term_pairs_list = list(hit_terms_all.items())
     if term_pairs_list:
@@ -647,10 +654,16 @@ def _translate_batch(client, batch_texts, cache,
         else:
             final = body_final
 
-        # ★ 控制码回退：译文里缺失/未原样保留的控制码，一律回退为原文控制符
-        final, fixed_ctrl = PR.repair_missing_controls(src, final)
+        # ★ 控制码回退：译文里缺失/未原样保留的控制码，一律按原文补回
+        #   前缀是交给前缀字典单独处理的（可能已被用户或术语改写成另一套控制码），
+        #   所以校验时把前缀从原文侧剔除，只比真正参与翻译的正文部分：
+        #     · 避免把字典已处理的前缀误判成"译文缺失控制码"（否则会谎报并回退原文）
+        #     · 正文里真正丢失的控制码照样会被检测并补回
+        src_body = (src[len(prefix):]
+                    if (prefix and src.startswith(prefix)) else src)
+        final, fixed_ctrl = PR.repair_missing_controls(src_body, final)
         if fixed_ctrl:
-            log.warning("[批 %d][%d] 译文缺失控制码 %s，已按原文回退",
+            log.warning("[批 %d][%d] 译文缺失控制码 %s，已按原文补回",
                         bi, k, fixed_ctrl)
             extra_hits.append({
                 'src': src,
@@ -1160,7 +1173,7 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
 
     current = TS.load_current_terms()
     if not current:
-        emit("术语表为空或不存在，请先运行菜单 6 生成")
+        emit("术语表为空或不存在，请先运行菜单 7 生成")
         return {"files": 0, "removed": 0}
 
     if not TS.snapshot_exists():
@@ -1300,6 +1313,12 @@ def apply_prefix_dict_paths(paths, entries_map=None):
                     body_final = cached_final[len(new_prefix):]
                 else:
                     body_final = cached_final
+                # 防御：上面都没命中时，译文开头可能残留旧前缀，
+                #       再剥一次避免新旧前缀并存（重复）
+                for p in (new_prefix, prefix):
+                    if p and body_final.startswith(p):
+                        body_final = body_final[len(p):]
+                        break
                 translations[src] = new_prefix + body_final
                 hit_prefix += 1
             else:
@@ -1374,21 +1393,24 @@ def _polish_core(path, lines=None, newline=None, show_header=True):
             emit("\n[中断] 用户取消")
             break
 
-        items, maps_dict = [], {}
+        items, maps_dict, src_safe_dict = [], {}, {}
         for k, txt in enumerate(batch_texts):
             safe, maps = PR.protect(cache.get(txt), drop_newline=False)
-            items.append((k, safe))
+            # ★ 原文一并保护后作为末尾参考提示词，供模型比对、避免润色跑偏
+            src_safe, _ = PR.protect(txt, drop_newline=False)
+            items.append((k, safe, src_safe))
             maps_dict[k] = maps
+            src_safe_dict[k] = src_safe
 
         result = polish_with_retry(client, items)
 
         # 单条补全
-        for k, safe in items:
+        for k, safe, _src in items:
             if result.get(k, "").strip():
                 continue
             for attempt in range(getattr(config, "SINGLE_RETRIES", 3)):
                 try:
-                    r = polish_with_retry(client, [(k, safe)])
+                    r = polish_with_retry(client, [(k, safe, src_safe_dict[k])])
                     if r.get(k, "").strip():
                         result[k] = r[k]
                         break
@@ -1488,7 +1510,206 @@ def polish_paths(paths, model=None):
 
 
 # ================================================================
-# 核心 6：Excel 转术语表
+# 核心 6：换行重排（纯本地，不调用模型）
+# ================================================================
+def _reflow_cfg(mode, cfg=None):
+    """取某模式的重排参数 (min_chars, max_chars, min_gap)。"""
+    if isinstance(cfg, dict):
+        return (cfg.get("min"), cfg.get("max"), cfg.get("gap"))
+    if mode == "space":
+        return (getattr(config, "WRAP_SPACE_MIN", 8),
+                getattr(config, "WRAP_SPACE_MAX", 10),
+                getattr(config, "WRAP_SPACE_MIN_GAP", 5))
+    return (config.WRAP_CHARS_MIN, config.WRAP_CHARS_MAX,
+            getattr(config, "WRAP_MIN_GAP", 10))
+
+
+def _output_lines_of(path, lines, cache):
+    """
+    返回与原文等长、已填入译文的输出行。
+    优先读已有译文文件（保留人工/术语修改），缺失时用缓存重建。
+    """
+    out_path = config.Runtime.output_file
+    if os.path.exists(out_path):
+        try:
+            out_lines, _ = P.read_file(out_path, config.OUTPUT_ENCODING)
+            if len(out_lines) == len(lines):
+                return out_lines
+        except Exception:
+            pass
+
+    out_lines = list(lines)
+    entries, _ = P.extract_entries(lines)
+    for idx, src in entries:
+        dst = cache.get(src)
+        if not dst:
+            continue
+        m = re.match(r'^([ \t]*)', lines[idx])
+        out_lines[idx] = (m.group(1) if m else "") + dst
+    return out_lines
+
+
+def scan_reflow_blocks(paths, preview=8):
+    """
+    扫描待重排文件，按「区块」归类，供换行重排页展示。
+
+    返回 {"newline": [block, ...], "space": [block, ...]}
+    block = {"file", "path", "block", "mode", "total", "pairs":[(原文,译文),...]}
+    """
+    result = {"newline": [], "space": []}
+
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            lines, _nl = P.read_file(path, config.INPUT_ENCODING)
+        except Exception as e:
+            log.warning("重排扫描读取失败：%s（%s）", path, e)
+            continue
+
+        config.Runtime.set_input(path)
+        cache = Cache(config.Runtime.cache_file)
+        out_lines = _output_lines_of(path, lines, cache)
+
+        modes = P.get_block_modes(lines)
+        entries, _ = P.extract_entries(lines)
+        trans_idx = {idx for idx, _ in entries}
+
+        blocks = []
+        cur_name, cur_mode, cur_pairs, cur_line = "（文件开头）", "newline", [], 0
+
+        def _flush():
+            if cur_pairs:
+                blocks.append({
+                    "file":  os.path.basename(path),
+                    "path":  path,
+                    "block": cur_name,
+                    "mode":  cur_mode,
+                    "line":  cur_line,
+                    "total": len(cur_pairs),
+                    "pairs": cur_pairs[:preview],
+                })
+
+        for idx, raw in enumerate(lines):
+            s = raw.strip()
+            if P.is_block(s):
+                _flush()
+                cur_name, cur_mode, cur_pairs, cur_line = s, modes[idx], [], idx
+                continue
+            if idx in trans_idx:
+                src = lines[idx].strip()
+                dst = out_lines[idx].strip() if idx < len(out_lines) else ""
+                if dst and dst != src:
+                    cur_pairs.append((src, dst))
+        _flush()
+
+        for b in blocks:
+            result.setdefault(b["mode"], []).append(b)
+
+    return result
+
+
+def reflow_paths(paths, newline_cfg=None, space_cfg=None):
+    """
+    按区块类型重排译文里的换行 / 空格（纯本地操作，不调用模型）。
+
+    newline_cfg / space_cfg: {"min","max","gap"} 或 None（用当前配置）
+    """
+    log.info("=" * 50)
+    log.info("换行重排  共 %d 个文件", len(paths))
+
+    nl = _reflow_cfg("newline", newline_cfg)
+    sp = _reflow_cfg("space", space_cfg)
+    emit("\n" + "=" * 55)
+    emit("  换行重排（仅重排列，不改动译文文字）")
+    emit("=" * 55)
+    emit(f"  [map*] 换行  ：{nl[0]}~{nl[1]} 字，最小间隔 {nl[2]} 字")
+    emit(f"  其它区块空格：{sp[0]}~{sp[1]} 字，最小间隔 {sp[2]} 字")
+
+    if not getattr(config, "REWRAP_ENABLE", True):
+        emit("\n⚠ 换行重排已关闭（REWRAP_ENABLE=False），请先到「设置」里打开")
+        return {"files": 0, "changed": 0}
+
+    files_done = changed = 0
+
+    for i, path in enumerate(paths, 1):
+        if bridge.cancelled():
+            emit("\n[中断] 用户取消")
+            break
+        if not os.path.exists(path):
+            emit(f"[跳过] 文件不存在：{path}")
+            continue
+
+        config.Runtime.set_input(path)
+        out_path = config.Runtime.output_file
+        bridge.progress(i - 1, len(paths), os.path.basename(path))
+
+        try:
+            lines, newline = P.read_file(path, config.INPUT_ENCODING)
+        except Exception as e:
+            emit(f"  读取失败：{e}")
+            continue
+
+        if not os.path.exists(out_path):
+            emit(f"  缺少译文：{out_path}（先跑一次翻译）")
+            continue
+
+        try:
+            out_lines, _ = P.read_file(out_path, config.OUTPUT_ENCODING)
+        except Exception as e:
+            emit(f"  译文读取失败：{e}")
+            continue
+
+        if len(out_lines) != len(lines):
+            emit(f"  行数不一致（原文 {len(lines)} / 译文 {len(out_lines)}），跳过")
+            continue
+
+        modes = P.get_block_modes(lines)
+        entries, _ = P.extract_entries(lines)
+
+        n_changed = 0
+        for idx, src in entries:
+            dst = out_lines[idx]
+            m = re.match(r'^([ \t]*)', dst)
+            indent = m.group(1) if m else ""
+            body = dst.strip()
+            if not body or body == src.strip():
+                continue
+
+            mode = modes[idx] if idx < len(modes) else "newline"
+            mn, mx, gap = (sp if mode == "space" else nl)
+            new_body = PR.reflow(src.strip(), body, mode=mode,
+                                 min_chars=mn, max_chars=mx, min_gap=gap)
+            if not new_body or new_body == body:
+                continue
+            out_lines[idx] = indent + new_body
+            n_changed += 1
+
+        name = os.path.basename(path)
+        if not n_changed:
+            emit(f"[{i}/{len(paths)}] {name}：已符合当前配置，无需改动")
+            files_done += 1
+            continue
+
+        try:
+            with open(out_path, "w", encoding=config.OUTPUT_ENCODING) as f:
+                f.write(newline.join(out_lines))
+        except Exception as e:
+            emit(f"  写入失败：{e}")
+            continue
+
+        emit(f"[{i}/{len(paths)}] {name}：重排 {n_changed} 条 → {out_path}")
+        changed += n_changed
+        files_done += 1
+
+    bridge.progress(len(paths), len(paths), "完成")
+    emit(f"\n✔ 换行重排完成：{files_done} 个文件，改动 {changed} 条")
+    log.info("换行重排完成：%d 个文件，改动 %d 条", files_done, changed)
+    return {"files": files_done, "changed": changed}
+
+
+# ================================================================
+# 核心 7：Excel 转术语表
 # ================================================================
 def build_terms_from_excel(excel_path, sheets=None, source_lang="英文",
                            target_lang="简体中文", out_path=None):
@@ -1592,6 +1813,45 @@ def cmd_polish():
     polish_paths(paths)
 
 
+def _ask_reflow_params():
+    """交互式修改两套重排参数：写回设置并热更新（回车跳过）。"""
+    fields = [
+        ("WRAP_CHARS_MIN",     "换行下限(字)"),
+        ("WRAP_CHARS_MAX",     "换行上限(字)"),
+        ("WRAP_MIN_GAP",       "换行最小间隔(字)"),
+        ("WRAP_SPACE_MIN",     "空格下限(字)"),
+        ("WRAP_SPACE_MAX",     "空格上限(字)"),
+        ("WRAP_SPACE_MIN_GAP", "空格最小间隔(字)"),
+    ]
+    for key, name in fields:
+        cur = getattr(config, key, "")
+        raw = input(f"  {name}（当前 {cur}，回车跳过）：").strip()
+        if not raw:
+            continue
+        ok, msg, _ = settings.set_value(key, raw)
+        emit(f"    {'✔' if ok else '✘'} {name} → {msg}")
+
+
+def cmd_reflow():
+    """菜单 6：换行重排"""
+    emit("\n[换行重排] 当前配置")
+    emit("-" * 55)
+    emit(f"  [map*] 换行  ：{config.WRAP_CHARS_MIN}~{config.WRAP_CHARS_MAX} 字，"
+         f"最小间隔 {getattr(config, 'WRAP_MIN_GAP', 10)} 字")
+    emit(f"  其它区块空格：{getattr(config, 'WRAP_SPACE_MIN', 8)}"
+         f"~{getattr(config, 'WRAP_SPACE_MAX', 10)} 字，"
+         f"最小间隔 {getattr(config, 'WRAP_SPACE_MIN_GAP', 5)} 字")
+    emit("  （两种重排各用一套参数，也可在「设置」里修改）")
+
+    if input("\n是否修改本次参数？(y/N): ").strip().lower() == "y":
+        _ask_reflow_params()
+
+    paths = _select_scope_interactive("选择要重排的文件")
+    if not paths:
+        return
+    reflow_paths(paths)
+
+
 def cmd_apply_prefix_dict():
     """菜单 4 的下半段：只应用前缀字典"""
     paths = _select_scope_interactive("选择要应用前缀字典的文件")
@@ -1614,7 +1874,7 @@ def _open_path(path):
 
 
 def cmd_build_terms():
-    """菜单 6：Excel 转术语表"""
+    """菜单 7：Excel 转术语表"""
     import filepicker
     import build_terms as BT
 
@@ -1704,7 +1964,7 @@ def _choose_language(prompt, default_key, exclude=None):
 
 
 def cmd_show_logs():
-    """菜单 8：日志 / 环境检查"""
+    """菜单 9：日志 / 环境检查"""
     import env_check
 
     log_dir = os.path.join(config.BASE_DIR, "logs")
