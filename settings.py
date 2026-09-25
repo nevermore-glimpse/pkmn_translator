@@ -91,6 +91,10 @@ EDITABLE = [
 #   并覆盖同名变量，所以两种模式的行为完全一致。
 SECRET_KEYS = {"API_KEY"}
 
+# ★ 运行时标志（程序自己会改写的状态位）同样只写 user_config.json：
+#   它们不是用户的设置，源码模式下写回 config.py 只会把仓库弄脏。
+RUNTIME_KEYS = {"SNAPSHOT_INITIALIZED"}
+
 
 def list_ollama_models():
     """自动检测本机已安装的 Ollama 模型名列表。"""
@@ -269,7 +273,9 @@ def _read_source():
 
 def _write_source(text):
     tmp = CONFIG_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    # ★ newline="" 禁止换行转换：Windows 上默认会把 \n 写成 \r\n，
+    #   内容虽然没变，git 却会认为 config.py 被改过（提交时全是换行噪音）。
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(text)
     os.replace(tmp, CONFIG_PATH)
 
@@ -302,7 +308,8 @@ def _load_user_overrides():
 
 def _save_user_overrides(data):
     tmp = USER_CONFIG_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    # newline="" 同上：避免 Windows 上写成 CRLF
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, USER_CONFIG_PATH)
 
@@ -461,6 +468,7 @@ def set_internal(key, value):
     写回配置项，但不暴露在菜单里。
     用于内部标志位（如 SNAPSHOT_INITIALIZED）。
     不做类型校验，直接按 Python 值写入。
+    ★ RUNTIME_KEYS 里的项一律写 user_config.json，不改动 config.py。
     """
     try:
         if isinstance(value, bool):
@@ -478,7 +486,7 @@ def set_internal(key, value):
             literal = f'"{escaped}"'
             value_obj = v
 
-        if IS_FROZEN:
+        if IS_FROZEN or key in RUNTIME_KEYS:
             _set_in_user_config(key, value_obj)
         else:
             if not _set_in_source(key, literal):

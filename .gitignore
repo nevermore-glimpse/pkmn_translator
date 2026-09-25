@@ -53,3 +53,4 @@ desktop.ini
 
 # ---------- WorkBuddy 内部数据（非项目源码） ----------
 .workbuddy/
+/RELEASE_NOTES_v1.2.1.md

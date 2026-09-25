@@ -313,6 +313,60 @@ def delete_term_keys(keys):
     return deleted
 
 
+def _why_invalid(src, dst, min_len):
+    """给出「这条术语为什么不合格」的可读原因（与 auto_terms._validate 对齐）。"""
+    if len(src) < min_len:
+        return f"原文太短：至少 {min_len} 个字符（否则加载术语表时会被跳过）"
+    if src == dst:
+        return "原文与译文相同，无需添加"
+    if any(c in src for c in "\\[]"):
+        return "原文里不能包含控制码（\\）或方括号（[ ]）"
+    if not re.search(r'[\u4e00-\u9fff]', dst):
+        return "译文里没有中文"
+    return "术语不合格（含控制码或格式问题）"
+
+
+def add_term(src, dst, min_len=None):
+    """
+    新增一条术语（写入 term_dict.py 的 AUTO 块）。GUI「添加术语」用。
+
+    ★ 校验规则直接复用 auto_terms（自动提取那套）：最短长度、译文须含中文、
+      不能含控制码/方括号 —— 否则条目加了也不会被 processor.load_terms 采纳。
+
+    返回 (ok, msg, key)：
+      · ok=True  → key 为写入的原文
+      · ok=False → msg 说明原因；若是「已存在」则 key 为已存在的那个原文
+    """
+    src = (src or "").strip()
+    dst = (dst or "").strip()
+    if not src or not dst:
+        return False, "原文与译文都不能为空", None
+    if not os.path.exists(config.TERM_FILE):
+        return False, f"术语表不存在：{config.TERM_FILE}", None
+
+    try:
+        import auto_terms
+    except Exception as e:
+        return False, f"术语组件不可用：{e}", None
+
+    # 已存在（归一化比较：去空格 + 小写）→ 交给调用方决定是否覆盖译文
+    norm = auto_terms._normalize_key(src)
+    for k in load_current_terms():
+        if auto_terms._normalize_key(k) == norm:
+            return False, f"已存在术语「{k}」", k
+
+    if min_len is None:
+        min_len = getattr(config, "AUTO_EXTRACT_MIN_LEN", 3)
+    if not auto_terms._validate({src: dst}, min_len):
+        return False, _why_invalid(src, dst, min_len), None
+
+    if not auto_terms.merge_into_term_dict({src: dst}):
+        return False, "写入 term_dict.py 失败", None
+
+    log.info("术语表新增 1 条：%s → %s", src, dst)
+    return True, f"已新增术语：{src} → {dst}", src
+
+
 def _atomic_write(path, text):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

@@ -854,6 +854,99 @@ class FilePanel(tk.Frame):
 
 
 # ================================================================
+# 添加术语弹窗
+# ================================================================
+class TermDialog(tk.Toplevel):
+    """「添加术语」弹窗：输入原文与译文，结果放在 self.result = (原文, 译文)。"""
+
+    def __init__(self, master, src_lang="", tgt_lang=""):
+        tk.Toplevel.__init__(self, master, bg=BG_BASE)
+        self.result = None
+        self.title("添加术语")
+        self.resizable(False, False)
+        self.transient(master)
+
+        card = RoundCard(self, radius=16, pad=16, width=452,
+                         auto_height=True)
+        card.pack(padx=12, pady=12)
+        body = card.body
+
+        tk.Label(body, text="添加术语", bg=CARD, fg=TEXT,
+                 font=FONT_B).pack(anchor="w")
+        tk.Label(body,
+                 text="新术语会立即写入术语字典；点「应用术语」时会删除\n"
+                      "相关句子的缓存并重新翻译。",
+                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL,
+                 justify="left").pack(anchor="w", pady=(2, 10))
+
+        self.src_var = tk.StringVar()
+        self.dst_var = tk.StringVar()
+        first = None
+        for text, var in ((f"原文（{src_lang or '源语言'}）", self.src_var),
+                          (f"译文（{tgt_lang or '目标语言'}）", self.dst_var)):
+            row = tk.Frame(body, bg=CARD)
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text=text, bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
+                     width=16, anchor="w").pack(side="left")
+            ent = ttk.Entry(row, textvariable=var, width=26, font=FONT)
+            ent.pack(side="left", padx=6)
+            if first is None:
+                first = ent
+
+        btns = tk.Frame(body, bg=CARD)
+        btns.pack(fill="x", pady=(14, 0))
+        GlassButton(btns, "取消", width=76, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._cancel).pack(side="right")
+        GlassButton(btns, "确定添加", width=110, height=32, primary=True,
+                    bg=CARD, font=FONT_SMALL,
+                    command=self._ok).pack(side="right", padx=6)
+
+        self.bind("<Return>", lambda _e: self._ok())
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        self.update_idletasks()
+        self._center(master)
+        if first is not None:
+            first.focus_set()
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+
+    def _center(self, master):
+        try:
+            x = master.winfo_rootx() + (master.winfo_width()
+                                        - self.winfo_width()) // 2
+            y = master.winfo_rooty() + (master.winfo_height()
+                                        - self.winfo_height()) // 3
+            self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            pass
+
+    def _ok(self):
+        txt_src = self.src_var.get().strip()
+        txt_dst = self.dst_var.get().strip()
+        if not txt_src or not txt_dst:
+            messagebox.showwarning("提示", "原文与译文都不能为空", parent=self)
+            return
+        self.result = (txt_src, txt_dst)
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+    @classmethod
+    def ask(cls, master, src_lang="", tgt_lang=""):
+        """弹出对话框并等待结果；返回 (原文, 译文)，取消则返回 None。"""
+        dlg = cls(master, src_lang, tgt_lang)
+        master.wait_window(dlg)
+        return dlg.result
+
+
+# ================================================================
 # 主应用
 # ================================================================
 class App:
@@ -881,6 +974,7 @@ class App:
         self.term_deletes = set()  # 待删除原文集合（应用前可撤回）
         self.term_delete_stack = []  # 删除操作栈，支持逐步撤回
         self.term_checks = set()   # 勾选的术语原文（供批量删除使用）
+        self.term_added = []       # 本次「添加术语」新增的原文（应用术语时强制重翻）
         self._term_visible = []    # 当前过滤后可见的术语原文（顺序同列表）
         self.prefix_rows = {}      # 前缀表：iid → [原文, 译文]
         self.prefix_edits = {}
@@ -1276,7 +1370,7 @@ class App:
                     self.prog_var.set(100)
                     self._append_log(f"\n=== {label} ===\n")
                 elif kind == "term_reload":
-                    self._reset_term_pending()
+                    self._reset_term_pending(keep_added=bool(payload))
                 elif kind == "report":
                     self.set_busy(False, "检查完成")
                     self._fill_report(payload)
@@ -1647,10 +1741,13 @@ class App:
         left_b = tk.Frame(bottom, bg=CARD)
         left_b.pack(side="left")
         tk.Label(left_b,
-                 text="改动/删除会写入术语字典",
+                 text="改动会写入术语字典",
                  bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(side="left")
         right_b = tk.Frame(bottom, bg=CARD)
         right_b.pack(side="right")
+        GlassButton(right_b, "添加术语", width=84, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._on_term_add).pack(side="left", padx=4)
         GlassButton(right_b, "删除选中", width=84, height=32, bg=CARD,
                     font=FONT_SMALL,
                     command=self._on_term_delete_selected).pack(side="left",
@@ -1726,6 +1823,8 @@ class App:
         if hasattr(self, "term_stat"):
             total = len(getattr(self, "_term_all", []))
             parts = [f"显示 {n} 条 / 共 {total} 条"]
+            if self.term_added:
+                parts.append(f"本次新增术语 {len(self.term_added)} 条")
             if self.term_edits:
                 parts.append(f"已改动 {len(self.term_edits)} 条")
             if self.term_deletes:
@@ -1871,12 +1970,76 @@ class App:
         self._filter_terms()
         self.q.put(("log", f"已撤回上一次删除（恢复 {len(last)} 条）\n"))
 
-    def _reset_term_pending(self):
-        """清空编辑/删除的待应用状态，并重新载入术语列表。"""
+    # ---------- 添加术语 ----------
+    def _find_term_key(self, src):
+        """按归一化（去空格 + 小写）在现有术语里找同名原文；没有返回 None。"""
+        norm = (src or "").strip().lower()
+        if not norm:
+            return None
+        try:
+            cur = TS.load_current_terms()
+        except Exception:
+            return None
+        for k in cur:
+            if str(k).strip().lower() == norm:
+                return k
+        return None
+
+    def _on_term_add(self):
+        """
+        弹窗输入 原文 / 译文，立即写入术语字典。
+        新增的原文记进 self.term_added，点「应用术语」时会强制纳入受影响术语
+        （删除相关句子缓存并重翻）。
+        """
+        got = TermDialog.ask(self.root, self.src_var.get(), self.tgt_var.get())
+        if not got:
+            return
+        src, dst = got
+
+        exist = self._find_term_key(src)
+        if exist is not None:
+            old = ""
+            try:
+                old = TS.load_current_terms().get(exist, "")
+            except Exception:
+                pass
+            if not messagebox.askyesno(
+                    "术语已存在",
+                    f"术语「{exist}」已存在\n当前译文：{old}\n\n"
+                    f"是否把它的译文改为：{dst}？"):
+                return
+            n = TS.save_term_values({exist: dst})
+            key = exist
+            msg = (f"已更新术语「{exist}」的译文 → {dst}" if n
+                   else f"术语「{exist}」的译文没有变化")
+        else:
+            ok, msg, key = TS.add_term(src, dst)
+            if not ok:
+                messagebox.showwarning("未能添加", msg)
+                self.q.put(("log", f"[添加术语] {msg}\n"))
+                return
+
+        try:
+            PR.load_terms(force=True)
+        except Exception:
+            pass
+        if key and key not in self.term_added:
+            self.term_added.append(key)
+        self._load_term_rows()
+        self.q.put(("log", f"{msg}（点「应用术语」即会重翻相关句子）\n"))
+
+    def _reset_term_pending(self, keep_added=False):
+        """
+        清空编辑/删除的待应用状态，并重新载入术语列表。
+        keep_added=True 时保留「本次新增术语」记录（新增还得靠重翻才生效，
+        所以未选文件时会先留着，等下次带文件「应用术语」再重翻）。
+        """
         self.term_edits.clear()
         self.term_deletes.clear()
         self.term_delete_stack.clear()
         self.term_checks.clear()
+        if not keep_added:
+            self.term_added.clear()
         try:
             self._load_term_rows()
         except Exception:
@@ -1885,8 +2048,9 @@ class App:
     def _do_apply_terms(self):
         edits = dict(self.term_edits)
         deletes = set(self.term_deletes)
-        if not (edits or deletes):
-            messagebox.showinfo("提示", "没有需要应用的术语改动或删除")
+        added = list(dict.fromkeys(self.term_added))   # 本次添加的术语（去重保序）
+        if not (edits or deletes or added):
+            messagebox.showinfo("提示", "没有需要应用的术语新增、改动或删除")
             return
 
         src, tgt, model = self.src_var.get(), self.tgt_var.get(), self.model_var.get()
@@ -1901,19 +2065,27 @@ class App:
                     PR.load_terms(force=True)
                 except Exception:
                     pass
-                try:
-                    TS.save_snapshot(TS.load_current_terms())
-                except Exception:
-                    pass
+                if added:
+                    # ★ 新增术语只有重翻才会生效，所以先不推进基准，
+                    #   否则下次「应用术语」就不会再把它们算作新增了
+                    self.q.put(("log",
+                                f"新增的 {len(added)} 条术语已写入字典；"
+                                "本次未选择文件，未重翻受影响的句子。\n"
+                                "选好文件后再点一次「应用术语」即可重翻。\n"))
+                else:
+                    try:
+                        TS.save_snapshot(TS.load_current_terms())
+                    except Exception:
+                        pass
                 self.q.put(("log", f"术语字典已写入 {changed} 条修改、"
                                    f"删除 {removed} 条\n"))
-                self.q.put(("term_reload", None))
+                self.q.put(("term_reload", True))   # 保留新增记录，等下次重翻
             self.show("log")
             self.run_async(work_no_paths, label="写入术语字典…",
                           done_label="术语字典已更新")
             return
 
-        extra = list(edits.keys()) + list(deletes)
+        extra = list(edits.keys()) + list(deletes) + added
 
         def work():
             changed = TS.save_term_values(edits) if edits else 0

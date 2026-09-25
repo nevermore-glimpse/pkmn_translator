@@ -584,9 +584,6 @@ def verify(text, maps):
 #     语义与原来的"词边界 + 大小写不敏感"完全一致，速度提升一个数量级。
 # ================================================================
 _TERMS = []
-_TERM_MAP = {}
-_TERM_MAP_LOWER = {}
-_COMBINED_RE = None          # 保留：兼容旧调用方
 
 _TERM_SINGLE = {}            # {小写单词: (原文, 译文)}
 _TERM_MULTI = []             # [(原文, 译文), ...]  多词 / 含标点
@@ -644,16 +641,15 @@ def load_terms(force=False):
     加载术语表。
     文件未变化（路径 + mtime + 大小）时直接复用内存结果，避免反复 exec 大文件。
     """
-    global _TERMS, _TERM_MAP, _TERM_MAP_LOWER, _COMBINED_RE
+    global _TERMS
     global _TERM_SINGLE, _TERM_MULTI, _MULTI_RE
     global _MULTI_MAP, _MULTI_MAP_LOWER, _TERMS_LOADED_KEY
 
     if not config.APPLY_TERMS:
         if _TERMS or _TERM_SINGLE:
-            _TERMS, _TERM_MAP, _TERM_MAP_LOWER = [], {}, {}
+            _TERMS = []
             _TERM_SINGLE, _TERM_MULTI = {}, []
             _MULTI_RE, _MULTI_MAP, _MULTI_MAP_LOWER = None, {}, {}
-            _COMBINED_RE = None
             _TERMS_LOADED_KEY = None
         log.info("术语替换已关闭（APPLY_TERMS=False）")
         return
@@ -693,8 +689,6 @@ def load_terms(force=False):
     good.sort(key=lambda x: -len(x[0]))
 
     _TERMS = good
-    _TERM_MAP = dict(good)
-    _TERM_MAP_LOWER = {k.lower(): v for k, v in good}
 
     # ---- 拆分：单词类 / 多词类 ----
     _TERM_SINGLE = {}
@@ -724,8 +718,6 @@ def load_terms(force=False):
             log.error("多词术语正则失败：%s（这部分术语将用逐条匹配）", e)
             _MULTI_RE = None
 
-    # 兼容：仍提供合并正则给可能的旧调用方
-    _COMBINED_RE = _MULTI_RE
     _TERMS_LOADED_KEY = key
 
     _check_case_conflicts(good)
@@ -783,30 +775,6 @@ def find_terms(text):
             seen.add(key)
             result.append(hit)
 
-    return result
-
-
-def find_terms(text):
-    """
-    找出 text 中命中的术语，返回 [(原文, 译文), ...]（去重，保持出现顺序）。
-    """
-    if not _COMBINED_RE or not text:
-        return []
-
-    seen = set()
-    result = []
-    for m in _COMBINED_RE.finditer(text):
-        matched = m.group(1)
-        dst = _TERM_MAP.get(matched)
-        if dst is None:
-            dst = _TERM_MAP_LOWER.get(matched.lower())
-        if not dst:
-            continue
-        key = matched.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append((matched, dst))
     return result
 
 
