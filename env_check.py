@@ -194,7 +194,7 @@ def try_start_ollama():
                 cwd=os.path.dirname(app_exe),
                 close_fds=True,
             )
-            return True, f"已启动 Ollama 桌面应用", None
+            return True, "已启动 Ollama 桌面应用", None
         except Exception as e:
             log.warning("启动 ollama app 失败：%s", e)
             # 继续尝试命令行方式
@@ -328,6 +328,6 @@ def check_all(verbose=True):
     else:
         result["ollama_model"] = (False, "服务未启动，跳过")
         if verbose:
-            print(f"  [ ] Ollama 模型：跳过")
+            print("  [ ] Ollama 模型：跳过")
 
     return result

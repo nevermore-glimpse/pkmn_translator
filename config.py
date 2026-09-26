@@ -14,6 +14,31 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def resource_path(name):
+    """
+    定位随程序分发的资源文件（字体 / 图标 / 头像）。
+
+    查找顺序：
+      ① 打包后：exe 所在目录（用户可直接放旁边替换）
+      ② 打包后：PyInstaller 单文件解包目录 sys._MEIPASS
+      ③ 源码目录（开发时）
+    都不存在时返回 ①，方便上层给出准确报错。
+    """
+    cands = []
+    if getattr(sys, 'frozen', False):
+        cands.append(os.path.join(BASE_DIR, name))
+        mei = getattr(sys, '_MEIPASS', None)
+        if mei:
+            cands.append(os.path.join(mei, name))
+    cands.append(os.path.join(SRC_DIR, name))
+    for c in cands:
+        if os.path.exists(c):
+            return c
+    return cands[0]
+
 
 # ================================================================
 # 应用信息
@@ -28,16 +53,27 @@ AUTHOR_BILIBILI = ("https://space.bilibili.com/3546602748775226"
                    "?spm_id_from=333.1007.0.0")
 AVATAR_FILE     = os.path.join(BASE_DIR, "玛俐大小姐.jpg")
 
+# ---------- 字体 ----------
+# 随程序分发的字体文件。打包后会被解包到 sys._MEIPASS；
+# 也可直接放在 exe 同目录覆盖。运行时会用 GDI 私有加载，
+# 无需在目标机器上安装字体。
+FONT_FILE       = resource_path("萝莉体.ttf")
+FONT_NAME       = "Lolita"      # TTF 内读不到族名时的兜底
+
 
 # ---------- 文件（默认，可在运行时覆盖） ----------
 INPUT_FILE   = os.path.join(BASE_DIR, "intl.txt")
 OUTPUT_FILE  = os.path.join(BASE_DIR, "intl_translated.txt")
 CACHE_FILE   = os.path.join(BASE_DIR, "intl_cache.json")
 TERM_FILE    = os.path.join(BASE_DIR, "term_dict.py")
+CONFLICT_FILE = os.path.join(BASE_DIR, "term_conflicts.json")
 REPORT_DIR   = os.path.join(BASE_DIR, "reports")
 EXCEL_FILE   = os.path.join(BASE_DIR, "术语表（Glossary）.xlsx")
-CHECK_REPORT = os.path.join(REPORT_DIR, "check_report.txt")
 ICON_FILE    = os.path.join(BASE_DIR, "start.ico")
+
+# ★ 输入文件最多读多少行（含模拟/测试用的翻译文件）。
+#   0 或负数 = 不限制。
+MAX_INPUT_LINES = 0
 
 
 # ================================================================
@@ -47,6 +83,7 @@ class Runtime:
     input_file  = INPUT_FILE
     output_file = OUTPUT_FILE
     cache_file  = CACHE_FILE
+    conflict_file = CONFLICT_FILE   # ★ 术语冲突记录（与缓存同源）
     last_dir    = BASE_DIR      # ★ 最近一次浏览的目录（GUI 用）
 
     @classmethod
@@ -54,6 +91,7 @@ class Runtime:
         cls.input_file  = INPUT_FILE
         cls.output_file = OUTPUT_FILE
         cls.cache_file  = CACHE_FILE
+        cls.conflict_file = CONFLICT_FILE
         cls.last_dir    = BASE_DIR
 
     @classmethod
@@ -63,6 +101,7 @@ class Runtime:
         parent = os.path.dirname(os.path.abspath(path))
         cls.output_file = os.path.join(parent, f"{stem}_translated.txt")
         cls.cache_file  = os.path.join(parent, f"{stem}_cache.json")
+        cls.conflict_file = os.path.join(parent, f"{stem}_conflicts.json")
         cls.last_dir    = parent
 
     @classmethod
@@ -151,8 +190,6 @@ TREAT_ECHO_AS_FAIL = True
 REWRAP_ENABLE  = True
 WRAP_CHARS_MIN = 15
 WRAP_CHARS_MAX = 18
-WRAP_PUNCT     = "。！？!?"
-WRAP_DOTS      = 3
 WRAP_MIN_GAP   = 10    # ★ 新增：换行后至少 N 个字才能再次换行
 
 # 空格模式（非 [map*] 区块）：每 8~10 个字符插一个空格
@@ -209,6 +246,6 @@ if os.path.exists(USER_CONFIG_FILE):
         for _k, _v in _overrides.items():
             if _k in globals():
                 globals()[_k] = _v
-    except Exception as _e:
+    except Exception:
         # 用户配置损坏时忽略，用默认值
         pass

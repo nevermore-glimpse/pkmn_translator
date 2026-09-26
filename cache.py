@@ -2,11 +2,37 @@
 """原文 → 译文 缓存，每 N 批落盘一次，支持 Ctrl+C 后继续。"""
 import json
 import os
+import time
 
 import config
 from logger import get_logger
 
 log = get_logger("cache")
+
+
+def atomic_replace(tmp, path, retries=6, delay=0.12):
+    """
+    原子替换文件。
+
+    Windows 上 os.replace 偶尔会因杀毒软件 / 索引服务短暂占用目标文件
+    而抛「拒绝访问（WinError 5）」或「共享冲突（WinError 32）」——
+    缓存每批都要落盘，一旦抛异常整批翻译就断了，所以这里做有限次重试。
+    """
+    last = None
+    for i in range(max(1, retries)):
+        try:
+            os.replace(tmp, path)
+            return True
+        except OSError as e:
+            code = getattr(e, "winerror", None)
+            if isinstance(e, PermissionError) or code in (5, 32):
+                last = e
+                time.sleep(delay * (i + 1))
+                continue
+            raise
+    log.warning("原子替换失败（重试 %d 次）：%s → %s：%s",
+                retries, tmp, path, last)
+    raise last
 
 
 class Cache:
@@ -70,11 +96,10 @@ class Cache:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.path)
+        atomic_replace(tmp, self.path)
         self._dirty = False
         self._since_save = 0
         log.debug("缓存已保存：%d 条", len(self.data))
-
     def tick(self):
         """每处理完一批调用一次；到达间隔才真正写盘。"""
         self._since_save += 1

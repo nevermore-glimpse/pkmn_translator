@@ -84,12 +84,42 @@ def get_block_modes(lines):
         modes.append(current)
     return modes
 
-def read_file(path, encoding="utf-8-sig"):
-    """读文件，返回 (lines, newline)。保留原始换行风格。"""
+def read_file(path, encoding="utf-8-sig", max_lines=None):
+    """
+    读文件，返回 (lines, newline)。保留原始换行风格。
+
+    ★ max_lines：最多返回前 N 行（N <= 0 表示不限）。
+      默认取 config.MAX_INPUT_LINES —— 真实翻译与模拟/测试用的
+      翻译文件都受同一个上限约束，避免一次吃进整个大文件。
+    """
+    if max_lines is None:
+        max_lines = getattr(config, "MAX_INPUT_LINES", 0)
+
     with open(path, "r", encoding=encoding) as f:
         raw = f.read()
     newline = "\r\n" if "\r\n" in raw else "\n"
-    return raw.split(newline), newline
+    lines = raw.split(newline)
+
+    try:
+        max_lines = int(max_lines)
+    except (TypeError, ValueError):
+        max_lines = 0
+    if max_lines > 0 and len(lines) > max_lines:
+        log_lines_trimmed(path, len(lines), max_lines)
+        lines = lines[:max_lines]
+
+    return lines, newline
+
+
+def log_lines_trimmed(path, total, kept):
+    """（可被上层替换的）截断提示钩子，默认写日志。"""
+    try:
+        from logger import get_logger
+        get_logger("parser").info(
+            "读取 %s：共 %d 行，按 MAX_INPUT_LINES 只取前 %d 行",
+            path, total, kept)
+    except Exception:
+        pass
 
 
 def extract_entries(lines):

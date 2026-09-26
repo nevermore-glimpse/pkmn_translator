@@ -20,6 +20,8 @@ import re
 import config
 from logger import get_logger
 
+from cache import atomic_replace
+
 log = get_logger("term_sync")
 
 SNAPSHOT_FILE = os.path.join(config.BASE_DIR, "term_dict.snapshot.json")
@@ -91,7 +93,7 @@ def save_snapshot(terms):
     tmp = SNAPSHOT_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, SNAPSHOT_FILE)
+    atomic_replace(tmp, SNAPSHOT_FILE)
     log.info("快照已保存：%d 条 → %s", len(terms), SNAPSHOT_FILE)
 
 
@@ -371,4 +373,4 @@ def _atomic_write(path, text):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
-    os.replace(tmp, path)
+    atomic_replace(tmp, path)

@@ -13,9 +13,9 @@ import os
 import queue
 import subprocess
 import threading
-import time
 import traceback
 import webbrowser
+from collections import Counter
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -41,26 +41,48 @@ CARD         = "#FAFCFF"
 CARD_BORDER  = "#D5E4F5"
 CARD_ALT     = "#F1F7FF"
 SHADOW       = "#C3D6EC"
-ACCENT       = "#2A6DB0"     # 宝可蓝
+ACCENT       = "#1667C4"     # 宝可蓝
 ACCENT_SOFT  = "#D9E9FA"
-ACCENT_DEEP  = "#1B4E82"
-POKE_RED     = "#E33539"     # 精灵球红
-POKE_YELLOW  = "#FFCB05"     # 皮卡丘黄
-TEXT         = "#1E2A38"
-TEXT_DIM     = "#5C6B7D"
-TEXT_FAINT   = "#92A1B3"
-OK_COLOR     = "#2E9E6B"
-WARN_COLOR   = "#C97A0B"
-ERR_COLOR    = "#D0453F"
+ACCENT_DEEP  = "#0F4C86"
+POKE_RED     = "#D61F26"     # 精灵球红（重要数字 / 统计）
+TEXT         = "#11202F"     # 正文：加深，远距离也清楚
+TEXT_DIM     = "#3C5064"     # 次要文字
+TEXT_FAINT   = "#5C7085"     # 说明文字（比原来更深，不再发灰）
+OK_COLOR     = "#0F8A56"
+WARN_COLOR   = "#B25F09"
+ERR_COLOR    = "#C42A24"
 
-# 全局统一微软雅黑；字号在布局允许范围内适度放大
-FONT_FAMILY  = "微软雅黑"
-FONT         = (FONT_FAMILY, 11)
-FONT_B       = (FONT_FAMILY, 11, "bold")
-FONT_SMALL   = (FONT_FAMILY, 10)
-FONT_TITLE   = (FONT_FAMILY, 13, "bold")
-FONT_BIG     = (FONT_FAMILY, 12, "bold")
-FONT_MONO    = (FONT_FAMILY, 10)
+# ★ 统一字号表（改这里就能整体缩放）
+FONT_SIZES = {
+    "body":  11,   # 正文 / 普通按钮
+    "small": 10,   # 说明文字 / 小按钮
+    "title": 15,   # 卡片标题
+    "big":   12,   # 主按钮 / 醒目数字
+    "mono":  10,   # 日志 / 等宽区
+}
+
+# ★ 全局统一字体：优先使用随程序分发的萝莉体（config.FONT_FILE），
+#   运行时用 GDI 私有加载，目标机器无需安装；
+#   取不到就退回黑体 / 微软雅黑，避免方框尺寸与实际字体不匹配。
+#   族名与字号会在 main() 里由 resolve_font_family() 定稿。
+FONT_FAMILY  = "Lolita"
+FONT         = (FONT_FAMILY, FONT_SIZES["body"])
+FONT_B       = (FONT_FAMILY, FONT_SIZES["body"], "bold")
+FONT_SMALL   = (FONT_FAMILY, FONT_SIZES["small"])
+FONT_TITLE   = (FONT_FAMILY, FONT_SIZES["title"], "bold")   # 卡片标题
+FONT_BIG     = (FONT_FAMILY, FONT_SIZES["big"], "bold")     # 主按钮 / 醒目数字
+FONT_MONO    = (FONT_FAMILY, FONT_SIZES["mono"])
+
+# ★ 语义色：重要信息统一用这些常量标记
+C_TITLE   = ACCENT_DEEP   # 卡片标题
+C_KEY     = POKE_RED      # 关键统计数字
+C_HINT    = TEXT_FAINT    # 说明文字
+C_WARN    = WARN_COLOR    # 需要注意
+C_OK      = OK_COLOR      # 成功 / 正常
+
+# 方框内文字的左右 / 上下留白（按钮按文字大小自适应时用）
+BTN_PAD_X = 22
+BTN_PAD_Y = 16
 
 MENU_ITEMS = [
     ("1", "翻译"),
@@ -237,20 +259,44 @@ TERM_CHECK_ON = "☑"
 TERM_CHECK_OFF = "☐"
 
 
+def _font_metrics(font):
+    """返回 (文字宽度测量函数, 行高)。测量失败时按字号粗估。"""
+    try:
+        import tkinter.font as tkfont
+        f = tkfont.Font(font=font)
+        return f.measure, max(f.metrics("linespace"), 1)
+    except Exception:
+        size = font[1] if isinstance(font, (tuple, list)) and len(font) > 1 else 11
+        return (lambda s: len(s) * size), int(size * 1.6)
+
+
+def fit_text_box(text, font, width, height):
+    """
+    按文字实际尺寸放大方框，保证文字既不被裁掉、也不顶到边框。
+    只在给定尺寸不够时才放大，不会把按钮缩小。
+    """
+    measure, line_h = _font_metrics(font)
+    lines = [ln for ln in str(text or "").split("\n")]
+    need_w = max((measure(ln) for ln in lines), default=0) + BTN_PAD_X
+    need_h = line_h * len(lines) + BTN_PAD_Y
+    return max(int(width), int(need_w)), max(int(height), int(need_h))
+
+
 class GlassButton(tk.Canvas):
-    """圆角玻璃按钮。"""
+    """圆角玻璃按钮（方框尺寸按文字自适应，绝不裁字）。"""
 
     def __init__(self, master, text="", command=None, width=120, height=36,
                  primary=False, bg=None, font=None, state=True):
         bg = bg or BG_BASE
-        tk.Canvas.__init__(self, master, width=width, height=height,
-                           highlightthickness=0, bg=bg, cursor="hand2")
-        self.command = command
-        self.w = width
-        self.h = height
-        self.primary = primary
         self.font = font or (FONT_BIG if primary else FONT)
         self.text = text
+        w, h = fit_text_box(text, self.font, width, height)
+        tk.Canvas.__init__(self, master, width=w, height=h,
+                           highlightthickness=0, bg=bg, cursor="hand2")
+        self.command = command
+        self.w = w
+        self.h = h
+        self.primary = primary
         self.enabled = state
         self._hover = False
         self._draw()
@@ -311,15 +357,19 @@ class GlassButton(tk.Canvas):
 
 
 class MenuItem(tk.Canvas):
-    """左侧菜单项：悬停略微放大 + 底部阴影。"""
+    """左侧菜单项：悬停略微放大 + 底部阴影（宽度按文字自适应）。"""
 
     def __init__(self, master, index, text, command=None,
-                 width=188, height=44):
-        tk.Canvas.__init__(self, master, width=width, height=height,
+                 width=228, height=52):
+        font = (FONT_FAMILY, FONT[1], "bold")
+        w, _h = fit_text_box(text, font, width, height)
+        # 序号占前 36px，文字从这里开始，故测量宽度要算上这段偏移
+        w = max(w, 36 + _font_metrics(font)[0](text) + BTN_PAD_X)
+        tk.Canvas.__init__(self, master, width=w, height=max(_h, height),
                            highlightthickness=0, bg=CARD, cursor="hand2")
         self.command = command
-        self.w = width
-        self.h = height
+        self.w = w
+        self.h = max(_h, height)
         self.text = text
         self.index = index
         self._hover = False
@@ -328,11 +378,20 @@ class MenuItem(tk.Canvas):
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
         self.bind("<ButtonRelease-1>", lambda e: self.command and self.command())
+        # 侧栏变宽/变窄时按实际分配宽度重画，避免圆角框与文字错位
+        self.bind("<Configure>", lambda _e: self._draw())
 
     def _draw(self):
         self.delete("all")
         grow = 3 if self._hover else 0
-        x1, y1, x2, y2 = 3 - grow, 3 - grow, self.w - 4 + grow, self.h - 5 + grow
+        # ★ 用实际分配宽度（pack(fill="x") 会拉宽），没有再用最小宽度
+        try:
+            real_w = self.winfo_width()
+        except Exception:
+            real_w = 0
+        w = max(self.w, real_w)
+        h = max(self.h, self.winfo_height() or 0)
+        x1, y1, x2, y2 = 3 - grow, 3 - grow, w - 4 + grow, h - 5 + grow
 
         if self._hover:
             # 底部阴影
@@ -342,21 +401,21 @@ class MenuItem(tk.Canvas):
                            fill=_blend(SHADOW, CARD, 1 - i / 7.0), outline="")
 
         if self._active:
-            fill, fg, outline = ACCENT_SOFT, ACCENT, ACCENT
+            fill, fg, outline = ACCENT_SOFT, ACCENT_DEEP, ACCENT
         elif self._hover:
             fill, fg, outline = _blend(CARD, "#FFFFFF", .6), TEXT, CARD_BORDER
         else:
             fill, fg, outline = CARD_ALT, TEXT, CARD_BORDER
 
         round_rect(self, x1, y1, x2, y2, 11, fill=fill, outline=outline, width=1)
-        self.create_text(16, (y1 + y2) / 2, anchor="w",
+        self.create_text(18, (y1 + y2) / 2, anchor="w",
                          text=self.index, fill=TEXT_FAINT,
-                         font=(FONT_FAMILY, 10, "bold"))
-        self.create_text(36, (y1 + y2) / 2, anchor="w",
+                         font=(FONT_FAMILY, FONT_SMALL[1], "bold"))
+        self.create_text(42, (y1 + y2) / 2, anchor="w",
                          text=self.text,
                          fill=fg,
-                         font=(FONT_FAMILY, 11 + grow // 3,
-                               "bold" if (self._active or self._hover) else "normal"))
+                         font=(FONT_FAMILY, FONT[1] + 1 + grow // 3,
+                               "bold"))
 
     def set_active(self, on):
         self._active = bool(on)
@@ -437,7 +496,7 @@ class Avatar(tk.Canvas):
             self.create_oval(cx - rr, cy - rr, cx + rr, cy + rr, width=0,
                              fill=_blend("#F6C7DC", "#BFD7FF", 1 - i / 10))
         self.create_text(cx, cy, text="玛", fill="#FFFFFF",
-                         font=(FONT_FAMILY, 22, "bold"))
+                         font=(FONT_FAMILY, max(10, self.size // 3), "bold"))
 
     # ---------- 悬停信息 ----------
     def _schedule_tip(self, _e=None):
@@ -466,9 +525,9 @@ class Avatar(tk.Canvas):
                          highlightbackground=CARD_BORDER)
         outer.pack(padx=6, pady=6)
 
-        pad = {"padx": 14, "pady": 3}
-        tk.Label(outer, text=config.AUTHOR_NAME, bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w", **pad)
+        pad = {"padx": 16, "pady": 4}
+        tk.Label(outer, text=config.AUTHOR_NAME, bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", **pad)
         tk.Frame(outer, bg=CARD_BORDER, height=1).pack(fill="x", padx=12, pady=4)
 
         tk.Label(outer, text="GitHub", bg=CARD, fg=TEXT_DIM,
@@ -486,8 +545,8 @@ class Avatar(tk.Canvas):
         lb2.bind("<Button-1>", lambda e: webbrowser.open(config.AUTHOR_BILIBILI))
 
         tk.Label(outer, text=f"{config.APP_NAME}  v{config.VERSION}",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(
-            anchor="w", padx=14, pady=(8, 10))
+                 bg=CARD, fg=C_KEY, font=FONT_B).pack(
+            anchor="w", padx=16, pady=(10, 12))
 
         tip.update_idletasks()
         x = self.winfo_rootx() + self.winfo_width() + 6
@@ -564,6 +623,266 @@ def bind_tree_wheel(tree):
 
     tree.bind("<Enter>", _enter)
     tree.bind("<Leave>", _leave)
+
+
+# ================================================================
+# 复制到剪贴板
+#   · 列表：右键菜单（选中 / 全部 / 该单元格）+ Ctrl+C，导出为制表符分隔
+#   · 日志、文本框：右键菜单 + Ctrl+C（选中优先，无选中则整段）
+#   · 文件名、统计数字等：右键即可复制
+# ================================================================
+def clipboard_set(widget, text):
+    """把 text 写进系统剪贴板。widget 用任意 Tk 控件即可（取它的 root）。"""
+    if text is None or str(text) == "":
+        return False
+    try:
+        widget.clipboard_clear()
+        widget.clipboard_append(str(text))
+        widget.update_idletasks()
+        return True
+    except Exception as e:
+        if log:
+            log.warning("写入剪贴板失败：%s", e)
+        return False
+
+
+def _cell_text(v):
+    """单元格 → 纯文本；去掉术语冲突「保留」列前面的 ● 标记。"""
+    s = "" if v is None else str(v)
+    return s[2:] if s.startswith("● ") else s
+
+
+def tree_text(tree, iids=None, with_header=True):
+    """
+    把 Treeview 的行导出成制表符分隔文本（可直接粘进 Excel）。
+    iids 为 None 表示全部行。
+    """
+    try:
+        rows = []
+        if with_header:
+            rows.append("\t".join(
+                str(tree.heading(c, "text")) for c in tree["columns"]))
+        for iid in (tree.get_children() if iids is None else iids):
+            vals = list(tree.item(iid, "values"))
+            rows.append("\t".join(_cell_text(v) for v in vals))
+        return "\n".join(rows)
+    except Exception as e:
+        if log:
+            log.warning("导出列表失败：%s", e)
+        return ""
+
+
+def tree_cell_text(tree, col_id, row_id):
+    """取某单元格的纯文本。col_id 形如 '#3'。"""
+    try:
+        s = str(col_id)
+        idx = int(s[1:]) - 1 if s.startswith("#") and s[1:].isdigit() else -1
+        vals = list(tree.item(row_id, "values"))
+        return _cell_text(vals[idx]) if 0 <= idx < len(vals) else ""
+    except Exception:
+        return ""
+
+
+def _copy_menu(widget):
+    """统一样式的右键菜单（父控件即菜单的 master，随控件一起销毁）。"""
+    return tk.Menu(widget, tearoff=0, font=FONT_SMALL,
+                   bg=CARD, fg=TEXT,
+                   activebackground=ACCENT_SOFT, activeforeground=ACCENT_DEEP,
+                   bd=1, relief="solid")
+
+
+def _fire_copy(widget, app, text):
+    """执行复制：有 App 就让它统一反馈状态栏，否则直接写剪贴板。"""
+    if app is not None and hasattr(app, "copy_to_clipboard"):
+        return app.copy_to_clipboard(text)
+    return clipboard_set(widget, text)
+
+
+def attach_copy(widget, getters, app=None, hotkey=True):
+    """
+    给任意控件挂右键复制菜单（+ 可选 Ctrl+C）。
+
+    getters: [(菜单文字, 取文本的函数), ...]，第一项同时作为 Ctrl+C 的行为。
+
+    ★ 菜单是**右键时临时创建、用完即销毁**的：控件所在容器经常被
+      `for w in children: w.destroy()` 批量清空（如文件列表），
+      常驻菜单会跟着一起被销毁，之后再用就报 invalid command name。
+    """
+    entries = [(label, fn) for label, fn in getters if fn]
+    if not entries:
+        return None
+    widget._copy_getters = entries       # 便于自检 / 调试
+
+    def _popup(e):
+        menu = _copy_menu(widget)
+        for label, fn in entries:
+            menu.add_command(
+                label=label,
+                command=lambda f=fn: _fire_copy(widget, app, f()))
+        try:
+            menu.tk_popup(e.x_root, e.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+            menu.destroy()
+        return "break"
+
+    widget.bind("<Button-3>", _popup, add="+")
+    if hotkey:
+        first = entries[0][1]
+
+        def _hotkey(_e):
+            _fire_copy(widget, app, first())
+            return "break"
+
+        widget.bind("<Control-c>", _hotkey, add="+")
+        widget.bind("<Control-C>", _hotkey, add="+")
+    return entries
+
+
+def label_text(label):
+    """取 Label 当前显示的文字（兼容用 textvariable 的标签）。"""
+    try:
+        var = str(label.cget("textvariable") or "")
+        if var:
+            val = label.getvar(var)
+            if val is not None:
+                return str(val)
+    except Exception:
+        pass
+    try:
+        return str(label.cget("text"))
+    except Exception:
+        return ""
+
+
+def attach_label_copy(label, app=None, label_name="文字"):
+    """给只读文字（Label）挂右键复制。"""
+    return attach_copy(label,
+                       [(f"复制这段{label_name}",
+                         lambda w=label: label_text(w))],
+                       app=app, hotkey=False)
+
+
+def _edge_row(tree, y):
+    """鼠标拖到列表上下的空白处时，把落点夹到第一行 / 最后一行。"""
+    rows = tree.get_children()
+    if not rows:
+        return None
+    try:
+        b_last = tree.bbox(rows[-1])
+        if b_last and y > b_last[1] + b_last[3]:
+            return rows[-1]
+        b_first = tree.bbox(rows[0])
+        if b_first and y < b_first[1]:
+            return rows[0]
+    except Exception:
+        pass
+    return None
+
+
+def attach_tree_copy(tree, app=None, cell_label="复制该单元格"):
+    """
+    列表复制：
+
+      · 鼠标滑动选中 —— 按住左键上下拖动，连续选中一段行（Tk 8.6 的
+        Treeview 已经把拖动刷选去掉了，这里自己补回来）
+      · Ctrl+C / 右键「复制」—— 复制选中的行（一行没选时复制全部）
+      · 右键「复制全部（含表头）」「复制该单元格」
+
+    导出为制表符分隔，可直接粘进 Excel。
+    """
+    pos = [0, 0]
+    anchor = [None]        # 鼠标按下时所在的行，拖动时作为区间起点
+
+    def _sel_or_all():
+        iids = tree.selection()
+        return tree_text(tree, iids if iids else None)
+
+    def _all():
+        return tree_text(tree)
+
+    def _cell():
+        iid = tree.identify_row(pos[1])
+        col = tree.identify_column(pos[0])
+        return tree_cell_text(tree, col, iid) if iid and col else ""
+
+    entries = [
+        ("复制（选中行，未选中则全部）", _sel_or_all),
+        ("复制全部（含表头）", _all),
+        (cell_label, _cell),
+    ]
+    tree._copy_getters = entries
+
+    # ---------- 鼠标滑动选中 ----------
+    def _press(e):
+        # 按在表头（分隔线）上时交给 Treeview 自己处理列宽拖动
+        try:
+            region = tree.identify_region(e.x, e.y)
+        except Exception:
+            region = ""
+        anchor[0] = (tree.identify_row(e.y)
+                     if region in ("cell", "tree") else None)
+        # ★ 不返回 "break"：让单击选择、表头拖动等默认行为照常发生
+        return None
+
+    def _drag(e):
+        if not anchor[0]:
+            return None
+        iid = tree.identify_row(e.y) or _edge_row(tree, e.y)
+        if not iid:
+            return "break"
+        rows = tree.get_children()
+        try:
+            i0, i1 = rows.index(anchor[0]), rows.index(iid)
+        except ValueError:          # 数据被刷新过，锚点已失效
+            anchor[0] = None
+            return "break"
+        lo, hi = min(i0, i1), max(i0, i1)
+        tree.selection_set(rows[lo:hi + 1])
+        tree.focus(iid)
+        return "break"
+
+    def _release(_e):
+        anchor[0] = None
+        return None
+
+    def _popup(e):
+        pos[0], pos[1] = e.x, e.y
+        menu = _copy_menu(tree)
+        menu.add_command(
+            label=entries[0][0],
+            command=lambda: _fire_copy(tree, app, _sel_or_all()))
+        menu.add_command(
+            label=entries[1][0],
+            command=lambda: _fire_copy(tree, app, _all()))
+        menu.add_separator()
+        menu.add_command(
+            label=entries[2][0],
+            command=lambda: _fire_copy(tree, app, _cell()))
+        try:
+            menu.tk_popup(e.x_root, e.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+            menu.destroy()
+        return "break"
+
+    def _hotkey(_e):
+        _fire_copy(tree, app, _sel_or_all())
+        return "break"
+
+    tree.bind("<ButtonPress-1>", _press, add="+")
+    tree.bind("<B1-Motion>", _drag, add="+")
+    tree.bind("<ButtonRelease-1>", _release, add="+")
+    tree.bind("<Button-3>", _popup, add="+")
+    tree.bind("<Control-c>", _hotkey, add="+")
+    tree.bind("<Control-C>", _hotkey, add="+")
+    return entries
 
 
 def bind_tree_edit(tree, columns, on_commit=None):
@@ -691,44 +1010,58 @@ class FilePanel(tk.Frame):
     # 菜单 1/3/4/5 需要跳过的后缀
     SKIP_SUFFIX = ("_translated.txt", "_translated_report.txt")
 
-    def __init__(self, master, bg=CARD, width=252, mode="source",
-                 on_change=None):
+    def __init__(self, master, bg=CARD, width=272, mode="source",
+                 on_change=None, app=None):
         tk.Frame.__init__(self, master, bg=bg, width=width)
         self.bg = bg
         self.mode = mode
         self.on_change = on_change
+        self.app = app                # 用于复制到剪贴板时的状态栏反馈
+        self.panel_w = width          # ★ 供 clear() 等重画提示文字时算 wraplength
         self.files = []
         self.vars = {}
 
-        tk.Label(self, text="待操作文件", bg=bg, fg=TEXT,
-                 font=FONT_B).pack(anchor="w", padx=10, pady=(8, 4))
+        tk.Label(self, text="待操作文件", bg=bg, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 4))
 
         row = tk.Frame(self, bg=bg)
         row.pack(fill="x", padx=10)
-        GlassButton(row, "单个文件", width=72, height=28, bg=bg,
+        GlassButton(row, "单个文件", width=88, height=34, bg=bg,
                     font=FONT_SMALL, command=self.pick_file).pack(side="left")
-        GlassButton(row, "整个文件夹", width=76, height=28, bg=bg,
+        GlassButton(row, "整个文件夹", width=88, height=34, bg=bg,
                     font=FONT_SMALL, command=self.pick_dir).pack(
             side="left", padx=6)
 
         row2 = tk.Frame(self, bg=bg)
         row2.pack(fill="x", padx=10, pady=(6, 2))
-        GlassButton(row2, "全选", width=52, height=26, bg=bg,
+        GlassButton(row2, "全选", width=64, height=32, bg=bg,
                     font=FONT_SMALL, command=self.select_all).pack(side="left")
-        GlassButton(row2, "清空", width=52, height=26, bg=bg,
+        GlassButton(row2, "清空", width=64, height=32, bg=bg,
                     font=FONT_SMALL, command=self.clear).pack(side="left", padx=6)
-        self.count_lbl = tk.Label(row2, text="已选 0", bg=bg, fg=TEXT_DIM,
-                                  font=FONT_SMALL)
+        self.count_lbl = tk.Label(row2, text="已选 0", bg=bg, fg=C_KEY,
+                                  font=FONT_BIG)
         self.count_lbl.pack(side="right")
 
         outer, inner = make_scroll_area(self, bg=bg)
         outer.pack(fill="both", expand=True, padx=6, pady=(4, 8))
         self.list_inner = inner
 
+        # ★ 在列表空白处右键 → 复制所有已选文件的完整路径
+        attach_copy(self.list_inner, [
+            ("复制已选文件的完整路径", self._paths_text),
+        ], app=self.app, hotkey=False)
+
         self._hint = tk.Label(inner, text=self._hint_text(),
-                              bg=bg, fg=TEXT_FAINT, font=FONT_SMALL,
-                              justify="left", wraplength=210)
+                              bg=bg, fg=C_HINT, font=FONT_SMALL,
+                              justify="left",
+                              wraplength=max(120, self.panel_w - 62))
         self._hint.pack(anchor="w", padx=6, pady=10)
+
+    # ---------- 复制 ----------
+    def _paths_text(self):
+        """已勾选文件的完整路径（每行一个）。"""
+        return "\n".join(p for p in self.files
+                         if self.vars.get(p) and self.vars[p].get())
 
     # ---------- 筛选规则 ----------
     def _hint_text(self):
@@ -801,6 +1134,11 @@ class FilePanel(tk.Frame):
                 command=self._update_count,
             )
             cb.pack(fill="x", padx=6, pady=1)
+            # ★ 右键文件名 → 复制文件名 / 完整路径
+            attach_copy(cb, [
+                ("复制文件名", lambda f=p: os.path.basename(f)),
+                ("复制完整路径", lambda f=p: f),
+            ], app=self.app, hotkey=False)
             self.files.append(p)
             added += 1
         self._update_count()
@@ -809,7 +1147,6 @@ class FilePanel(tk.Frame):
 
     def set_files(self, paths):
         """整体替换（用于菜单之间的同步）。"""
-        keep = dict(self.vars)
         self.clear(silent=True)
         self.add_files(self._filter(list(paths)), silent=True)
 
@@ -820,8 +1157,8 @@ class FilePanel(tk.Frame):
         self.vars = {}
         self._hint = tk.Label(
             self.list_inner, text=self._hint_text(),
-            bg=self.bg, fg=TEXT_FAINT, font=FONT_SMALL, justify="left",
-            wraplength=210)
+            bg=self.bg, fg=C_HINT, font=FONT_SMALL, justify="left",
+            wraplength=max(120, self.panel_w - 62))
         self._hint.pack(anchor="w", padx=6, pady=10)
         self._update_count()
         if not silent and self.on_change:
@@ -866,18 +1203,18 @@ class TermDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(master)
 
-        card = RoundCard(self, radius=16, pad=16, width=452,
+        card = RoundCard(self, radius=16, pad=16, width=520,
                          auto_height=True)
         card.pack(padx=12, pady=12)
         body = card.body
 
-        tk.Label(body, text="添加术语", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w")
+        tk.Label(body, text="添加术语", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         tk.Label(body,
                  text="新术语会立即写入术语字典；点「应用术语」时会删除\n"
                       "相关句子的缓存并重新翻译。",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL,
-                 justify="left").pack(anchor="w", pady=(2, 10))
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left").pack(anchor="w", pady=(4, 12))
 
         self.src_var = tk.StringVar()
         self.dst_var = tk.StringVar()
@@ -885,22 +1222,22 @@ class TermDialog(tk.Toplevel):
         for text, var in ((f"原文（{src_lang or '源语言'}）", self.src_var),
                           (f"译文（{tgt_lang or '目标语言'}）", self.dst_var)):
             row = tk.Frame(body, bg=CARD)
-            row.pack(fill="x", pady=4)
+            row.pack(fill="x", pady=6)
             tk.Label(row, text=text, bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
-                     width=16, anchor="w").pack(side="left")
+                     width=18, anchor="w").pack(side="left")
             ent = ttk.Entry(row, textvariable=var, width=26, font=FONT)
-            ent.pack(side="left", padx=6)
+            ent.pack(side="left", padx=8)
             if first is None:
                 first = ent
 
         btns = tk.Frame(body, bg=CARD)
-        btns.pack(fill="x", pady=(14, 0))
-        GlassButton(btns, "取消", width=76, height=32, bg=CARD,
+        btns.pack(fill="x", pady=(16, 0))
+        GlassButton(btns, "取消", width=92, height=40, bg=CARD,
                     font=FONT_SMALL,
                     command=self._cancel).pack(side="right")
-        GlassButton(btns, "确定添加", width=110, height=32, primary=True,
+        GlassButton(btns, "确定添加", width=128, height=40, primary=True,
                     bg=CARD, font=FONT_SMALL,
-                    command=self._ok).pack(side="right", padx=6)
+                    command=self._ok).pack(side="right", padx=8)
 
         self.bind("<Return>", lambda _e: self._ok())
         self.bind("<Escape>", lambda _e: self._cancel())
@@ -946,6 +1283,81 @@ class TermDialog(tk.Toplevel):
         return dlg.result
 
 
+class _AskText(tk.Toplevel):
+    """通用的单行文本输入弹窗（术语冲突「自定义译文」用）。"""
+
+    def __init__(self, master, title, prompt, initial="", width=520):
+        tk.Toplevel.__init__(self, master, bg=BG_BASE)
+        self.result = None
+        self.title(title)
+        self.resizable(False, False)
+        self.transient(master)
+
+        card = RoundCard(self, radius=16, pad=16, width=width,
+                         auto_height=True)
+        card.pack(padx=12, pady=12)
+        body = card.body
+
+        tk.Label(body, text=title, bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(body, text=prompt, bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left").pack(anchor="w", pady=(4, 10))
+
+        self.var = tk.StringVar(value=initial or "")
+        ent = ttk.Entry(body, textvariable=self.var, width=44, font=FONT)
+        ent.pack(fill="x", pady=(0, 12))
+
+        btns = tk.Frame(body, bg=CARD)
+        btns.pack(fill="x")
+        GlassButton(btns, "取消", width=92, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._cancel).pack(side="right")
+        GlassButton(btns, "确定", width=110, height=40, primary=True,
+                    bg=CARD, font=FONT_SMALL,
+                    command=self._ok).pack(side="right", padx=8)
+
+        self.bind("<Return>", lambda _e: self._ok())
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        self.update_idletasks()
+        self._center(master)
+        ent.focus_set()
+        ent.select_range(0, "end")
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+
+    def _center(self, master):
+        try:
+            x = master.winfo_rootx() + (master.winfo_width()
+                                        - self.winfo_width()) // 2
+            y = master.winfo_rooty() + (master.winfo_height()
+                                        - self.winfo_height()) // 3
+            self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            pass
+
+    def _ok(self):
+        val = self.var.get().strip()
+        if not val:
+            messagebox.showwarning("提示", "内容不能为空", parent=self)
+            return
+        self.result = val
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+    @classmethod
+    def ask(cls, master, title, prompt, initial=""):
+        dlg = cls(master, title, prompt, initial)
+        master.wait_window(dlg)
+        return dlg.result
+
+
 # ================================================================
 # 主应用
 # ================================================================
@@ -969,14 +1381,12 @@ class App:
         self.status_var = tk.StringVar(value="就绪")
         self.prog_var = tk.DoubleVar(value=0)
 
-        self.term_rows = {}        # 术语表：iid → [来源, 原文, 译文]
         self.term_edits = {}       # 原文 → 新译文
         self.term_deletes = set()  # 待删除原文集合（应用前可撤回）
         self.term_delete_stack = []  # 删除操作栈，支持逐步撤回
         self.term_checks = set()   # 勾选的术语原文（供批量删除使用）
         self.term_added = []       # 本次「添加术语」新增的原文（应用术语时强制重翻）
         self._term_visible = []    # 当前过滤后可见的术语原文（顺序同列表）
-        self.prefix_rows = {}      # 前缀表：iid → [原文, 译文]
         self.prefix_edits = {}
         self.sheet_vars = {}       # Excel sheet → BooleanVar
         self.setting_widgets = {}  # key → (widget, typ)
@@ -1021,10 +1431,10 @@ class App:
                      bordercolor=CARD_BORDER, padding=3)
         st.configure("Treeview", background="#FFFFFF",
                      fieldbackground="#FFFFFF", borderwidth=0,
-                     rowheight=28, font=FONT)
+                     rowheight=38, font=FONT)
         st.configure("Treeview.Heading", background="#EAF3FC",
-                     foreground=ACCENT_DEEP, font=FONT_B, borderwidth=0,
-                     relief="flat")
+                     foreground=ACCENT_DEEP, font=(FONT_FAMILY, FONT_B[1], "bold"),
+                     borderwidth=0, relief="flat")
         st.map("Treeview",
                background=[("selected", ACCENT_SOFT)],
                foreground=[("selected", TEXT)])
@@ -1043,9 +1453,15 @@ class App:
     def _build_root(self):
         self.root.title(config.APP_TITLE)
         self.root.configure(bg=BG_BASE)
-        self.root.minsize(1080, 680)
+        self.root.minsize(1240, 760)
+        # ★ 目标尺寸 1500x1000；屏幕放不下时按可用空间收缩，避免窗口被裁
         try:
-            self.root.geometry("1200x780")
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            w = min(1500, max(1000, sw - 40))
+            h = min(1000, max(640, sh - 80))
+            self.root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+"
+                               f"{max(0, (sh - h) // 3)}")
         except Exception:
             pass
         try:
@@ -1060,7 +1476,7 @@ class App:
         tk.Misc.lower(self.bg_canvas)      # Canvas.lower() 是 tag_lower，别调错
         self.bg_canvas.bind("<Configure>", self._paint_root_bg)
 
-        self.root.grid_columnconfigure(0, minsize=228)
+        self.root.grid_columnconfigure(0, minsize=268)
         self.root.grid_columnconfigure(1, weight=1)
         self.root.grid_rowconfigure(0, weight=1)
 
@@ -1071,7 +1487,7 @@ class App:
 
     # ---------------- 左侧栏 ----------------
     def _build_sidebar(self):
-        holder = tk.Frame(self.root, bg=BG_BASE, width=228)
+        holder = tk.Frame(self.root, bg=BG_BASE, width=268)
         holder.grid(row=0, column=0, sticky="nsew", padx=(14, 6), pady=14)
         holder.pack_propagate(False)   # 子卡片是 pack 管理的
 
@@ -1081,18 +1497,18 @@ class App:
 
         head = tk.Frame(body, bg=CARD)
         head.pack(fill="x", pady=(2, 8))
-        Avatar(head, size=66, path=config.AVATAR_FILE).pack(anchor="w")
+        Avatar(head, size=76, path=config.AVATAR_FILE).pack(anchor="w")
 
         tk.Frame(body, bg=CARD_BORDER, height=1).pack(fill="x", pady=(2, 8))
 
         for idx, name in MENU_ITEMS:
             btn = MenuItem(body, idx, name,
                            command=lambda k=MENU_KEYS[idx]: self.show(k))
-            btn.pack(fill="x", pady=3)
+            btn.pack(fill="x", pady=4)
             self.menu_btns[MENU_KEYS[idx]] = btn
 
         tip = tk.Label(body, text="悬停头像查看作者信息", bg=CARD,
-                       fg=TEXT_FAINT, font=FONT_SMALL)
+                       fg=C_HINT, font=FONT_SMALL)
         tip.pack(side="bottom", pady=(8, 0))
 
     # ---------------- 内容区 ----------------
@@ -1123,7 +1539,7 @@ class App:
 
     # ---------------- 状态条 ----------------
     def _build_status(self):
-        holder = tk.Frame(self.root, bg=BG_BASE, height=52)
+        holder = tk.Frame(self.root, bg=BG_BASE, height=64)
         holder.grid(row=1, column=0, columnspan=2, sticky="ew",
                     padx=14, pady=(0, 12))
         holder.pack_propagate(False)   # 子控件是 pack 管理的，须用 pack_propagate
@@ -1132,12 +1548,13 @@ class App:
         card.pack(fill="both", expand=True)
         body = card.body
 
-        PokeBall(body, size=20).pack(side="left")
+        PokeBall(body, size=24).pack(side="left")
         self.status_lbl = tk.Label(body, textvariable=self.status_var,
-                                   bg=CARD, fg=TEXT_DIM, font=FONT_SMALL)
-        self.status_lbl.pack(side="left", padx=6)
+                                   bg=CARD, fg=TEXT, font=FONT_B)
+        self.status_lbl.pack(side="left", padx=8)
+        attach_label_copy(self.status_lbl, self, "状态")
 
-        self.cancel_btn = GlassButton(body, "取消", width=70, height=28,
+        self.cancel_btn = GlassButton(body, "取消", width=84, height=34,
                                       bg=CARD, font=FONT_SMALL,
                                       command=self._on_cancel)
         self.cancel_btn.pack(side="right")
@@ -1171,11 +1588,8 @@ class App:
     def _make_file_panel(self, holder, mode):
         """统一创建右侧文件侧边栏，并把菜单 1 的选择同步给其余菜单。"""
         fp = FilePanel(holder.body, bg=CARD, mode=mode,
-                       on_change=self._sync_file_panels)
+                       on_change=self._sync_file_panels, app=self)
         fp.pack(fill="both", expand=True)
-        # ★ 别写 (self.file_panels or []).append() —— 空列表会被换成临时列表
-        if self.file_panels is None:
-            self.file_panels = []
         self.file_panels.append(fp)
         return fp
 
@@ -1210,26 +1624,27 @@ class App:
     def _labeled_combo(self, parent, text, var, values, width=18, side="left"):
         row = tk.Frame(parent, bg=CARD)
         row.pack(fill="x", pady=4, side=side, expand=(side == "left"))
+        # ★ 不给固定 width：按文字实际宽度排，避免长标签被截断
         tk.Label(row, text=text, bg=CARD, fg=TEXT_DIM,
-                 font=FONT_SMALL, width=8, anchor="w").pack(side="left")
+                 font=FONT_SMALL, anchor="w").pack(side="left")
         cb = ttk.Combobox(row, textvariable=var, values=values, width=width,
                           state="normal", font=FONT)
-        cb.pack(side="left", padx=6)
+        cb.pack(side="left", padx=8)
         return cb
 
     def _model_row(self, parent, label="模型"):
         row = tk.Frame(parent, bg=CARD)
         row.pack(fill="x", pady=4)
         tk.Label(row, text=label, bg=CARD, fg=TEXT_DIM,
-                 font=FONT_SMALL, width=8, anchor="w").pack(side="left")
+                 font=FONT_SMALL, anchor="w").pack(side="left")
         cb = ttk.Combobox(row, textvariable=self.model_var,
                           values=self.models or [config.MODEL],
                           width=22, state="normal", font=FONT)
-        cb.pack(side="left", padx=6)
+        cb.pack(side="left", padx=8)
         self.model_combos.append(cb)
-        GlassButton(row, "检测", width=58, height=28, bg=CARD,
+        GlassButton(row, "检测", width=72, height=34, bg=CARD,
                     font=FONT_SMALL,
-                    command=self._detect_models_async).pack(side="left", padx=6)
+                    command=self._detect_models_async).pack(side="left", padx=8)
         return cb
 
     # ---------- 翻译模式 ----------
@@ -1238,14 +1653,14 @@ class App:
         row = tk.Frame(parent, bg=CARD)
         row.pack(fill="x", pady=4)
         tk.Label(row, text=label, bg=CARD, fg=TEXT_DIM,
-                 font=FONT_SMALL, width=8, anchor="w").pack(side="left")
+                 font=FONT_SMALL, anchor="w").pack(side="left")
 
         holder = tk.Frame(row, bg=CARD_BORDER)
-        holder.pack(side="left", padx=6)
+        holder.pack(side="left", padx=8)
         group = {}
         for mode, text in (("ollama", "本地 Ollama"), ("api", "云端 API")):
             btn = tk.Label(holder, text=text, font=FONT_SMALL,
-                           padx=12, pady=5, cursor="hand2")
+                           padx=16, pady=7, cursor="hand2")
             btn.pack(side="left", padx=(1, 1), pady=1)
             btn.bind("<Button-1>",
                      lambda _e, m=mode: self._switch_mode(m))
@@ -1262,7 +1677,9 @@ class App:
                     continue
                 on = (mode == cur)
                 btn.configure(bg=ACCENT if on else CARD,
-                              fg="#FFFFFF" if on else TEXT_DIM)
+                              fg="#FFFFFF" if on else TEXT_DIM,
+                              font=(FONT_FAMILY, FONT_SMALL[1],
+                                    "bold" if on else "normal"))
 
     def _switch_mode(self, mode):
         mode = settings.normalize_mode(mode)
@@ -1325,8 +1742,6 @@ class App:
     def set_busy(self, on, label=None):
         self.busy = on
         self.cancel_btn.set_enabled(on)
-        for _, btn in self.menu_btns.items():
-            pass
         if on:
             self._cancel_flag = False
             bridge.reset_cancel()
@@ -1374,9 +1789,17 @@ class App:
                 elif kind == "report":
                     self.set_busy(False, "检查完成")
                     self._fill_report(payload)
+                elif kind == "term_conflict_done":
+                    self._after_conflicts(payload)
                 elif kind == "prefix_done":
                     messagebox.showinfo("完成",
                                         "前缀字典已写入并应用到翻译文件")
+                elif kind == "prefix_terms_done":
+                    r = payload or {}
+                    messagebox.showinfo(
+                        "应用术语完成",
+                        f"前缀命中术语并替换：{r.get('changed', 0)} 条\n"
+                        f"已写回译文文件：{r.get('files', 0)} 个")
                 elif kind == "excel_done":
                     if payload and payload.get("ok"):
                         messagebox.showinfo(
@@ -1412,6 +1835,52 @@ class App:
         line = (text or "").strip().splitlines()
         if line:
             self.status_var.set(line[-1][:110])
+
+    # ================================================================
+    # 复制到剪贴板
+    # ================================================================
+    def copy_to_clipboard(self, text, what="内容"):
+        """统一复制入口：写剪贴板 + 状态栏反馈。返回是否成功。"""
+        text = "" if text is None else str(text)
+        if not text.strip():
+            self.status_var.set("没有可复制的内容")
+            return False
+        ok = clipboard_set(self.root, text)
+        if not ok:
+            self.status_var.set("复制失败（剪贴板被其他程序占用）")
+            return False
+        n = len(text.splitlines())
+        if n > 1:
+            self.status_var.set(
+                f"已复制{what} {n} 行到剪贴板，可直接粘贴到 Excel / 文本编辑器")
+        else:
+            self.status_var.set(f"已复制{what}到剪贴板：{text[:60]}")
+        return True
+
+    def _text_all(self, box):
+        """取文本框全部内容。"""
+        try:
+            return box.get("1.0", "end-1c")
+        except Exception:
+            return ""
+
+    def _text_pick(self, box):
+        """文本框有选中就返回选中内容，否则返回全部。"""
+        try:
+            sel = box.get("sel.first", "sel.last")
+            if sel.strip():
+                return sel
+        except Exception:
+            pass
+        return self._text_all(box)
+
+    def _copy_report_list(self):
+        """把报告列表当前显示的内容复制成制表符分隔文本。"""
+        self.copy_to_clipboard(tree_text(self.report_tree), "报告列表")
+
+    def _copy_log(self):
+        """日志页「复制全部」按钮。"""
+        self.copy_to_clipboard(self._text_all(self.log_text), "日志")
 
     def _on_progress(self, done, total, text):
         try:
@@ -1451,43 +1920,43 @@ class App:
 
         # 上层：语言
         c1 = RoundCard(left, radius=16, pad=18)
-        c1.configure(height=104)
+        c1.configure(height=140)
         c1.pack_propagate(False)
         c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        tk.Label(c1.body, text="语言选择", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w")
+        tk.Label(c1.body, text="语言选择", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         row = tk.Frame(c1.body, bg=CARD)
-        row.pack(fill="x", pady=(6, 0))
+        row.pack(fill="x", pady=(8, 0))
         self._labeled_combo(row, "源语言", self.src_var, LANG_VALUES, 14)
         self._labeled_combo(row, "目标语言", self.tgt_var, LANG_VALUES, 14)
 
         # 中层：模型
         c2 = RoundCard(left, radius=16, pad=18)
         c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
-        tk.Label(c2.body, text="模型与模式", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w")
+        tk.Label(c2.body, text="模型与模式", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         self._mode_row(c2.body)
         self._model_row(c2.body)
         tk.Label(c2.body,
                  text="本地模式自动检测已安装的 Ollama 模型；"
                       "云端模式填写 API 地址与密钥后可用。",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL,
-                 justify="left").pack(anchor="w", pady=(8, 0))
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left").pack(anchor="w", pady=(10, 0))
 
         # 下层：开始
         c3 = RoundCard(left, radius=16, pad=18)
-        c3.configure(height=92)
+        c3.configure(height=136)
         c3.pack_propagate(False)
         c3.grid(row=2, column=0, sticky="ew")
-        GlassButton(c3.body, "开始翻译", width=180, height=44,
+        GlassButton(c3.body, "开始翻译", width=200, height=52,
                     primary=True, bg=CARD,
                     command=self._do_translate).pack(anchor="w")
         tk.Label(c3.body, text="点击后跳转到日志页，实时查看进度",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(anchor="w",
-                                                               pady=(6, 0))
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(anchor="w",
+                                                           pady=(8, 0))
 
         # 右侧文件栏
-        fp_holder = RoundCard(page, radius=16, pad=8, width=252)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "source")
@@ -1517,19 +1986,25 @@ class App:
         page.grid_columnconfigure(0, weight=1)
         page.grid_rowconfigure(0, weight=1)
 
+        # 报告页状态：report = 5 列问题列表；conflict = 4 列术语冲突列表
+        self.report_mode = "report"
+        self.report_hits = []
+        self.report_counts = {}
+        self.report_kind_vars = {}
+        self.conflict_choices = {}
+        self._conflict_entry = None
+
         left = tk.Frame(page, bg=BG_BASE)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.grid_rowconfigure(1, weight=1)
         left.grid_columnconfigure(0, weight=1)
 
-        c1 = RoundCard(left, radius=16, pad=18)
-        c1.configure(height=158)
-        c1.pack_propagate(False)
+        c1 = RoundCard(left, radius=16, pad=18, auto_height=True)
         c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        tk.Label(c1.body, text="语言与模型", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w")
+        tk.Label(c1.body, text="语言与模型", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         row = tk.Frame(c1.body, bg=CARD)
-        row.pack(fill="x", pady=(6, 0))
+        row.pack(fill="x", pady=(8, 0))
         self._labeled_combo(row, "源语言", self.src_var, LANG_VALUES, 12)
         self._labeled_combo(row, "目标语言", self.tgt_var, LANG_VALUES, 12)
         self._mode_row(c1.body)
@@ -1539,22 +2014,28 @@ class App:
         c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
         head = tk.Frame(c2.body, bg=CARD)
         head.pack(fill="x")
-        tk.Label(head, text="报告内容", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(side="left")
-        GlassButton(head, "刷新报告", width=86, height=28, bg=CARD,
+        tk.Label(head, text="报告内容", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        GlassButton(head, "刷新报告", width=104, height=34, bg=CARD,
                     font=FONT_SMALL, command=self._do_check).pack(side="left",
-                                                                  padx=10)
+                                                                  padx=12)
         self.report_stat = tk.Label(head, text="尚未检查", bg=CARD,
-                                    fg=TEXT_DIM, font=FONT_SMALL)
+                                    fg=C_KEY, font=FONT_BIG)
         self.report_stat.pack(side="right")
+        attach_label_copy(self.report_stat, self, "统计")
+
+        # ★ 重翻类型选择（刷新报告后按实际出现的问题类型动态生成）
+        self.report_kind_bar = tk.Frame(c2.body, bg=CARD)
+        self.report_kind_bar.pack(fill="x", pady=(6, 0))
 
         wrap = tk.Frame(c2.body, bg=CARD)
         wrap.pack(fill="both", expand=True, pady=(8, 0))
+        self.report_wrap = wrap
         cols = ("kind", "line", "src", "dst", "detail")
-        tree = ttk.Treeview(wrap, columns=cols, show="headings", height=8)
-        for c, w, t in (("kind", 90, "类型"), ("line", 50, "行"),
-                        ("src", 210, "原文"), ("dst", 210, "译文"),
-                        ("detail", 260, "说明")):
+        tree = ttk.Treeview(wrap, columns=cols, show="headings", height=3)
+        for c, w, t in (("kind", 78, "类型"), ("line", 44, "行"),
+                        ("src", 178, "原文"), ("dst", 178, "译文"),
+                        ("detail", 176, "说明")):
             tree.heading(c, text=t)
             tree.column(c, width=w, anchor="w")
         sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
@@ -1562,25 +2043,161 @@ class App:
         tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.report_tree = tree
+        tree.tag_configure("k_old", background="#E3F0FF")
+        tree.tag_configure("k_new", background="#E4F7EA")
+        tree.tag_configure("k_custom", background="#FFF4D6")
+        tree.bind("<Button-1>", self._on_conflict_click)
+        tree.bind("<Double-1>", self._on_conflict_dblclick)
         bind_tree_wheel(tree)
+        attach_tree_copy(tree, self)      # ★ 右键 / Ctrl+C 复制列表
 
-        c3 = RoundCard(left, radius=16, pad=18)
-        c3.configure(height=92)
-        c3.pack_propagate(False)
+        # ★ 底部操作区：常规模式 / 术语冲突模式，同一位置切换（省高度）
+        c3 = RoundCard(left, radius=16, pad=18, auto_height=True)
         c3.grid(row=2, column=0, sticky="ew")
-        GlassButton(c3.body, "开始重翻", width=180, height=44,
-                    primary=True, bg=CARD,
-                    command=self._do_retranslate_report).pack(anchor="w")
-        tk.Label(c3.body,
-                 text="删除这些问题句的缓存并重新翻译（仅处理可修复类型）",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(anchor="w",
-                                                               pady=(6, 0))
 
-        fp_holder = RoundCard(page, radius=16, pad=8, width=252)
+        self.c3_normal = tk.Frame(c3.body, bg=CARD)
+        btn_row = tk.Frame(self.c3_normal, bg=CARD)
+        btn_row.pack(fill="x")
+        GlassButton(btn_row, "开始重翻", width=200, height=52,
+                    primary=True, bg=CARD,
+                    command=self._do_retranslate_report).pack(side="left")
+        self.conflict_btn = GlassButton(btn_row, "解决术语冲突", width=180,
+                                        height=52, bg=CARD, font=FONT_BIG,
+                                        command=self._toggle_conflict_view)
+        self.conflict_btn.pack(side="left", padx=10)
+        self.conflict_btn.set_enabled(False)
+        GlassButton(btn_row, "复制列表", width=140, height=52, bg=CARD,
+                    font=FONT_BIG,
+                    command=self._copy_report_list).pack(side="left",
+                                                        padx=(10, 0))
+        self.report_hint = tk.Label(
+            self.c3_normal,
+            text="删除勾选类型的问题句缓存并重新翻译；"
+                 "「译文残留控制码」等类型不参与重翻",
+            bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+            wraplength=560)
+        self.report_hint.pack(anchor="w", pady=(8, 0))
+
+        self.c3_conflict = tk.Frame(c3.body, bg=CARD)
+        self._build_conflict_bar(self.c3_conflict)
+
+        self.c3_normal.pack(fill="x")
+
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "report")
         self.fp_report = fp
+
+    def _show_c3_mode(self, mode):
+        """切换底部操作区：report = 常规；conflict = 术语冲突。"""
+        if mode == "conflict":
+            self.c3_normal.pack_forget()
+            self.c3_conflict.pack(fill="x")
+        else:
+            self.c3_conflict.pack_forget()
+            self.c3_normal.pack(fill="x")
+        # 冲突视图里隐藏「重翻类型」，避免误以为它作用于冲突列表
+        try:
+            if mode == "conflict":
+                self.report_kind_bar.pack_forget()
+            elif not self.report_kind_bar.winfo_ismapped():
+                self.report_kind_bar.pack(fill="x", pady=(6, 0),
+                                          before=self.report_wrap)
+        except Exception:
+            pass
+
+    # ----------------------------------------------------------------
+    # 报告页：重翻类型
+    # ----------------------------------------------------------------
+    def _render_kind_bar(self):
+        """按当前报告里出现的问题类型生成可勾选的重翻类型。"""
+        bar = self.report_kind_bar
+        for w in bar.winfo_children():
+            w.destroy()
+        self.report_kind_vars = {}
+
+        counts = getattr(self, "report_counts", {}) or {}
+        if not counts:
+            tk.Label(bar, text="重翻类型：刷新报告后可逐项勾选", bg=CARD,
+                     fg=C_HINT, font=FONT_SMALL).pack(anchor="w")
+            return
+
+        order = list(commands.REPORT_KIND_ORDER)
+        for k in counts:
+            if k not in order:
+                order.append(k)
+
+        tk.Label(bar, text="重翻类型", bg=CARD, fg=C_TITLE,
+                 font=FONT_B).grid(row=0, column=0, sticky="w",
+                                   padx=(0, 10), pady=2)
+        col, row = 1, 0
+        for kind in order:
+            n = counts.get(kind)
+            if not n:
+                continue
+            if col >= 4:                      # 每行最多 3 个，放不下时换行
+                col, row = 1, row + 1
+            if kind in commands.NEVER_RETRANSLATE_KINDS:
+                tk.Label(bar, text=f"{kind}({n}) 需手动", bg=CARD, fg=C_HINT,
+                         font=FONT_SMALL).grid(row=row, column=col,
+                                               sticky="w", padx=6, pady=2)
+            else:
+                var = tk.BooleanVar(value=(kind in commands.RETRANSLATE_KINDS))
+                tk.Checkbutton(
+                    bar, text=f"{kind}({n})", variable=var,
+                    bg=CARD, fg=C_KEY if kind in commands.RETRANSLATE_KINDS
+                    else TEXT,
+                    activebackground=CARD, activeforeground=TEXT,
+                    selectcolor="#FFFFFF", font=FONT_SMALL,
+                    cursor="hand2",
+                    command=self._render_report_rows).grid(
+                        row=row, column=col, sticky="w", padx=6, pady=2)
+                self.report_kind_vars[kind] = var
+            col += 1
+
+        # 全选 / 全不选
+        if col >= 4:
+            col, row = 1, row + 1
+        for text, val in (("全选", True), ("全不选", False)):
+            lbl = tk.Label(bar, text=f"[{text}]", bg=CARD, fg=ACCENT,
+                           font=FONT_SMALL, cursor="hand2")
+            lbl.grid(row=row, column=col, sticky="w", padx=4, pady=2)
+            lbl.bind("<Button-1>",
+                     lambda _e, v=val: self._toggle_all_kinds(v))
+            col += 1
+
+    def _toggle_all_kinds(self, value):
+        for var in self.report_kind_vars.values():
+            var.set(value)
+        self._render_report_rows()
+
+    def _selected_kinds(self):
+        return [k for k, v in self.report_kind_vars.items() if v.get()]
+
+    def _render_report_rows(self):
+        """按勾选的类型过滤报告列表。"""
+        if getattr(self, "report_mode", "report") == "conflict":
+            return
+        tree = self.report_tree
+        for iid in tree.get_children():
+            tree.delete(iid)
+        sel = set(self._selected_kinds())
+        has_filter = bool(getattr(self, "report_kind_vars", {}))
+        shown = 0
+        for _path, h in getattr(self, "report_hits", []):
+            kind = h.get("kind", "")
+            if has_filter and kind not in sel:
+                continue
+            shown += 1
+            tree.insert("", "end", values=(
+                kind, h.get("line_no", ""),
+                (h.get("src") or "")[:200],
+                (h.get("dst") or "")[:200],
+                (h.get("detail") or "")[:200],
+            ))
+        total = len(getattr(self, "report_hits", []))
+        self.report_stat.config(text=f"显示 {shown} / 共 {total} 处问题")
 
     def _do_check(self):
         paths = self._report_sources()
@@ -1600,22 +2217,291 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _fill_report(self, result):
+        if self.report_mode != "report":
+            self.report_mode = "report"
+            self._set_report_columns("report")
+            self._show_c3_mode("report")
+
+        hits = []
+        for path, hs in (result or {}).items():
+            for h in hs:
+                hits.append((path, h))
+        self.report_hits = hits
+        self.report_counts = Counter(h.get("kind", "") for _p, h in hits)
+
+        self._render_kind_bar()
+        self._render_report_rows()
+
+        n_conf = sum(1 for _p, h in hits if h.get("kind") == "术语冲突")
+        try:
+            self.conflict_btn.set_enabled(n_conf > 0)
+        except Exception:
+            pass
+        self.report_hint.config(
+            text=(f"发现 {n_conf} 处术语冲突，可点「解决术语冲突」逐条处理；"
+                  "重翻只对勾选的类型生效" if n_conf else
+                  "删除勾选类型的问题句缓存并重新翻译；"
+                  "「译文残留控制码」等类型不参与重翻"))
+        self.status_var.set(
+            f"检查完成：{len(hits)} 处问题 / {len(result or {})} 个文件")
+
+    # ----------------------------------------------------------------
+    # 术语冲突：三列视图 + 逐条选择
+    # ----------------------------------------------------------------
+    _CONFLICT_COLS = (("term", 150, "术语原文"),
+                      ("old", 170, "已有译文"),
+                      ("new", 170, "新增译文"),
+                      ("keep", 150, "保留"))
+
+    def _set_report_columns(self, mode):
+        tree = self.report_tree
+        if mode == "conflict":
+            cols = [c for c, _w, _t in self._CONFLICT_COLS]
+            tree.configure(columns=cols, show="headings")
+            for c, w, t in self._CONFLICT_COLS:
+                tree.heading(c, text=t)
+                tree.column(c, width=w, anchor="w")
+        else:
+            cols = ("kind", "line", "src", "dst", "detail")
+            tree.configure(columns=cols, show="headings")
+            for c, w, t in (("kind", 78, "类型"), ("line", 44, "行"),
+                            ("src", 178, "原文"), ("dst", 178, "译文"),
+                            ("detail", 176, "说明")):
+                tree.heading(c, text=t)
+                tree.column(c, width=w, anchor="w")
+
+    def _build_conflict_bar(self, bar):
+        tk.Label(bar, text="单击「已有译文」或「新增译文」选中该译文；"
+                           "双击「保留」列可输入自定义译文",
+                 bg=CARD, fg=C_WARN, font=FONT_SMALL,
+                 justify="left", wraplength=560).pack(anchor="w")
+        row = tk.Frame(bar, bg=CARD)
+        row.pack(fill="x", pady=(6, 0))
+        for text, cmd in (
+                ("全部保留已有", lambda: self._conflict_keep_all("old")),
+                ("全部保留新增", lambda: self._conflict_keep_all("new")),
+                ("自定义译文", self._conflict_custom_selected),
+                ("返回报告", self._toggle_conflict_view)):
+            GlassButton(row, text, width=112, height=40, bg=CARD,
+                        font=FONT_SMALL, command=cmd).pack(side="left",
+                                                           padx=(0, 8))
+        row2 = tk.Frame(bar, bg=CARD)
+        row2.pack(fill="x", pady=(8, 0))
+        tk.Label(row2, text="写入术语字典 → 删缓存 → 重翻",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(side="left")
+        GlassButton(row2, "应用并重翻", width=150, height=46, primary=True,
+                    bg=CARD, font=FONT_BIG,
+                    command=self._apply_conflicts).pack(side="right")
+
+    def _toggle_conflict_view(self):
+        if self._conflict_entry is not None:
+            try:
+                self._conflict_entry.destroy()
+            except Exception:
+                pass
+            self._conflict_entry = None
+
+        if self.report_mode == "conflict":
+            self.report_mode = "report"
+            self._set_report_columns("report")
+            self._show_c3_mode("report")
+            self.report_hint.config(
+                text="删除勾选类型的问题句缓存并重新翻译；"
+                     "「译文残留控制码」等类型不参与重翻")
+            self._render_report_rows()
+            self._refresh_conflict_btn()
+            return
+
+        # 收集报告里的术语冲突（按术语原文去重）
+        rows = []
+        seen = set()
+        for _path, h in getattr(self, "report_hits", []):
+            if h.get("kind") != "术语冲突":
+                continue
+            term = (h.get("term_src") or "").strip()
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            rows.append((term, h.get("term_old", "") or "",
+                         h.get("term_new", "") or ""))
+        if not rows:
+            messagebox.showinfo("提示", "当前报告里没有术语冲突")
+            return
+
+        self.report_mode = "conflict"
+        self._set_report_columns("conflict")
         tree = self.report_tree
         for iid in tree.get_children():
             tree.delete(iid)
-        total = 0
-        for path, hits in (result or {}).items():
-            for h in hits:
-                total += 1
-                tree.insert("", "end", values=(
-                    h.get("kind", ""), h.get("line_no", ""),
-                    (h.get("src") or "")[:200],
-                    (h.get("dst") or "")[:200],
-                    (h.get("detail") or "")[:200],
-                ))
-        self.report_stat.config(
-            text=f"共 {total} 处问题 / {len(result or {})} 个文件")
-        self.status_var.set(f"检查完成：{total} 处问题")
+        self.conflict_choices = {}
+        for term, old, new in rows:
+            val = old or new
+            keep = "old" if old else "new"
+            iid = tree.insert("", "end", values=(
+                term, old, new, f"● {val}"), tags=(f"k_{keep}",))
+            self.conflict_choices[iid] = {
+                "term": term, "old": old, "new": new,
+                "keep": keep, "value": val,
+            }
+        self.report_stat.config(text=f"术语冲突 {len(rows)} 条")
+        self._show_c3_mode("conflict")
+        self._refresh_conflict_btn()
+
+    def _refresh_conflict_btn(self):
+        n = sum(1 for _p, h in getattr(self, "report_hits", [])
+                if h.get("kind") == "术语冲突")
+        try:
+            self.conflict_btn.set_enabled(
+                n > 0 and self.report_mode != "conflict")
+        except Exception:
+            pass
+
+    def _conflict_set_keep(self, iid, keep, value=None):
+        info = self.conflict_choices.get(iid)
+        if not info:
+            return
+        if value is None:
+            value = info.get("old") if keep == "old" else info.get("new")
+        info["keep"] = keep
+        info["value"] = value or ""
+        tree = self.report_tree
+        tree.item(iid, values=(info["term"], info["old"], info["new"],
+                              f"● {info['value']}"), tags=(f"k_{keep}",))
+
+    def _conflict_keep_all(self, keep):
+        for iid in list(getattr(self, "conflict_choices", {}).keys()):
+            self._conflict_set_keep(iid, keep)
+
+    def _conflict_custom_selected(self):
+        sel = self.report_tree.selection()
+        if not sel:
+            messagebox.showinfo("提示", "请先在列表里选中要自定义的术语")
+            return
+        first = self.conflict_choices.get(sel[0], {})
+        val = _AskText.ask(self.root, "自定义译文",
+                           f"术语：{first.get('term', '')}\n"
+                           f"已有：{first.get('old', '')}   "
+                           f"新增：{first.get('new', '')}\n"
+                           f"请输入要保留的译文",
+                           initial=first.get("value", ""))
+        if not val:
+            return
+        for iid in sel:
+            self._conflict_set_keep(iid, "custom", val)
+
+    def _conflict_cell_entry(self, iid, col="#4"):
+        tree = self.report_tree
+        bbox = tree.bbox(iid, col)
+        if not bbox:
+            return
+        x, y, w, h = bbox
+        info = self.conflict_choices.get(iid, {})
+        ent = tk.Entry(tree, font=FONT_SMALL, relief="solid", bd=1)
+        ent.insert(0, info.get("value", ""))
+        ent.select_range(0, "end")
+        ent.place(x=x, y=y, width=max(w, 120), height=h)
+        ent.focus_set()
+        self._conflict_entry = ent
+        state = {"done": False}
+
+        def close():
+            if state["done"]:
+                return False
+            state["done"] = True
+            try:
+                ent.destroy()
+            except Exception:
+                pass
+            self._conflict_entry = None
+            return True
+
+        def commit(_e=None):
+            val = ent.get().strip()
+            if not close():
+                return
+            if val:
+                self._conflict_set_keep(iid, "custom", val)
+
+        def cancel(_e=None):
+            close()
+
+        ent.bind("<Return>", commit)
+        ent.bind("<FocusOut>", commit)
+        ent.bind("<Escape>", cancel)
+
+    def _on_conflict_click(self, event):
+        if getattr(self, "report_mode", "report") != "conflict":
+            return
+        tree = self.report_tree
+        iid = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)
+        if not iid:
+            return
+        if col == "#2":
+            self._conflict_set_keep(iid, "old")
+        elif col == "#3":
+            self._conflict_set_keep(iid, "new")
+
+    def _on_conflict_dblclick(self, event):
+        if getattr(self, "report_mode", "report") != "conflict":
+            return
+        tree = self.report_tree
+        iid = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)
+        if iid and col == "#4":
+            self._conflict_cell_entry(iid, col)
+
+    def _apply_conflicts(self):
+        choices = [dict(v) for v in
+                   getattr(self, "conflict_choices", {}).values()]
+        if not choices:
+            messagebox.showinfo("提示", "没有可应用的术语冲突")
+            return
+        paths = self._report_sources()
+        src, tgt, model = (self.src_var.get(), self.tgt_var.get(),
+                           self.model_var.get())
+        if not paths:
+            if not messagebox.askyesno(
+                    "确认",
+                    "没有选择文件，只会把选中的译文写入术语字典，"
+                    "不会删除缓存或重翻。\n继续吗？"):
+                return
+
+        def work():
+            res = commands.apply_term_conflicts(choices, paths, src, tgt, model)
+            self.q.put(("term_conflict_done", res))
+            return res
+
+        self.show("log")
+        self.run_async(work, label="解决术语冲突并重翻…",
+                       done_label="术语冲突已处理")
+
+    def _after_conflicts(self, res):
+        """术语冲突应用完成：提示结果，稍后回到报告页自动刷新。"""
+        r = res or {}
+        messagebox.showinfo(
+            "术语冲突已处理",
+            f"写入术语字典：{r.get('saved', 0)} 条\n"
+            f"重翻文件：{r.get('files', 0)} 个\n"
+            f"删除缓存：{r.get('removed', 0)} 条")
+        if getattr(self, "report_mode", "report") == "conflict":
+            try:
+                self._toggle_conflict_view()
+            except Exception:
+                pass
+        self.root.after(500, self._refresh_after_conflicts)
+
+    def _refresh_after_conflicts(self):
+        """重翻结束后重新检查一次，让报告反映最新状态。"""
+        if self.busy:
+            self.root.after(500, self._refresh_after_conflicts)
+            return
+        try:
+            self.show("report")
+        except Exception:
+            pass
+        if self._report_sources():
+            self._do_check()
 
     def _report_sources(self):
         """菜单 2 里选的是检查报告，这里换回真正的源文件。"""
@@ -1634,11 +2520,16 @@ class App:
         if not paths:
             messagebox.showwarning("提示", "请先选择要重翻的文件")
             return
+        kinds = self._selected_kinds()
+        if not kinds:
+            messagebox.showwarning("提示", "请至少勾选一种要重翻的问题类型")
+            return
         src, tgt, model = self.src_var.get(), self.tgt_var.get(), self.model_var.get()
         self.show("log")
         self.run_async(
-            lambda: commands.retranslate_report_paths(paths, src, tgt, model),
-            label="重翻检查报告内容…",
+            lambda: commands.retranslate_report_paths(paths, src, tgt, model,
+                                                      kinds=kinds),
+            label=f"重翻（{'、'.join(kinds)}）…",
             done_label="重翻完成",
         )
 
@@ -1655,14 +2546,12 @@ class App:
         left.grid_rowconfigure(1, weight=1)
         left.grid_columnconfigure(0, weight=1)
 
-        c1 = RoundCard(left, radius=16, pad=18)
-        c1.configure(height=158)
-        c1.pack_propagate(False)
+        c1 = RoundCard(left, radius=16, pad=18, auto_height=True)
         c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        tk.Label(c1.body, text="语言与模型", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w")
+        tk.Label(c1.body, text="语言与模型", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         row = tk.Frame(c1.body, bg=CARD)
-        row.pack(fill="x", pady=(6, 0))
+        row.pack(fill="x", pady=(8, 0))
         self._labeled_combo(row, "源语言", self.src_var, LANG_VALUES, 12)
         self._labeled_combo(row, "目标语言", self.tgt_var, LANG_VALUES, 12)
         self._mode_row(c1.body)
@@ -1673,19 +2562,21 @@ class App:
         c2.grid(row=1, column=0, sticky="nsew")
         head = tk.Frame(c2.body, bg=CARD)
         head.pack(fill="x")
-        tk.Label(head, text="术语列表（双击译文可编辑）", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(side="left")
-        self.term_stat = tk.Label(head, text="", bg=CARD, fg=TEXT_DIM,
-                                  font=FONT_SMALL)
+        tk.Label(head, text="术语列表", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        self.term_stat = tk.Label(head, text="", bg=CARD, fg=C_KEY,
+                                  font=FONT_BIG)
         self.term_stat.pack(side="right")
+        attach_label_copy(self.term_stat, self, "统计")
 
         bar = tk.Frame(c2.body, bg=CARD)
-        bar.pack(fill="x", pady=(6, 4))
+        bar.pack(fill="x", pady=(8, 4))
         tk.Label(bar, text="搜索", bg=CARD, fg=TEXT_DIM,
                  font=FONT_SMALL).pack(side="left")
         self.term_search = tk.StringVar()
-        ent = ttk.Entry(bar, textvariable=self.term_search, width=18)
-        ent.pack(side="left", padx=6)
+        ent = ttk.Entry(bar, textvariable=self.term_search, width=12,
+                        font=FONT)
+        ent.pack(side="left", padx=8)
         ent.bind("<KeyRelease>", lambda e: self._filter_terms())
         self.term_filter = tk.StringVar(value="全部")
         for lab, val in (("全部", "全部"), ("自动提取", "AUTO"),
@@ -1695,13 +2586,13 @@ class App:
                            activebackground=CARD, selectcolor="#FFFFFF",
                            font=FONT_SMALL,
                            command=self._filter_terms).pack(side="left", padx=4)
-        GlassButton(bar, "重新载入", width=76, height=26, bg=CARD,
+        GlassButton(bar, "重新载入", width=92, height=34, bg=CARD,
                     font=FONT_SMALL,
                     command=self._load_term_rows).pack(side="left", padx=8)
 
         # 全选 / 取消全选（表头开关，支持半选 indeterminate）
         selbar = tk.Frame(c2.body, bg=CARD)
-        selbar.pack(fill="x", pady=(2, 0))
+        selbar.pack(fill="x", pady=(4, 0))
         self.term_all_var = tk.IntVar(value=0)
         # ★ 用经典 tk.Checkbutton：ttk 的不保证支持 tristatevalue，
         #   而半选状态必须靠 -1 这个 tristatevalue 呈现
@@ -1713,14 +2604,14 @@ class App:
             command=self._on_term_toggle_all)
         self.term_all_chk.pack(side="left")
         self.term_check_stat = tk.Label(selbar, text="已选 0 条", bg=CARD,
-                                        fg=TEXT_DIM, font=FONT_SMALL)
-        self.term_check_stat.pack(side="left", padx=8)
+                                        fg=C_KEY, font=FONT_BIG)
+        self.term_check_stat.pack(side="left", padx=10)
 
         wrap = tk.Frame(c2.body, bg=CARD)
         wrap.pack(fill="both", expand=True)
         cols = ("sel", "origin", "src", "dst")
         tree = ttk.Treeview(wrap, columns=cols, show="headings",
-                            height=10, selectmode="extended")
+                            height=4, selectmode="extended")
         for c, w, t in (("sel", 34, "✓"), ("origin", 86, "来源"),
                         ("src", 210, "原文"), ("dst", 210, "译文（可编辑）")):
             tree.heading(c, text=t)
@@ -1733,38 +2624,41 @@ class App:
         # ★ 多了一列复选，译文可编辑列由 #3 变为 #4
         bind_tree_edit(tree, {"#4": True}, on_commit=self._on_term_edit)
         bind_tree_wheel(tree)
-        tree.bind("<Button-1>", self._on_term_tree_click)
+        attach_tree_copy(tree, self)      # ★ 右键 / Ctrl+C 复制术语
+        tree.bind("<Button-1>", self._on_term_tree_click, add="+")
         self.term_tree = tree
 
+        # 提示单独一行，避免和按钮挤在同一行被挤出卡片
+        hint_row = tk.Frame(c2.body, bg=CARD)
+        hint_row.pack(fill="x", pady=(10, 0))
+        tk.Label(hint_row,
+                 text="改动会写入术语字典；双击译文可编辑；右键可复制",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(side="left")
+
         bottom = tk.Frame(c2.body, bg=CARD)
-        bottom.pack(fill="x", pady=(8, 0))
-        left_b = tk.Frame(bottom, bg=CARD)
-        left_b.pack(side="left")
-        tk.Label(left_b,
-                 text="改动会写入术语字典",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(side="left")
+        bottom.pack(fill="x", pady=(6, 0))
         right_b = tk.Frame(bottom, bg=CARD)
         right_b.pack(side="right")
-        GlassButton(right_b, "添加术语", width=84, height=32, bg=CARD,
+        GlassButton(right_b, "添加术语", width=88, height=40, bg=CARD,
                     font=FONT_SMALL,
-                    command=self._on_term_add).pack(side="left", padx=4)
-        GlassButton(right_b, "删除选中", width=84, height=32, bg=CARD,
+                    command=self._on_term_add).pack(side="left", padx=3)
+        GlassButton(right_b, "删除选中", width=88, height=40, bg=CARD,
                     font=FONT_SMALL,
                     command=self._on_term_delete_selected).pack(side="left",
-                                                                padx=4)
+                                                                padx=3)
         self.term_batch_btn = GlassButton(
-            right_b, "批量删除", width=84, height=32, bg=CARD,
+            right_b, "批量删除", width=88, height=40, bg=CARD,
             font=FONT_SMALL, command=self._on_term_batch_delete)
-        self.term_batch_btn.pack(side="left", padx=4)
+        self.term_batch_btn.pack(side="left", padx=3)
         self.term_batch_btn.set_enabled(False)   # 未勾选任何术语时禁用
-        GlassButton(right_b, "撤回", width=64, height=32, bg=CARD,
+        GlassButton(right_b, "撤回", width=64, height=40, bg=CARD,
                     font=FONT_SMALL,
-                    command=self._on_term_undo_delete).pack(side="left", padx=4)
-        GlassButton(right_b, "应用术语", width=120, height=36, primary=True,
+                    command=self._on_term_undo_delete).pack(side="left", padx=3)
+        GlassButton(right_b, "应用术语", width=124, height=44, primary=True,
                     bg=CARD, command=self._do_apply_terms).pack(side="left",
                                                                padx=(8, 0))
 
-        fp_holder = RoundCard(page, radius=16, pad=8, width=252)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "source")
@@ -1777,9 +2671,9 @@ class App:
         except Exception:
             auto = []
         try:
-            _cur, added, _rm, modified, _ok = commands.analyze_terms()
+            _cur, added, _rm, _modified, _ok = commands.analyze_terms()
         except Exception:
-            added, modified = None, None
+            added = None
 
         added_set = {str(a) for a in (added or [])}
 
@@ -2124,29 +3018,31 @@ class App:
 
         head = tk.Frame(c.body, bg=CARD)
         head.pack(fill="x")
-        tk.Label(head, text="前缀字典（双击译文可编辑）", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(side="left")
-        self.prefix_stat = tk.Label(head, text="", bg=CARD, fg=TEXT_DIM,
-                                    font=FONT_SMALL)
+        tk.Label(head, text="前缀字典", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        self.prefix_stat = tk.Label(head, text="", bg=CARD, fg=C_KEY,
+                                    font=FONT_BIG)
         self.prefix_stat.pack(side="right")
+        attach_label_copy(self.prefix_stat, self, "统计")
 
         bar = tk.Frame(c.body, bg=CARD)
-        bar.pack(fill="x", pady=(6, 4))
+        bar.pack(fill="x", pady=(8, 4))
         tk.Label(bar, text="搜索", bg=CARD, fg=TEXT_DIM,
                  font=FONT_SMALL).pack(side="left")
         self.prefix_search = tk.StringVar()
-        ent = ttk.Entry(bar, textvariable=self.prefix_search, width=20)
-        ent.pack(side="left", padx=6)
+        ent = ttk.Entry(bar, textvariable=self.prefix_search, width=14,
+                        font=FONT)
+        ent.pack(side="left", padx=8)
         ent.bind("<KeyRelease>", lambda e: self._filter_prefix())
         self.prefix_only_pending = tk.BooleanVar(value=False)
         tk.Checkbutton(bar, text="只看未翻译", bg=CARD, fg=TEXT,
                        activebackground=CARD, selectcolor="#FFFFFF",
                        font=FONT_SMALL, variable=self.prefix_only_pending,
-                       command=self._filter_prefix).pack(side="left", padx=6)
-        GlassButton(bar, "重新载入", width=76, height=26, bg=CARD,
+                       command=self._filter_prefix).pack(side="left", padx=8)
+        GlassButton(bar, "重新载入", width=92, height=34, bg=CARD,
                     font=FONT_SMALL,
                     command=self._load_prefix_rows).pack(side="left", padx=8)
-        GlassButton(bar, "打开字典文件", width=96, height=26, bg=CARD,
+        GlassButton(bar, "打开字典文件", width=120, height=34, bg=CARD,
                     font=FONT_SMALL,
                     command=lambda: self._open_path(PFD.DICT_FILE)).pack(
             side="left")
@@ -2154,7 +3050,7 @@ class App:
         wrap = tk.Frame(c.body, bg=CARD)
         wrap.pack(fill="both", expand=True)
         cols = ("src", "dst")
-        tree = ttk.Treeview(wrap, columns=cols, show="headings", height=14)
+        tree = ttk.Treeview(wrap, columns=cols, show="headings", height=11)
         tree.heading("src", text="前缀原文")
         tree.heading("dst", text="译文（可编辑）")
         tree.column("src", width=330, anchor="w")
@@ -2165,17 +3061,29 @@ class App:
         sb.pack(side="right", fill="y")
         bind_tree_edit(tree, {"#2": True}, on_commit=self._on_prefix_edit)
         bind_tree_wheel(tree)
+        attach_tree_copy(tree, self)      # ★ 右键 / Ctrl+C 复制前缀
         self.prefix_tree = tree
 
         bottom = tk.Frame(c.body, bg=CARD)
         bottom.pack(fill="x", pady=(10, 0))
         tk.Label(bottom,
-                 text="译文留空表示沿用原文；应用后会把新前缀写回翻译文件",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(side="left")
-        GlassButton(bottom, "应用前缀字典", width=140, height=36, primary=True,
+                 text="译文留空 = 沿用原文；双击译文可编辑；右键可复制",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(side="left")
+        GlassButton(bottom, "应用前缀字典", width=160, height=44, primary=True,
                     bg=CARD, command=self._do_apply_prefix).pack(side="right")
 
-        fp_holder = RoundCard(page, radius=16, pad=8, width=252)
+        # ★ 「应用术语」：让前缀去匹配术语字典，命中就替换
+        #   目前只替换 \tg[...] 里的内容（角色名），控制码参数不动
+        bottom2 = tk.Frame(c.body, bg=CARD)
+        bottom2.pack(fill="x", pady=(8, 0))
+        tk.Label(bottom2,
+                 text="应用术语：只替换 \\tg[...] 里的内容",
+                 bg=CARD, fg=C_WARN, font=FONT_SMALL).pack(side="left")
+        GlassButton(bottom2, "应用术语", width=140, height=44, bg=CARD,
+                    font=FONT_BIG,
+                    command=self._do_apply_prefix_terms).pack(side="right")
+
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "source")
@@ -2210,11 +3118,10 @@ class App:
                 pending += 1
         if hasattr(self, "prefix_stat"):
             total = len(getattr(self, "_prefix_all", []))
-            self.prefix_stat.config(
-                text=f"显示 {n} 条 / 共 {total} 条（待翻译 {pending}）"
-                     + (f"，已改动 {len(self.prefix_edits)} 条"
-                        if self.prefix_edits else ""))
-
+            txt = f"显示 {n} / 共 {total} / 待译 {pending}"
+            if self.prefix_edits:
+                txt += f" / 改 {len(self.prefix_edits)}"
+            self.prefix_stat.config(text=txt)
     def _on_prefix_edit(self, row, col, value):
         try:
             item = self.prefix_tree.item(row)
@@ -2238,6 +3145,52 @@ class App:
         self.show("log")
         self.run_async(work, label="应用前缀字典…", done_label="前缀字典已应用")
 
+    # ---------- 前缀字典 · 应用术语 ----------
+    def _do_apply_prefix_terms(self):
+        """
+        让前缀去匹配术语字典：命中术语就把对应部分替换掉。
+        ★ 当前只替换 \\tg[...] 里的内容（角色名），控制码参数保持不动。
+        """
+        try:
+            PFD.reload_dict()
+            changes, stats = PFD.scan_terms_for_tg()
+        except Exception as e:
+            messagebox.showerror("应用术语", f"扫描前缀字典失败：{e}")
+            return
+
+        if not changes:
+            messagebox.showinfo(
+                "应用术语",
+                f"前缀字典共 {stats['total']} 条，"
+                f"没有 \\tg[...] 里的文字命中术语，无需改动。")
+            return
+
+        preview = "\n".join(
+            f"· {c['src']}\n    → {c['new']}" for c in changes[:8])
+        term_txt = "、".join(
+            f"{s}→{d}" for c in changes[:6] for s, d in c["terms"][:2])
+
+        if not messagebox.askyesno(
+                "应用术语",
+                f"命中术语的前缀：{len(changes)} 条 / 共 {stats['total']} 条\n"
+                f"涉及术语：{term_txt}\n\n"
+                f"{preview}"
+                + (f"\n  … 其余 {len(changes) - 8} 条省略"
+                   if len(changes) > 8 else "")
+                + "\n\n只替换 \\tg[...] 里的内容，确定应用？"):
+            return
+
+        paths = self.fp_prefix.ensure() or []
+
+        def work():
+            res = commands.apply_prefix_terms_paths(paths or None)
+            self.q.put(("prefix_terms_done", res))
+            return res
+
+        self.show("log")
+        self.run_async(work, label="前缀应用术语…",
+                       done_label="前缀术语已应用")
+
     # ================================================================
     # 页面 5：中文润色
     # ================================================================
@@ -2251,39 +3204,38 @@ class App:
         left.grid_rowconfigure(1, weight=1)
         left.grid_columnconfigure(0, weight=1)
 
-        c1 = RoundCard(left, radius=16, pad=18)
-        c1.configure(height=158)
-        c1.pack_propagate(False)
+        c1 = RoundCard(left, radius=16, pad=18, auto_height=True)
         c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        tk.Label(c1.body, text="模型与模式", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w")
+        tk.Label(c1.body, text="模型与模式", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         self._mode_row(c1.body)
         self._model_row(c1.body)
         tk.Label(c1.body, text="中文润色不需要选择语言：直接把缓存里的中文译文再润色一遍",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL,
-                 justify="left").pack(anchor="w", pady=(6, 0))
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=560).pack(anchor="w", pady=(10, 0))
 
         c2 = RoundCard(left, radius=16, pad=18)
         c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
-        tk.Label(c2.body, text="说明", bg=CARD, fg=TEXT, font=FONT_B).pack(anchor="w")
+        tk.Label(c2.body, text="说明", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         txt = ("· 逐条读取缓存中的中文译文，交给模型润色后覆盖原缓存\n"
                "· 保留全部占位符与控制码；占位符不全的条目会保留原译文\n"
                "· 润色完成后自动重写 *_translated.txt\n"
                "· 短句、纯控制符句不参与润色")
         tk.Label(c2.body, text=txt, bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
-                 justify="left").pack(anchor="w", pady=(8, 0))
+                 justify="left").pack(anchor="w", pady=(10, 0))
 
         c3 = RoundCard(left, radius=16, pad=18)
-        c3.configure(height=92)
+        c3.configure(height=136)
         c3.pack_propagate(False)
         c3.grid(row=2, column=0, sticky="ew")
-        GlassButton(c3.body, "开始润色", width=180, height=44, primary=True,
+        GlassButton(c3.body, "开始润色", width=200, height=52, primary=True,
                     bg=CARD, command=self._do_polish).pack(anchor="w")
         tk.Label(c3.body, text="点击后跳转到日志页，实时查看进度",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(anchor="w",
-                                                               pady=(6, 0))
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(anchor="w",
+                                                           pady=(8, 0))
 
-        fp_holder = RoundCard(page, radius=16, pad=8, width=252)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "source")
@@ -2329,7 +3281,7 @@ class App:
             card.grid(row=row, column=0, sticky="nsew", pady=(0, 8))
             self._build_reflow_half(card.body, mode, title, fields)
 
-        fp_holder = RoundCard(page, radius=16, pad=8, width=252)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, rowspan=2, sticky="nsew")
         fp_holder.grid_propagate(False)
         self.fp_reflow = self._make_file_panel(fp_holder, "source")
@@ -2340,31 +3292,32 @@ class App:
         tk.Label(bottom,
                  text="· 只重排换行方式，不改动译文文字、不调用模型；"
                       "两种重排各用一套参数（会保存到设置）",
-                 bg=BG_BASE, fg=TEXT_FAINT, font=FONT_SMALL).pack(side="left")
-        GlassButton(bottom, "开始重排", width=160, height=42, primary=True,
+                 bg=BG_BASE, fg=TEXT_DIM, font=FONT_SMALL).pack(side="left")
+        GlassButton(bottom, "开始重排", width=180, height=50, primary=True,
                     bg=BG_BASE,
-                    command=self._do_reflow).pack(side="right", pady=(6, 0))
+                    command=self._do_reflow).pack(side="right", pady=(8, 0))
 
     def _build_reflow_half(self, body, mode, title, fields):
         """构建半屏重排面板：上=参数，左=区块列表，右=区块文本。"""
         head = tk.Frame(body, bg=CARD)
         head.pack(fill="x")
-        tk.Label(head, text=title, bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(side="left")
-        stat = tk.Label(head, text="", bg=CARD, fg=TEXT_DIM, font=FONT_SMALL)
+        tk.Label(head, text=title, bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        stat = tk.Label(head, text="", bg=CARD, fg=C_KEY, font=FONT_BIG)
         stat.pack(side="right")
+        attach_label_copy(stat, self, "统计")
 
         cfgrow = tk.Frame(body, bg=CARD)
-        cfgrow.pack(fill="x", pady=(6, 6))
+        cfgrow.pack(fill="x", pady=(8, 8))
         varmap = {}
         for key, name, default in fields:
             tk.Label(cfgrow, text=name, bg=CARD, fg=TEXT_DIM,
                      font=FONT_SMALL).pack(side="left", padx=(0, 4))
             var = tk.StringVar(value=str(getattr(config, key, default)))
-            ttk.Entry(cfgrow, textvariable=var, width=6).pack(
-                side="left", padx=(0, 12))
+            ttk.Entry(cfgrow, textvariable=var, width=6,
+                      font=FONT).pack(side="left", padx=(0, 14))
             varmap[key] = var
-        GlassButton(cfgrow, "刷新列表", width=84, height=26, bg=CARD,
+        GlassButton(cfgrow, "刷新列表", width=100, height=34, bg=CARD,
                     font=FONT_SMALL,
                     command=self._load_reflow_blocks).pack(side="left")
 
@@ -2374,16 +3327,17 @@ class App:
         left = tk.Frame(mid, bg=CARD)
         left.pack(side="left", fill="both")
         tree = ttk.Treeview(left, columns=("block", "count"),
-                            show="headings", height=5)
+                            show="headings", height=3)
         tree.heading("block", text="区块")
         tree.heading("count", text="条数")
-        tree.column("block", width=132, anchor="w")
-        tree.column("count", width=46, anchor="center")
+        tree.column("block", width=160, anchor="w")
+        tree.column("count", width=56, anchor="center")
         sb = ttk.Scrollbar(left, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         bind_tree_wheel(tree)
+        attach_tree_copy(tree, self)      # ★ 右键 / Ctrl+C 复制区块列表
         tree.bind("<<TreeviewSelect>>",
                   lambda _e, m=mode: self._render_reflow_block(m))
 
@@ -2391,7 +3345,7 @@ class App:
         right.pack(side="left", fill="both", expand=True, padx=(10, 0))
         tk.Label(right, text="区块文本（原文 / 译文）", bg=CARD, fg=TEXT_DIM,
                  font=FONT_SMALL).pack(anchor="w")
-        box = tk.Text(right, height=5, wrap="none", font=FONT_MONO,
+        box = tk.Text(right, height=3, wrap="none", font=FONT_MONO,
                       bg="#FFFFFF", fg=TEXT, relief="flat",
                       highlightthickness=1, highlightbackground=CARD_BORDER)
         vsb = ttk.Scrollbar(right, orient="vertical", command=box.yview)
@@ -2399,6 +3353,10 @@ class App:
         vsb.pack(side="right", fill="y")
         box.pack(side="left", fill="both", expand=True)
         box.configure(state="disabled")
+        attach_copy(box, [                # ★ 右键 / Ctrl+C 复制区块文本
+            ("复制（选中，未选中则全部）", lambda b=box: self._text_pick(b)),
+            ("复制全部", lambda b=box: self._text_all(b)),
+        ], app=self)
 
         self.reflow_cfgs[mode] = varmap
         self.reflow_lists[mode] = tree
@@ -2506,13 +3464,13 @@ class App:
         left.grid_columnconfigure(0, weight=1)
 
         c1 = RoundCard(left, radius=16, pad=18)
-        c1.configure(height=104)
+        c1.configure(height=140)
         c1.pack_propagate(False)
         c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        tk.Label(c1.body, text="语言选择（Excel 列名）", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w")
+        tk.Label(c1.body, text="语言选择（Excel 列名）", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         row = tk.Frame(c1.body, bg=CARD)
-        row.pack(fill="x", pady=(6, 0))
+        row.pack(fill="x", pady=(8, 0))
         self.excel_src = tk.StringVar(value=config.EXCEL_SOURCE_LANG)
         self.excel_tgt = tk.StringVar(value=config.EXCEL_TARGET_LANG)
         self._labeled_combo(row, "源语言", self.excel_src, EXCEL_LANGS, 14)
@@ -2522,46 +3480,48 @@ class App:
         c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
         head = tk.Frame(c2.body, bg=CARD)
         head.pack(fill="x")
-        tk.Label(head, text="工作表", bg=CARD, fg=TEXT, font=FONT_B).pack(side="left")
+        tk.Label(head, text="工作表", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
         self.excel_path = tk.StringVar(
             value=config.EXCEL_FILE if os.path.exists(config.EXCEL_FILE) else "")
-        GlassButton(head, "选择 Excel", width=96, height=28, bg=CARD,
+        GlassButton(head, "选择 Excel", width=116, height=34, bg=CARD,
                     font=FONT_SMALL, command=self._pick_excel).pack(side="left",
-                                                                    padx=10)
-        GlassButton(head, "全选", width=56, height=28, bg=CARD,
+                                                                    padx=12)
+        GlassButton(head, "全选", width=68, height=34, bg=CARD,
                     font=FONT_SMALL, command=self._sheets_all).pack(side="left")
-        self.excel_lbl = tk.Label(head, text="", bg=CARD, fg=TEXT_DIM,
-                                  font=FONT_SMALL)
+        self.excel_lbl = tk.Label(head, text="", bg=CARD, fg=C_KEY,
+                                  font=FONT_BIG)
         self.excel_lbl.pack(side="right")
+        attach_label_copy(self.excel_lbl, self, "统计")
 
         outer, inner = make_scroll_area(c2.body, bg=CARD)
         outer.pack(fill="both", expand=True, pady=(8, 0))
         self.sheet_inner = inner
 
         c3 = RoundCard(left, radius=16, pad=18)
-        c3.configure(height=92)
+        c3.configure(height=136)
         c3.pack_propagate(False)
         c3.grid(row=2, column=0, sticky="ew")
-        GlassButton(c3.body, "开始转换", width=180, height=44, primary=True,
+        GlassButton(c3.body, "开始转换", width=200, height=52, primary=True,
                     bg=CARD, command=self._do_excel).pack(anchor="w")
         tk.Label(c3.body, text="提取结果写入 term_dict.py，完成后弹窗提示",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(anchor="w",
-                                                               pady=(6, 0))
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(anchor="w",
+                                                           pady=(8, 0))
 
-        right = tk.Frame(page, bg=BG_BASE, width=252)
+        right = tk.Frame(page, bg=BG_BASE, width=330)
         right.grid(row=0, column=1, sticky="nsew")
         right.pack_propagate(False)
         card = RoundCard(right, radius=16, pad=14)
         card.pack(fill="both", expand=True)
-        tk.Label(card.body, text="提示", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w")
+        tk.Label(card.body, text="提示", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         tk.Label(card.body,
                  text="· 表头需同时包含所选的两种语言列名\n"
                       "· 多个工作表会跨表去重\n"
                       "· 转换后可在菜单 3 里逐条校对译文\n"
                       "· 输出文件：term_dict.py",
                  bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
-                 justify="left").pack(anchor="w", pady=(8, 0))
+                 justify="left").pack(anchor="w", pady=(10, 0))
 
         if self.excel_path.get():
             self._load_sheets(self.excel_path.get())
@@ -2593,11 +3553,13 @@ class App:
         for name, r, c in sheets:
             v = tk.BooleanVar(value=True)
             self.sheet_vars[name] = v
-            tk.Checkbutton(self.sheet_inner,
-                           text=f"{name}   ({r} 行 × {c} 列)",
-                           variable=v, bg=CARD, fg=TEXT,
-                           activebackground=CARD, selectcolor="#FFFFFF",
-                           anchor="w", font=FONT_SMALL).pack(fill="x", padx=8)
+            cb = tk.Checkbutton(self.sheet_inner,
+                                text=f"{name}   ({r} 行 × {c} 列)",
+                                variable=v, bg=CARD, fg=TEXT,
+                                activebackground=CARD, selectcolor="#FFFFFF",
+                                anchor="w", font=FONT_SMALL)
+            cb.pack(fill="x", padx=8)
+            attach_label_copy(cb, self, "工作表名")
 
     def _sheets_all(self):
         for v in self.sheet_vars.values():
@@ -2634,11 +3596,11 @@ class App:
         info.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         head = tk.Frame(info.body, bg=CARD)
         head.pack(fill="x")
-        Avatar(head, size=56, path=config.AVATAR_FILE).pack(side="left")
+        Avatar(head, size=64, path=config.AVATAR_FILE).pack(side="left")
         box = tk.Frame(head, bg=CARD)
-        box.pack(side="left", padx=12)
-        tk.Label(box, text=config.AUTHOR_NAME, bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(anchor="w")
+        box.pack(side="left", padx=14)
+        tk.Label(box, text=config.AUTHOR_NAME, bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
         lb1 = tk.Label(box, text=config.AUTHOR_GITHUB, bg=CARD, fg=ACCENT,
                        font=FONT_SMALL, cursor="hand2")
         lb1.pack(anchor="w")
@@ -2647,22 +3609,22 @@ class App:
                        fg=ACCENT, font=FONT_SMALL, cursor="hand2")
         lb2.pack(anchor="w")
         lb2.bind("<Button-1>", lambda e: webbrowser.open(config.AUTHOR_BILIBILI))
-        tk.Label(head, text=f"v{config.VERSION}", bg=CARD, fg=TEXT_FAINT,
-                 font=FONT_SMALL).pack(side="right", anchor="ne")
+        tk.Label(head, text=f"v{config.VERSION}", bg=CARD, fg=C_KEY,
+                 font=FONT_B).pack(side="right", anchor="ne")
 
         card = RoundCard(page, radius=16, pad=14)
         card.grid(row=1, column=0, sticky="nsew")
         head2 = tk.Frame(card.body, bg=CARD)
         head2.pack(fill="x")
-        tk.Label(head2, text="各项设置", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(side="left")
-        GlassButton(head2, "检查更新", width=86, height=30, bg=CARD,
+        tk.Label(head2, text="各项设置", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        GlassButton(head2, "检查更新", width=104, height=38, bg=CARD,
                     font=FONT_SMALL, command=self._check_update).pack(
             side="right")
-        GlassButton(head2, "保存设置", width=96, height=30, primary=True,
+        GlassButton(head2, "保存设置", width=112, height=38, primary=True,
                     bg=CARD, command=self._save_settings).pack(
             side="right", padx=8)
-        GlassButton(head2, "重新载入", width=86, height=30, bg=CARD,
+        GlassButton(head2, "重新载入", width=104, height=38, bg=CARD,
                     font=FONT_SMALL, command=self._load_settings).pack(
             side="right")
 
@@ -2671,8 +3633,8 @@ class App:
         tk.Label(card.body,
                  text="云端模式请在下方填写 API 服务地址 / 密钥 / 模型名"
                       "（OpenAI 兼容接口）",
-                 bg=CARD, fg=TEXT_FAINT, font=FONT_SMALL).pack(anchor="w",
-                                                               pady=(2, 6))
+                 bg=CARD, fg=C_WARN, font=FONT_SMALL).pack(anchor="w",
+                                                           pady=(4, 8))
 
         outer, inner = make_scroll_area(card.body, bg=CARD)
         outer.pack(fill="both", expand=True, pady=(8, 0))
@@ -2694,9 +3656,9 @@ class App:
                 continue        # 由页面顶部的模式切换按钮负责
 
             row = tk.Frame(self.setting_inner, bg=CARD)
-            row.pack(fill="x", pady=3)
+            row.pack(fill="x", pady=5)
             tk.Label(row, text=name, bg=CARD, fg=TEXT, font=FONT_SMALL,
-                     width=16, anchor="w").pack(side="left")
+                     width=18, anchor="w").pack(side="left")
 
             val = current.get(key, "")
             if key == "MODEL":
@@ -2727,9 +3689,28 @@ class App:
                 ent.pack(side="left")
                 widget, var_holder = ent, var
 
-            tk.Label(row, text=desc or "", bg=CARD, fg=TEXT_FAINT,
-                     font=FONT_SMALL).pack(side="left", padx=10)
+            tk.Label(row, text=desc or "", bg=CARD, fg=TEXT_DIM,
+                     font=FONT_SMALL).pack(side="left", padx=12)
+            # ★ 右键可复制该项的当前值（Ctrl+C 保持 Entry 原生行为）
+            if typ != "bool":
+                attach_copy(widget, [
+                    ("复制该设置的当前值",
+                     lambda w=widget: self._entry_value(w)),
+                ], app=self, hotkey=False)
             self.setting_widgets[key] = (var_holder, typ, widget)
+
+    def _entry_value(self, widget):
+        """读输入框当前内容（有选中文本就只复制选中的）。"""
+        try:
+            sel = str(widget.selection_get())
+            if sel.strip():
+                return sel
+        except Exception:
+            pass
+        try:
+            return str(widget.get())
+        except Exception:
+            return ""
 
     # ---------- 检查更新 ----------
     def _check_update(self, silent=False):
@@ -2819,23 +3800,33 @@ class App:
 
         head = tk.Frame(card.body, bg=CARD)
         head.pack(fill="x")
-        tk.Label(head, text="运行日志", bg=CARD, fg=TEXT,
-                 font=FONT_B).pack(side="left")
-        GlassButton(head, "清空", width=60, height=28, bg=CARD,
+        tk.Label(head, text="运行日志", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        GlassButton(head, "清空", width=72, height=34, bg=CARD,
                     font=FONT_SMALL, command=self._clear_log).pack(side="right")
-        GlassButton(head, "打开日志目录", width=104, height=28, bg=CARD,
+        GlassButton(head, "打开日志目录", width=128, height=34, bg=CARD,
                     font=FONT_SMALL, command=self._open_log_dir).pack(
             side="right", padx=8)
+        GlassButton(head, "复制全部", width=104, height=34, bg=CARD,
+                    font=FONT_SMALL, command=self._copy_log).pack(side="right")
+
+        tk.Label(card.body,
+                 text="提示：文本可拖选后按 Ctrl+C 复制；"
+                      "列表 / 日志右键都有「复制」菜单（列表可导出为"
+                      "制表符分隔，直接粘进 Excel）",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=760).pack(anchor="w", pady=(6, 0))
 
         wrap = tk.Frame(card.body, bg="#FFFFFF")
         wrap.pack(fill="both", expand=True, pady=(8, 0))
 
         self.log_text = tk.Text(wrap, wrap="word", font=FONT_MONO,
-                                bg="#FFFFFF", fg="#334155",
+                                bg="#FFFFFF", fg=TEXT,
                                 relief="solid", bd=1,
                                 highlightthickness=1,
                                 highlightbackground=CARD_BORDER,
-                                insertbackground=TEXT)
+                                insertbackground=TEXT,
+                                spacing1=2, spacing3=2)
         sb = ttk.Scrollbar(wrap, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=sb.set)
         self.log_text.pack(side="left", fill="both", expand=True)
@@ -2845,6 +3836,13 @@ class App:
         self.log_text.tag_config("ok", foreground=OK_COLOR)
         self.log_text.tag_config("warn", foreground=WARN_COLOR)
         self.log_text.tag_config("err", foreground=ERR_COLOR)
+
+        # ★ 右键 / Ctrl+C 复制：有选中就复制选中，否则整篇日志
+        attach_copy(self.log_text, [
+            ("复制（选中，未选中则全部）",
+             lambda: self._text_pick(self.log_text)),
+            ("复制全部", lambda: self._text_all(self.log_text)),
+        ], app=self)
 
         self._append_log(f"{config.APP_TITLE} 已就绪\n"
                          f"工作目录：{config.BASE_DIR}\n"
@@ -2873,12 +3871,6 @@ class App:
         except Exception as e:
             messagebox.showerror("打开失败", f"{e}")
 
-    # ================================================================
-    # 其它消息
-    # ================================================================
-    def _on_report_result(self, result):
-        self._fill_report(result)
-
 
 # ================================================================
 # 语言常量
@@ -2899,6 +3891,149 @@ def _excel_lang_values():
         return ["英文", "简体中文"]
 
 
+def enable_dpi_awareness():
+    """
+    让界面按物理像素 1:1 渲染。
+
+    不做这一步时，系统会把窗口整体拉伸（125% 缩放 → 窗口被放大 1.25 倍），
+    「1500x1000 px」就变成了 1875x1250 px，超出屏幕后被压回，字号也发虚。
+    调用必须在创建任何窗口之前。非 Windows / 失败时静默忽略。
+    """
+    try:
+        import ctypes
+        try:
+            # 1 = PROCESS_SYSTEM_DPI_AWARE
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            return True
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+                return True
+            except Exception:
+                return False
+    except Exception:
+        return False
+
+
+def load_private_font(path):
+    """
+    用 Windows GDI 的 AddFontResourceExW(FR_PRIVATE) 把字体加载进当前进程。
+
+    优点：不写注册表、不安装到系统，打包成 exe 分享给别人也能用。
+    非 Windows 或加载失败时返回 False，由调用方回退到系统字体。
+    """
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        import ctypes
+        gdi = ctypes.WinDLL("gdi32")
+        FR_PRIVATE = 0x10
+        added = gdi.AddFontResourceExW(ctypes.c_wchar_p(str(path)),
+                                       ctypes.c_uint(FR_PRIVATE), 0)
+        if log:
+            log.info("私有加载字体 %s → 注册 %d 个字面", path, added)
+        return bool(added)
+    except Exception as e:
+        if log:
+            log.warning("私有加载字体失败：%s", e)
+        return False
+
+
+def _ttf_family_name(path):
+    """
+    直接解析 TTF/OTF 的 name 表取字体族名（nameID=1）。
+    这样即便系统里没有安装该字体，也能拿到正确的族名交给 Tk。
+    """
+    try:
+        import struct
+        with open(path, "rb") as f:
+            d = f.read()
+    except Exception:
+        return None
+    if len(d) < 12 or d[:4] not in (b"\x00\x01\x00\x00", b"true", b"OTTO"):
+        return None
+    try:
+        num = struct.unpack(">H", d[4:6])[0]
+        off, name_off, name_len = 12, None, None
+        for _ in range(num):
+            tag = d[off:off + 4]
+            _cs, o, ln = struct.unpack(">III", d[off + 4:off + 16])
+            if tag == b"name":
+                name_off, name_len = o, ln
+                break
+            off += 16
+        if name_off is None:
+            return None
+        tbl = d[name_off:name_off + name_len]
+        _fmt, cnt, soff = struct.unpack(">HHH", tbl[:6])
+        best = None
+        for i in range(cnt):
+            rec = tbl[6 + 12 * i:18 + 12 * i]
+            plat, _enc, lang, nid, ln, o = struct.unpack(">HHHHHH", rec)
+            if nid != 1:
+                continue
+            raw = tbl[soff + o: soff + o + ln]
+            if plat == 3:
+                s = raw.decode("utf-16-be", "ignore")
+            elif plat == 1:
+                s = raw.decode("latin-1", "ignore")
+            else:
+                continue
+            s = s.replace("\x00", "").strip()
+            if not s:
+                continue
+            # 简体中文 / 英文优先
+            if lang in (0x0804, 0x0409, 0x0C04, 0x1004):
+                return s
+            if best is None:
+                best = s
+        return best
+    except Exception:
+        return None
+
+
+def resolve_font_family(root=None):
+    """
+    确定最终使用的字体族名：
+      ① 优先私有加载 config.FONT_FILE（萝莉体），读其 family name
+      ② 失败则退回黑体 → 微软雅黑
+    并把字号按 FONT_SIZES 刷新。
+    """
+    global FONT_FAMILY, FONT, FONT_B, FONT_SMALL, FONT_TITLE, FONT_BIG, FONT_MONO
+
+    try:
+        import tkinter.font as tkfont
+        fams = set(tkfont.families(root))
+    except Exception:
+        fams = set()
+
+    chosen = None
+    fpath = getattr(config, "FONT_FILE", "")
+    if fpath and os.path.exists(fpath) and load_private_font(fpath):
+        fam = _ttf_family_name(fpath) or getattr(config, "FONT_NAME", "")
+        if fam:
+            chosen = fam
+            if log:
+                log.info("使用随程序分发的字体：%s（%s）", fam, fpath)
+
+    if not chosen:
+        for cand in ("SimHei", "黑体", "Microsoft YaHei", "微软雅黑"):
+            if cand in fams:
+                chosen = cand
+                break
+    FONT_FAMILY = chosen or "SimHei"
+
+    # 字号：相对基准统一取值，方便一处调整
+    S = FONT_SIZES
+    FONT       = (FONT_FAMILY, S["body"])
+    FONT_B     = (FONT_FAMILY, S["body"], "bold")
+    FONT_SMALL = (FONT_FAMILY, S["small"])
+    FONT_TITLE = (FONT_FAMILY, S["title"], "bold")
+    FONT_BIG   = (FONT_FAMILY, S["big"], "bold")
+    FONT_MONO  = (FONT_FAMILY, S["mono"])
+    return FONT_FAMILY
+
+
 LANG_VALUES = []
 EXCEL_LANGS = []
 
@@ -2914,7 +4049,9 @@ def main():
     LANG_VALUES = _lang_values()
     EXCEL_LANGS = _excel_lang_values()
 
+    enable_dpi_awareness()         # ★ 必须早于 tk.Tk()，否则 1500x1000 会被缩放
     root = tk.Tk()
+    resolve_font_family(root)      # ★ 必须在 App 构建前定好字体
     app = App(root)
     apply_window_effects(root)
     root.mainloop()

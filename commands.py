@@ -18,7 +18,7 @@ import config
 import parser as P
 import processor as PR
 import settings
-from cache import Cache
+from cache import Cache, atomic_replace
 from logger import get_logger
 from translator import (OllamaClient, polish_with_retry,
                         translate_with_retry)
@@ -46,11 +46,26 @@ LANG_OPTIONS = [
     "意大利文",
 ]
 
-# 重翻检查报告时，需要处理的问题类型
+# 重翻检查报告时，默认要处理的问题类型（GUI 里可逐项勾选）
 RETRANSLATE_KINDS = {
-    "疑似未翻译", "疑似异常句", "译文残留控制码",
-    "译文残留占位符", "翻译失败", "占位符兜底", "术语冲突",
+    "疑似未翻译", "疑似异常句", "译文残留占位符",
+    "翻译失败", "占位符兜底", "术语冲突",
 }
+
+# ★ 永远不参与自动重翻的类型：
+#   · 译文残留控制码 —— 重翻并不能保证修好，改由用户手工处理
+#   · 符号不匹配 / 特殊行 —— 需要人工判断
+NEVER_RETRANSLATE_KINDS = {
+    "译文残留控制码", "符号不匹配", "特殊行", "控制码回退",
+}
+
+# 报告里可能出现的问题类型（展示 / 排序用）
+REPORT_KIND_ORDER = [
+    "翻译失败", "占位符兜底", "术语冲突", "控制码回退",
+    "疑似未翻译", "疑似异常句",
+    "译文残留占位符", "译文残留控制码",
+    "符号不匹配", "特殊行",
+]
 
 
 # ================================================================
@@ -70,6 +85,113 @@ def _unknown_ctrl_report_path():
     d = os.path.dirname(inp) or "."
     base = os.path.splitext(os.path.basename(inp))[0]
     return os.path.join(d, f"{base}_unknown_ctrl.txt")
+
+
+def _open_path(path):
+    """用系统默认程序打开文件 / 目录（命令行版；失败返回 False）。"""
+    try:
+        if not os.path.exists(path):
+            if os.path.splitext(path)[1]:        # 看起来是文件 → 建空文件
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                open(path, "a", encoding="utf-8").close()
+            else:                                # 否则当目录
+                os.makedirs(path, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(path)
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open", path])
+        return True
+    except Exception as e:
+        emit(f"打开失败：{e}，请手动打开：{path}")
+        return False
+
+
+# ================================================================
+# 术语冲突记录（翻译时落盘，检查报告 / 冲突面板共用）
+#   结构：{术语原文: {"old": 已有译文, "new": 模型返回的译文,
+#                     "src": [命中该术语的句子, …]}}
+# ================================================================
+def _conflict_path():
+    """术语冲突记录文件：与缓存文件同目录。"""
+    cf = getattr(config.Runtime, "conflict_file", None)
+    if cf:
+        return cf
+    cache = config.Runtime.cache_file
+    d = os.path.dirname(cache) or "."
+    base = os.path.splitext(os.path.basename(cache))[0]
+    return os.path.join(d, f"{base}_conflicts.json")
+
+
+def load_term_conflicts(path=None):
+    """读取术语冲突记录，返回 dict；文件不存在 / 损坏时返回 {}。"""
+    import json
+    p = path or _conflict_path()
+    if not os.path.exists(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning("读取术语冲突记录失败：%s", e)
+        return {}
+
+
+def save_term_conflicts(data, path=None):
+    """写入术语冲突记录（原子替换）。"""
+    import json
+    p = path or _conflict_path()
+    try:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data or {}, f, ensure_ascii=False, indent=2)
+        atomic_replace(tmp, p)
+        return True
+    except Exception as e:
+        log.warning("写入术语冲突记录失败：%s", e)
+        return False
+
+
+def _record_term_conflicts(records):
+    """
+    把本批次新发现的术语冲突并进记录文件。
+    records: [{"src": 术语原文, "old": …, "new": …, "sentence": 句子}]
+    """
+    if not records:
+        return
+    data = load_term_conflicts()
+    for r in records:
+        key = r.get("src") or ""
+        if not key:
+            continue
+        item = data.get(key)
+        if not isinstance(item, dict):
+            item = {"old": r.get("old", ""), "new": r.get("new", ""),
+                    "src": []}
+            data[key] = item
+        item["old"] = r.get("old", item.get("old", ""))
+        item["new"] = r.get("new", item.get("new", ""))
+        sent = (r.get("sentence") or "").strip()
+        if sent and sent not in item.setdefault("src", []):
+            item["src"].append(sent)
+    save_term_conflicts(data)
+
+
+def drop_term_conflicts(terms):
+    """冲突解决后，把这几个术语从记录里移除。"""
+    data = load_term_conflicts()
+    if not data:
+        return 0
+    n = 0
+    for t in terms or []:
+        if t in data:
+            data.pop(t, None)
+            n += 1
+    if n:
+        save_term_conflicts(data)
+    return n
 
 
 # 生成物后缀（选文件时要跳过 / 报告模式下要识别）
@@ -157,7 +279,7 @@ def _pick_language(prompt, default_key, exclude=None):
         if exclude and lang == exclude:
             mark = "   (已被选为另一种语言)"
         emit(f"  {i:>2}. {lang}{mark}")
-    emit(f"   0. 自定义（手动输入）")
+    emit("   0. 自定义（手动输入）")
 
     hint = f"[{default_key}]" if default_key else "[回车跳过]"
     raw = input(f"请选择 {hint}: ").strip()
@@ -267,101 +389,6 @@ def _apply_lang_model(src_lang=None, tgt_lang=None, model=None):
                else "MODEL")
         settings.set_value(key, model)
     return True
-
-
-# ================================================================
-# 常用语言列表（序号选择用）
-# ================================================================
-LANG_OPTIONS = [
-    "英文",
-    "简体中文",
-    "繁体中文",
-    "日文",
-    "韩文",
-    "西班牙文",
-    "法文",
-    "德文",
-    "意大利文",
-]
-
-
-# ================================================================
-# 报告路径
-# ================================================================
-def _report_path():
-    """返回检查报告路径：与输出文件同目录。"""
-    out = config.Runtime.output_file
-    d = os.path.dirname(out) or "."
-    base = os.path.splitext(os.path.basename(out))[0]
-    return os.path.join(d, f"{base}_report.txt")
-
-
-def _unknown_ctrl_report_path():
-    """与输入文件同目录，名为 <输入名>_unknown_ctrl.txt"""
-    inp = config.Runtime.input_file
-    d = os.path.dirname(inp) or "."
-    base = os.path.splitext(os.path.basename(inp))[0]
-    return os.path.join(d, f"{base}_unknown_ctrl.txt")
-
-
-def _write_unknown_ctrl_report(hits, report_path):
-    """hits: [(token, original, context), ...]"""
-    from collections import defaultdict
-
-    grouped = defaultdict(list)
-    for token, orig, ctx in hits:
-        grouped[token].append((orig, ctx))
-
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write("# 未识别控制码报告\n")
-        f.write(f"# 共 {len(grouped)} 种，{len(hits)} 次\n")
-        f.write("#\n")
-        f.write("# 这些控制码不在 processor.py 的名单中，\n")
-        f.write("# 可能被模型误翻或丢失。请手工确认是否要加入名单。\n")
-        f.write("=" * 70 + "\n\n")
-
-        for token, items in sorted(grouped.items(),
-                                    key=lambda x: (-len(x[1]), x[0])):
-            f.write(f"[{token}]  出现 {len(items)} 次\n")
-            for orig, ctx in items[:3]:
-                f.write(f"  原文：  {orig[:100]}\n")
-                f.write(f"  上下文：{ctx[:100]}\n")
-            if len(items) > 3:
-                f.write(f"  … 其余 {len(items) - 3} 次省略\n")
-            f.write("\n")
-
-    return report_path
-
-
-# ================================================================
-# 语言选择
-# ================================================================
-def _pick_language(prompt, default_key, exclude=None):
-    """交互式语言选择。返回选中的语言字符串，或 None 表示取消。"""
-    print(f"\n{prompt}")
-    for i, lang in enumerate(LANG_OPTIONS, 1):
-        mark = ""
-        if lang == default_key:
-            mark = "   ← 上次使用"
-        if exclude and lang == exclude:
-            mark = "   (已被选为另一种语言)"
-        print(f"  {i:>2}. {lang}{mark}")
-    print(f"   0. 自定义（手动输入）")
-
-    hint = f"[{default_key}]" if default_key else "[回车跳过]"
-    raw = input(f"请选择 {hint}: ").strip()
-
-    if not raw:
-        return default_key or None
-    if raw == "0":
-        custom = input("请输入语言名（如 English / 日本語）：").strip()
-        return custom or None
-    if raw.isdigit():
-        idx = int(raw) - 1
-        if 0 <= idx < len(LANG_OPTIONS):
-            return LANG_OPTIONS[idx]
-    print("无效输入")
-    return None
 
 
 # ================================================================
@@ -489,7 +516,7 @@ def _make_batches(todo, batch_size=None, max_chars=None):
 # ================================================================
 def _translate_batch(client, batch_texts, cache,
                      unknown_ctrl_hits, failed, extra_hits,
-                     mode_of_entry=None, bi=1):
+                     mode_of_entry=None, bi=1, conflict_records=None):
     """翻译一批文本，写入缓存。返回成功条数。"""
     if not batch_texts:
         return 0
@@ -690,6 +717,7 @@ def _translate_batch(client, batch_texts, cache,
 
             if conflicts:
                 log.warning("[批 %d] 术语冲突 %d 条", bi, len(conflicts))
+                matched = {}          # 术语原文 → 命中的句子
                 for idx, terms in batch_terms.items():
                     if not (0 <= idx < len(batch_texts)):
                         continue
@@ -697,6 +725,7 @@ def _translate_batch(client, batch_texts, cache,
                     if not info:
                         continue
                     src_text = batch_texts[idx]
+                    matched.setdefault(info['src'], src_text)
                     extra_hits.append({
                         'src': src_text,
                         'kind': '术语冲突',
@@ -704,7 +733,19 @@ def _translate_batch(client, batch_texts, cache,
                         'detail': (f"术语冲突：{info['src']} "
                                    f"已有 {info['old']}，"
                                    f"模型返回 {info['new']}"),
+                        # ★ 结构化字段，供「解决术语冲突」面板使用
+                        'term_src': info['src'],
+                        'term_old': info['old'],
+                        'term_new': info['new'],
                     })
+                if conflict_records is not None:
+                    for c in conflicts:
+                        conflict_records.append({
+                            "src": c.get("src", ""),
+                            "old": c.get("old", ""),
+                            "new": c.get("new", ""),
+                            "sentence": matched.get(c.get("src", ""), ""),
+                        })
         except Exception as e:
             log.warning("术语合并失败：%s", e)
 
@@ -818,6 +859,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
     unknown_ctrl_hits = []
     failed = []
     extra_hits = []
+    conflict_records = []      # ★ 术语冲突：落盘后供检查报告 / 冲突面板复用
 
     if todo:
         if getattr(config, "SORT_TODO_BY_LEN", True):
@@ -838,7 +880,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
             ok = _translate_batch(client, batch_texts, cache,
                                   unknown_ctrl_hits, failed, extra_hits,
                                   mode_of_entry=mode_of_entry,
-                                  bi=bi)
+                                  bi=bi,
+                                  conflict_records=conflict_records)
 
             cache.tick()
             done += len(batch_texts)
@@ -860,6 +903,12 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
                 emit(f"    … 其余 {len(failed) - 10} 条省略")
     else:
         cache.save(force=True)
+
+    # ---------- 术语冲突记录落盘（供检查报告 / 冲突面板复用） ----------
+    if conflict_records:
+        _record_term_conflicts(conflict_records)
+        emit(f"  [术语冲突] 记录 {len(conflict_records)} 条，"
+             f"可在菜单 2 用「解决术语冲突」处理")
 
     # ---------- 回写 ----------
     translations = {txt: cache.get(txt) for _, txt in entries if cache.get(txt)}
@@ -906,7 +955,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
             if s["pending"]:
                 emit(f"\n[前缀字典] 共 {s['total']} 条，"
                      f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
-                emit(f"  请到菜单 4「前缀字典」补全译文后应用")
+                emit("  请到菜单 4「前缀字典」补全译文后应用")
         except Exception as e:
             log.debug("前缀字典统计失败：%s", e)
 
@@ -919,50 +968,6 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         "done": len(todo) - len(failed),
         "failed": len(failed),
     }
-
-    # ---------- 未识别控制码报告 ----------
-    if unknown_ctrl_hits:
-        try:
-            uc_path = _unknown_ctrl_report_path()
-            _write_unknown_ctrl_report(unknown_ctrl_hits, uc_path)
-
-            from collections import Counter
-            kinds = Counter(t for t, _, _ in unknown_ctrl_hits)
-
-            bridge.emit(f"\n⚠ 检测到未识别控制码：")
-            for tok, n in kinds.most_common(10):
-                bridge.emit(f"    {tok}  × {n}")
-            if len(kinds) > 10:
-                bridge.emit(f"    … 其余 {len(kinds) - 10} 种省略")
-            bridge.emit(f"  报告：{uc_path}")
-
-            log.warning("未识别控制码 %d 种 / %d 次 → %s",
-                        len(kinds), len(unknown_ctrl_hits), uc_path)
-        except Exception as e:
-            log.error("写未识别控制码报告失败：%s", e)
-
-    # ---------- 前缀字典统计 ----------
-    if getattr(config, "PREFIX_DICT_ENABLE", True):
-        try:
-            import prefix_dict as PFD
-            s = PFD.stats()
-            if s["pending"]:
-                bridge.emit(f"\n[前缀字典] 共 {s['total']} 条，"
-                            f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
-                bridge.emit(f"  请编辑：{PFD.DICT_FILE}")
-                bridge.emit(f"  翻译完成后选菜单 4 或 5 应用前缀字典")
-        except Exception as e:
-            log.debug("前缀字典统计失败：%s", e)
-
-    # ---------- 自动建立术语表快照 ----------
-    try:
-        import term_sync as TS
-        current_terms = TS.load_current_terms()
-        if current_terms:
-            TS.save_snapshot(current_terms)
-            log.info("术语表快照已更新：%d 条", len(current_terms))
-    except Exception as e:
-        log.warning("建立术语表快照失败：%s", e)
 
 
 def _update_snapshot():
@@ -1067,7 +1072,52 @@ def check_file(path, write_report=True):
 
     entries, special = P.extract_entries(src_lines)
     report_path = _report_path()
-    hits = checker.check(src_lines, out_lines, entries, special, report_path)
+    hits = checker.check(src_lines, out_lines, entries, special, report_path,
+                         extra_hits=_conflicts_as_hits(entries, out_lines))
+    return hits
+
+
+def _conflicts_as_hits(entries=None, out_lines=None):
+    """
+    读取落盘的术语冲突记录，转成 checker 能吃的 extra_hits。
+    这样菜单 2 单独刷新报告时也能看到（并处理）术语冲突。
+    entries/out_lines 用来把冲突关联回具体句子，顺便补上译文。
+    """
+    data = load_term_conflicts()
+    if not data:
+        return []
+
+    line_of = {}
+    for ln, s in (entries or []):
+        k = (s or "").strip()
+        if k and k not in line_of:
+            line_of[k] = ln
+
+    def _dst_of(sent):
+        if not sent:
+            return ""
+        ln = line_of.get(sent.strip())
+        if ln is None or out_lines is None or ln >= len(out_lines):
+            return ""
+        return out_lines[ln].strip()
+
+    hits = []
+    for term, item in data.items():
+        if not isinstance(item, dict):
+            continue
+        old = item.get("old", "")
+        new = item.get("new", "")
+        detail = f"术语冲突：{term} 已有 {old}，模型返回 {new}"
+        sents = item.get("src") or []
+        if not sents:
+            sents = [""]
+        for s in sents:
+            hits.append({
+                'src': s, 'kind': '术语冲突', 'dst': _dst_of(s),
+                'detail': detail,
+                'term_src': term, 'term_old': old, 'term_new': new,
+            })
+    log.info("载入术语冲突记录 %d 条", len(hits))
     return hits
 
 
@@ -1086,12 +1136,30 @@ def check_paths(paths):
 # ================================================================
 # 核心 2：重翻检查报告内容
 # ================================================================
-def retranslate_report_paths(paths, src_lang=None, tgt_lang=None, model=None):
-    """扫描输出文件，找出问题句，删缓存后重翻。"""
+def retranslate_report_paths(paths, src_lang=None, tgt_lang=None, model=None,
+                             kinds=None):
+    """
+    扫描输出文件，找出问题句，删缓存后重翻。
+
+    kinds: 只重翻这些问题类型（None = 用默认的 RETRANSLATE_KINDS）。
+           ★「译文残留控制码」等 NEVER_RETRANSLATE_KINDS 里的类型
+             无论怎么传都不会参与重翻。
+    """
     _apply_lang_model(src_lang, tgt_lang, model)
 
+    active = set(RETRANSLATE_KINDS) if kinds is None else set(kinds)
+    active -= NEVER_RETRANSLATE_KINDS
+    active = {k for k in active if k}          # 去掉空类型
+
     log.info("=" * 50)
-    log.info("重翻检查报告内容  共 %d 个文件", len(paths))
+    log.info("重翻检查报告内容  共 %d 个文件  类型=%s",
+             len(paths), "、".join(sorted(active)) or "（空）")
+    emit(f"  重翻类型：{'、'.join(sorted(active)) if active else '（未选择）'}")
+    emit(f"  跳过类型：{'、'.join(sorted(NEVER_RETRANSLATE_KINDS))}")
+
+    if not active:
+        emit("  没有勾选任何可重翻的类型，已取消")
+        return {"files": 0, "removed": 0, "skipped": True}
 
     total_removed = 0
     files_done = 0
@@ -1115,12 +1183,14 @@ def retranslate_report_paths(paths, src_lang=None, tgt_lang=None, model=None):
             emit("  ✔ 没有发现问题，无需重翻")
             continue
 
-        kinds = Counter(h['kind'] for h in hits)
-        emit("  问题分布：" + "  ".join(f"{k}:{n}" for k, n in kinds.items()))
+        kinds_cnt = Counter(h['kind'] for h in hits)
+        emit("  问题分布：" + "  ".join(f"{k}:{n}"
+                                       for k, n in kinds_cnt.items()))
 
-        to_re = [h for h in hits if h['kind'] in RETRANSLATE_KINDS]
+        to_re = [h for h in hits if h['kind'] in active]
         if not to_re:
-            emit("  没有需要重翻的句子（仅符号不匹配 / 特殊行，需手动处理）")
+            emit(f"  勾选的类型（{'、'.join(sorted(active))}）里没有可重翻的句子"
+                 f"，已跳过")
             continue
 
         emit(f"  待重翻：{len(to_re)} 条")
@@ -1245,6 +1315,92 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
 
 
 # ================================================================
+# 核心 3b：解决术语冲突
+#   报告页把「同一原文、两种译文」的冲突列出来，用户挑一个（或自定义）
+#   作为最终译文，这里负责写回术语字典、删掉相关缓存并重翻。
+# ================================================================
+def apply_term_conflicts(choices, paths=None, src_lang=None, tgt_lang=None,
+                         model=None):
+    """
+    choices: [{"term": 原文, "value": 最终采用的译文}, ...]
+             只处理 value 非空的项。
+    paths:   要重翻的文件（None / 空 → 只写字典不重翻）。
+
+    返回 {"saved": n, "files": n, "removed": n}
+    """
+    import term_sync as TS
+
+    mapping = {}
+    for c in (choices or []):
+        term = (c.get("term") or "").strip()
+        val = c.get("value")
+        if term and val is not None and str(val).strip():
+            mapping[term] = str(val).strip()
+
+    emit("\n" + "=" * 55)
+    emit("  解决术语冲突")
+    emit("=" * 55)
+
+    if not mapping:
+        emit("  没有选择任何要保留的译文，已取消")
+        return {"saved": 0, "files": 0, "removed": 0}
+
+    for t, v in list(mapping.items())[:10]:
+        emit(f"    {t}  →  {v}")
+    if len(mapping) > 10:
+        emit(f"    … 其余 {len(mapping) - 10} 条省略")
+
+    saved = TS.save_term_values(mapping)
+    emit(f"  ✔ 术语字典已更新 {saved} 条")
+
+    try:
+        PR.load_terms(force=True)
+    except Exception as e:
+        log.warning("重新载入术语表失败：%s", e)
+
+    files = removed = 0
+    if paths:
+        result = retranslate_terms_paths(
+            list(paths), src_lang, tgt_lang, model,
+            extra_terms=list(mapping.keys()))
+        files = (result or {}).get("files", 0)
+        removed = (result or {}).get("removed", 0)
+    else:
+        emit("  （未选择文件，只更新术语字典；"
+             "选好文件后再点一次即可重翻相关句子）")
+        try:
+            TS.save_snapshot(TS.load_current_terms())
+        except Exception:
+            pass
+
+    # 已解决的冲突从记录里移除，避免报告一直报同一个
+    n = drop_term_conflicts(list(mapping.keys()))
+    if n:
+        emit(f"  ✔ 已清理 {n} 条冲突记录")
+
+    log.info("解决术语冲突：写入 %d 条，重翻 %d 个文件，删缓存 %d 条",
+             saved, files, removed)
+    return {"saved": saved, "files": files, "removed": removed}
+
+
+def scan_term_conflicts():
+    """读取当前落盘的术语冲突，返回 [(原文, 已有译文, 新增译文, 命中句数)]。"""
+    data = load_term_conflicts()
+    out = []
+    for term, item in data.items():
+        if not isinstance(item, dict):
+            continue
+        out.append((
+            term,
+            item.get("old", "") or "",
+            item.get("new", "") or "",
+            len(item.get("src") or []),
+        ))
+    out.sort(key=lambda x: (-x[3], x[0]))
+    return out
+
+
+# ================================================================
 # 核心 4：应用前缀字典
 # ================================================================
 def apply_prefix_dict_paths(paths, entries_map=None):
@@ -1336,6 +1492,62 @@ def apply_prefix_dict_paths(paths, entries_map=None):
     bridge.progress(len(paths), len(paths), "完成")
     log.info("应用前缀字典完成：%d 个文件", done)
     return {"files": done}
+
+
+# ================================================================
+# 核心 4b：前缀字典「应用术语」
+#   · 让前缀去匹配术语字典，命中则替换
+#   · 当前只替换 \tg[...] 里的内容（角色名），控制码参数一律不动
+# ================================================================
+def scan_prefix_terms():
+    """预演「应用术语」，返回 (changes, stats)，不写盘。"""
+    import prefix_dict as PFD
+    PFD.reload_dict()
+    return PFD.scan_terms_for_tg()
+
+
+def apply_prefix_terms_paths(paths=None):
+    """
+    把术语表套用到前缀字典（仅 \tg[...] 内容）并落盘；
+    给了 paths 就顺带把前缀重新拼回译文文件。
+
+    返回 {"changed": 命中条数, "files": 应用到的文件数, "samples": [...]}
+    """
+    import prefix_dict as PFD
+
+    PFD.reload_dict()
+    changes, stats = PFD.apply_terms_for_tg()
+
+    emit("\n" + "=" * 55)
+    emit("  前缀字典 · 应用术语（只替换 \\tg[...] 里的内容）")
+    emit("=" * 55)
+    emit(f"  字典共 {stats['total']} 条，命中术语 {stats['changed']} 条，"
+         f"未命中 {stats['untouched']} 条")
+
+    samples = []
+    for c in changes[:10]:
+        pairs = "、".join(f"{s}→{d}" for s, d in c["terms"][:3])
+        emit(f"    {c['src']}  →  {c['new']}   （{pairs}）")
+        samples.append({"src": c["src"], "new": c["new"],
+                        "terms": c["terms"]})
+    if len(changes) > 10:
+        emit(f"    … 其余 {len(changes) - 10} 条省略")
+
+    if not changes:
+        emit("  没有前缀命中术语，无需改动")
+        return {"changed": 0, "files": 0, "samples": []}
+
+    files = 0
+    if paths:
+        r = apply_prefix_dict_paths(paths)
+        files = (r or {}).get("files", 0)
+    else:
+        emit("  （未选择文件，只更新前缀字典；"
+             "选好文件后再点一次即可写回译文）")
+
+    log.info("前缀字典应用术语：命中 %d 条，应用文件 %d 个",
+             len(changes), files)
+    return {"changed": len(changes), "files": files, "samples": samples}
 
 
 # ================================================================
@@ -1850,27 +2062,6 @@ def cmd_reflow():
     if not paths:
         return
     reflow_paths(paths)
-
-
-def cmd_apply_prefix_dict():
-    """菜单 4 的下半段：只应用前缀字典"""
-    paths = _select_scope_interactive("选择要应用前缀字典的文件")
-    if not paths:
-        return
-    apply_prefix_dict_paths(paths)
-
-
-def _open_path(path):
-    try:
-        if os.name == "nt":
-            os.startfile(path)
-        else:
-            import subprocess
-            subprocess.Popen(["xdg-open", path])
-        return True
-    except Exception as e:
-        emit(f"打开失败：{e}，请手动打开：{path}")
-        return False
 
 
 def cmd_build_terms():

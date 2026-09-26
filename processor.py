@@ -115,11 +115,6 @@ def split_prefix(text):
     return text[:i], text[i:]
 
 
-def strip_prefix(text):
-    """剥离句首控制码，返回 body。"""
-    return split_prefix(text)[1]
-
-
 # ================================================================
 # 保护 / 还原
 # ================================================================
@@ -723,14 +718,6 @@ def load_terms(force=False):
     _check_case_conflicts(good)
     log.info("术语表加载：%d 条（单词 %d / 多词 %d，跳过短词 %d 条）",
              len(_TERMS), len(_TERM_SINGLE), len(_TERM_MULTI), skipped_short)
-
-
-def _multi_repl(m):
-    matched = m.group(1)
-    dst = _MULTI_MAP.get(matched)
-    if dst is None:
-        dst = _MULTI_MAP_LOWER.get(matched.lower())
-    return dst if dst else matched
 
 
 def find_terms(text):

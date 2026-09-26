@@ -126,7 +126,7 @@ def merge_into_term_dict(new_terms, conflicts_out=None):
         log.debug("跳过已存在术语 %d 条：%s",
                   len(skipped_same),
                   ", ".join(skipped_same[:10])
-                  + (f" …" if len(skipped_same) > 10 else ""))
+                  + (" …" if len(skipped_same) > 10 else ""))
 
     if skipped_diff:
         log.warning("=" * 60)

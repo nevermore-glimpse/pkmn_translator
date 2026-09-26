@@ -21,6 +21,8 @@
 - ✍️ **中文润色重翻** — 把缓存里的中文译文再润色一遍，覆盖回缓存
 - 📁 **单文件 / 整个文件夹** — 重翻类功能可自由选择作用范围
 - ⚙️ **内置设置菜单** — 界面里直接改配置，Ollama 模型名自动检测本机已装模型
+- 📋 **一键复制** — 报告 / 术语 / 前缀等列表可右键复制（导出制表符分隔，直接粘进
+  Excel），日志、文件路径、统计数字、设置项也都支持右键复制
 - 🖥️ **独立 exe** — Releases 页提供可直接运行的 Windows 可执行文件
 
 ## 环境要求
@@ -320,11 +322,15 @@ ollama pull qwen2.5:14b
 ```bash
 pip install pyinstaller
 pyinstaller --onefile --name "宝可梦翻译工具" --icon=start.ico ^
+    --add-data "萝莉体.ttf;." ^
     --hidden-import openpyxl --hidden-import tkinter --hidden-import PIL main.py
 ```
 
 （仓库里的 `宝可梦翻译工具.spec` 已配好这些 hidden-import，直接
 `pyinstaller 宝可梦翻译工具.spec` 即可。）
+
+字体 `萝莉体.ttf` 会被打进 exe，运行时用 GDI 私有加载，
+**目标机器无需安装字体**。想换字体只需把同名文件放到 exe 同级目录。
 
 打包完成后把 `start.ico` 复制到 `dist\` 里与 exe 同级。
 

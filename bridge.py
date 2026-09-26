@@ -105,9 +105,3 @@ def progress(done=None, total=None, text=""):
 class CancelRequested(Exception):
     """核心流程主动中止时抛出。"""
     pass
-
-
-def check_cancel():
-    """已请求中止则抛异常，便于在深层循环里快速退出。"""
-    if cancelled():
-        raise CancelRequested()

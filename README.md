@@ -16,6 +16,9 @@ Supports terminology lists, placeholder protection, resume from cache, and autom
 - 🔀 **Line rewrapping** — Dedicated step (menu 6): by character count for `[map*]` (`\n`) and other blocks (spaces). Not applied automatically after translation.
 - 🧠 **Terminology re-translation** — Detects newly added terms and re-translates only the affected sentences
 - ⚙️ **In-app settings** — Edit all configuration values from the menu, no manual file editing
+- 📋 **One-click copy** — Right-click any report / term / prefix list to copy it as
+  tab-separated text (paste straight into Excel); logs, file paths, statistics and
+  settings fields are copyable too
 - 🖥️ **Standalone exe** — Releases include a ready-to-run Windows executable
 
 ## Requirements
@@ -253,8 +256,13 @@ Open a Command Prompt in the exe folder and run it manually to see the error:
 ```bash
 pip install pyinstaller
 pyinstaller --onefile --name "宝可梦翻译工具" --icon=start.ico ^
+    --add-data "萝莉体.ttf;." ^
     --hidden-import openpyxl --hidden-import tkinter --hidden-import PIL main.py
 ```
+
+The bundled font (`萝莉体.ttf`) is loaded privately via GDI at runtime, so
+the exe works on machines where the font is not installed. If you want to
+swap the font, just drop a different `萝莉体.ttf` next to the exe.
 
 Then copy `start.ico` next to the produced exe in `dist\`.
 

@@ -7,6 +7,7 @@ r"""
 """
 import json
 import os
+import re
 
 import config
 from logger import get_logger
@@ -15,6 +16,10 @@ log = get_logger("prefix_dict")
 
 # 存储位置：与 term_dict.py 同目录
 DICT_FILE = os.path.join(config.BASE_DIR, "prefix_dict.json")
+
+# ★「应用术语」目前只处理说话人标签 \tg[...] 里的内容
+#   （三段：\tg[ / 内容 / ]），内容段才是可替换的角色名
+TG_RE = re.compile(r'(\\tg\[)([^\]]*)(\])')
 
 # 全局内存缓存
 _entries = {}     # {前缀原文: 前缀译文}  空串表示待翻译
@@ -130,6 +135,122 @@ def substitute_terms(prefix):
         return prefix
 
 
+def _apply_terms_to_text(text):
+    """对一段纯文本做术语替换；术语表不可用时原样返回。"""
+    if not text:
+        return text
+    try:
+        import processor as _PR
+        _PR.load_terms()
+        out = _PR.apply_terms(text)
+        return out if out else text
+    except Exception as e:
+        log.debug("术语替换失败（已回退原文）：%s", e)
+        return text
+
+
+def _terms_hit_in(text):
+    """返回 text 中命中的术语 [(原文, 译文), ...]；术语表不可用时返回 []。"""
+    if not text:
+        return []
+    try:
+        import processor as _PR
+        _PR.load_terms()
+        return _PR.find_terms(text) or []
+    except Exception as e:
+        log.debug("术语命中检测失败：%s", e)
+        return []
+
+
+def substitute_tg_terms(prefix):
+    r"""
+    只把前缀里 \tg[...] 的内部文字按术语表替换（其余部分原样保留）。
+
+    例：\w[speech hgss 3]\tg[Owen] → \w[speech hgss 3]\tg[欧文]
+    没命中任何术语时原样返回。
+
+    ★ 目前「应用术语」的作用范围就限定在 \tg[]，避免误伤
+      \w[speech hgss 3] 之类必须保持英文的控制码参数。
+    """
+    if not prefix or "\\tg[" not in prefix:
+        return prefix
+    try:
+        def _repl(m):
+            inner = m.group(2)
+            if not inner.strip():
+                return m.group(0)
+            new_inner = _apply_terms_to_text(inner)
+            return m.group(1) + new_inner + m.group(3)
+
+        return TG_RE.sub(_repl, prefix)
+    except Exception as e:
+        log.warning("前缀 \\tg[] 术语替换失败（已回退）：%s", e)
+        return prefix
+
+
+def tg_terms_of(prefix):
+    r"""列出前缀中 \tg[...] 内部命中的术语 [(原文, 译文), ...]（已去重）。"""
+    if not prefix or "\\tg[" not in prefix:
+        return []
+    out, seen = [], set()
+    for m in TG_RE.finditer(prefix):
+        for src, dst in _terms_hit_in(m.group(2)):
+            key = (src or "").lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((src, dst))
+    return out
+
+
+def scan_terms_for_tg():
+    r"""
+    扫描整本前缀字典，预演「应用术语」的结果（不写盘）。
+
+    只对「当前生效文本」里 \tg[] 的内容做术语替换：
+      · 已有译文 → 在译文基础上替换（保留用户其它手工改动）
+      · 译文为空 → 在原文基础上替换
+
+    返回 (changes, stats)
+      changes: [{"src", "old", "new", "terms":[(原文, 译文), ...]}, ...]
+      stats  : {"total", "changed", "untouched"}
+    """
+    _load()
+    changes = []
+    stats = {"total": len(_entries), "changed": 0, "untouched": 0}
+
+    for src, dst in _entries.items():
+        base = dst or src
+        terms = tg_terms_of(base)
+        if not terms:
+            stats["untouched"] += 1
+            continue
+        new = substitute_tg_terms(base)
+        if new == dst:
+            stats["untouched"] += 1
+            continue
+        changes.append({"src": src, "old": dst, "new": new, "terms": terms})
+        stats["changed"] += 1
+
+    return changes, stats
+
+
+def apply_terms_for_tg():
+    r"""
+    把术语表套用到前缀字典并落盘（只替换 \tg[...] 的内容）。
+    返回 (changes, stats)，与 scan_terms_for_tg() 结构一致。
+    """
+    changes, stats = scan_terms_for_tg()
+    if not changes:
+        return changes, stats
+
+    n = update_many({c["src"]: c["new"] for c in changes})
+    _save()
+    log.info("前缀字典「应用术语」：命中 %d 条，写入 %d 条",
+             len(changes), n)
+    return changes, stats
+
+
 def apply_prefix(prefix):
     """
     返回应使用的译后前缀：
@@ -140,15 +261,6 @@ def apply_prefix(prefix):
     if t:
         return t
     return substitute_terms(prefix)
-
-
-def set_translation(prefix, translation):
-    """写入/覆盖一条前缀译文（GUI 编辑后调用）。"""
-    _load()
-    if not prefix:
-        return False
-    _entries[prefix] = translation or ""
-    return True
 
 
 def update_many(mapping):
@@ -196,9 +308,3 @@ def list_pending():
     """返回 [(前缀原文, 前缀译文), ...]，只列未翻译的。"""
     _load()
     return [(k, v) for k, v in sorted(_entries.items()) if not v]
-
-
-def list_all():
-    """返回 [(前缀原文, 前缀译文), ...]，按是否翻译排序。"""
-    _load()
-    return sorted(_entries.items(), key=lambda x: (bool(x[1]), x[0]))

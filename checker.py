@@ -142,6 +142,10 @@ def check(src_lines, out_lines, entries, special, report_path,
     failed_srcs = set()
     if extra_hits:
         for item in extra_hits:
+            # ★ 术语冲突只是「术语译法不一致」，句子本身的翻译没问题，
+            #   不该因为它就跳过其它检查（未翻译 / 符号不匹配等）
+            if (item.get('kind') or '') == '术语冲突':
+                continue
             s = (item.get('src') or '').strip()
             if s:
                 failed_srcs.add(s)
@@ -246,11 +250,17 @@ def check(src_lines, out_lines, entries, special, report_path,
                       or '翻译过程中问题')
             dst = item.get('dst', '') or ''
             line_no = item.get('line_no', src_to_line.get(src, -1))
-            hits.append({
+            hit = {
                 'line_no': line_no, 'kind': kind,
                 'src': src, 'dst': dst,
                 'detail': detail,
-            })
+            }
+            # ★ 透传调用方附加的结构化字段
+            #   （术语冲突的 term_src / term_old / term_new 等）
+            for k, v in item.items():
+                if k not in hit:
+                    hit[k] = v
+            hits.append(hit)
 
     # ---------- 写报告 ----------
     os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)

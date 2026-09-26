@@ -49,6 +49,7 @@ EDITABLE = [
     ("THINK",              "推理模式",        "bool",  "True/False"),
 
     # ---------- 翻译策略 ----------
+    ("MAX_INPUT_LINES",    "读取行数上限",      "int",   "只处理前 N 行；0 或负数=不限"),
     ("BATCH_SIZE",         "每批条数",          "int",   "建议 10-30"),
     ("MAX_BATCH_CHARS",    "单批字符上限",      "int",   "自适应分批：超过就提前切批"),
     ("SORT_TODO_BY_LEN",   "按长度排序分批",    "bool",  "同批长度接近，输出更稳定"),
