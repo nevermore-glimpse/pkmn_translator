@@ -161,7 +161,7 @@ API_BASE_URL   = "http://127.0.0.1:8080/v1"
 # ★ 不要把密钥写在这里（config.py 会提交到仓库）！
 #   请在「设置」里填写，它会写入 user_config.json（已在 .gitignore 中）。
 API_KEY        = ""
-API_MODEL      = "Qwen_Qwen3.5-4B-Q3_K_S.gguf"
+API_MODEL      = "Qwen3.5-4B-Q4_K_M"
 API_TIMEOUT    = 600.0
 
 # ---------- 本地服务提供商（菜单 9 用） ----------
@@ -175,9 +175,9 @@ CUSTOM_OPENAI_URL = "http://localhost:8080/v1"
 
 # ---------- llama.cpp（菜单 9 中层用） ----------
 # ★ 保持空值：由用户在界面里选自己的目录，不把个人路径写进仓库
-LLAMACPP_DIR        = ""    # llama-server.exe 所在文件夹
-LLAMACPP_MODEL_DIR  = ""    # 存放 GGUF 的文件夹（会自动扫描）
-LLAMACPP_MODEL_PATH = ""    # 选中要加载的那个 GGUF 文件
+LLAMACPP_DIR        = "E:\\llama-b9245-bin-win-cuda-12.4-x64"    # llama-server.exe 所在文件夹
+LLAMACPP_MODEL_DIR  = "E:\\LM Studio-Model"    # 存放 GGUF 的文件夹（会自动扫描）
+LLAMACPP_MODEL_PATH = "E:\\LM Studio-Model\\lmstudio-community\\Qwen3.5-4B-GGUF\\Qwen3.5-4B-Q4_K_M.gguf"    # 选中要加载的那个 GGUF 文件
 
 # ★ 上一个使用的提供商（内部状态位，只写 user_config.json）
 PROVIDER_PREV    = "ollama"

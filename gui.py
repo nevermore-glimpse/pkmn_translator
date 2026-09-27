@@ -3437,7 +3437,9 @@ class App:
                  font=FONT_TITLE).pack(anchor="w")
         self._mode_row(c1.body)
         self._model_row(c1.body)
-        tk.Label(c1.body, text="中文润色不需要选择语言：直接把缓存里的中文译文再润色一遍",
+        tk.Label(c1.body,
+                 text="中文润色不需要选择语言：直接把缓存里的中文译文再润色一遍；"
+                      "已润色过的条目会自动跳过，中断后重跑会接着来",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(10, 0))
 
@@ -3447,10 +3449,13 @@ class App:
                  font=FONT_TITLE).pack(anchor="w")
         txt = ("· 逐条读取缓存中的中文译文，交给模型润色后覆盖原缓存\n"
                "· 保留全部占位符与控制码；占位符不全的条目会保留原译文\n"
-               "· 润色完成后自动重写 *_translated.txt\n"
-               "· 短句、纯控制符句不参与润色")
+               "· 短句、纯控制符句不参与润色\n"
+               "· 断点续翻：进度存在 *_polish_cache.json，润色过的会跳过，"
+               "中途改动的译文会自动重润（CLI 菜单 5 答 y 可清空进度全量重做）\n"
+               "· 润色完成后自动重写 *_translated.txt，并生成 <输出名>_polished.txt "
+               "明细报告（改动 / 未变 / 跳过三段逐条列出）")
         tk.Label(c2.body, text=txt, bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
-                 justify="left").pack(anchor="w", pady=(10, 0))
+                 justify="left", wraplength=600).pack(anchor="w", pady=(10, 0))
 
         c3 = RoundCard(left, radius=16, pad=18)
         c3.configure(height=136)

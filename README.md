@@ -82,7 +82,7 @@ GUI pages:
 2. Re-translate report        7. Excel to terminology
 3. Re-translate terms         8. Settings
 4. Prefix dictionary          9. Local model server
-5. Chinese polish            10. Log
+5. Chinese polish (resumable) 10. Log
 ```
 
 Pages 1–6 have a file checklist sidebar on the right; add files via
@@ -96,7 +96,7 @@ Command-line menu:
 2. Re-translate check report
 3. Re-translate after terminology update
 4. Prefix dictionary (view / apply)
-5. Chinese polish
+5. Chinese polish (resumable, writes a detail report)
 6. Line rewrap
 7. Excel to terminology
 8. Settings
