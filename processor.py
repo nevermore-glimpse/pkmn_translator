@@ -39,11 +39,11 @@ _HTML_ENTITY_PAT = r'&(?:[a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);'
 _CTRL_PAT = (
     r'\\'
     r'(?:'
-      r'(?:wtnp|wt|tg|ts|v|c|w|se)(?=\[)(?:\[[^\]]*\])?'   # 带参数
+      r'(?:wtnp|wt|tg|ts|v|c|w|se|f|me|ch)(?=\[)(?:\[[^\]]*\])?'   # 带参数
       r'|'
-      r'(?:wtnp|wt|tg|PN|wu|HM|TM|se)'                      # 无参数多字母（长的在前）
+      r'(?:wtnp|wt|tg|PN|wu|HM|TM|se|ff|CN)'                      # 无参数多字母（长的在前）
       r'|'
-      r'[Nnbcgwlvi]'                                        # 单字母
+      r'[NnbcgwlvibrG]'                                        # 单字母
     r')'
 )
 

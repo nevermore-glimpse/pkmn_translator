@@ -46,7 +46,8 @@ WHITELIST = {
     "quot", "&quot",          # HTML 实体 &quot; / &quot
     "amp", "&amp", "nbsp", "&nbsp",
     # ★ 游戏里本来就该保留的按键名 / 专有缩写
-    "Tab", "Ctrl", "Fn", "Alt", "Esc", "MVP", "txt", "PBS",
+    "Tab", "Ctrl", "Fn", "Alt", "Esc", "MVP", "txt", "PBS","RPG Maker XP",
+    "Essentials","RMXP","VIP","DnD","LOR"
 }
 
 # 译文残留控制码白名单：这些 \字母 是游戏自己的写法，不算"未识别的残留"
