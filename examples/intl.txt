@@ -9,134 +9,79 @@ Hello, this is Professor Oak...\nOh, hello, \PN!
 Hello, this is Professor Oak...\nOh, hello, \PN!
 So, how's your Pokédex coming along?
 So, how's your Pokédex coming along?
-Hmm, let's see..\nYou've seen \v[1] Pokémon, and \nyou've caught \v[2] Pokémon!\nI see!
-Hmm, let's see..\nYou've seen \v[1] Pokémon, and \nyou've caught \v[2] Pokémon!\nI see!
-Hmm, you still have a long journey ahead of you! \nKeep on going!
-Hmm, you still have a long journey ahead of you! \nKeep on going!
-Hmm, you're catching Pokémon at a decent pace!
-Hmm, you're catching Pokémon at a decent pace!
-You've caught a lot of Pokémon, but make sure you're raising them carefully!
-You've caught a lot of Pokémon, but make sure you're raising them carefully!
-I didn't even know that many Pokémon existed!
-I didn't even know that many Pokémon existed!
-Show me your Pokédex again anytime!
-Show me your Pokédex again anytime!
-Show me your Pokédex anytime!
-Show me your Pokédex anytime!
 Click!\wt[10]\n......\wt[5] ......
 Click!\wt[10]\n......\wt[5] ......
-\w[]
-\w[]
+\tg[Fátima]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
+\tg[Fátima]Unamos fuerzas, \PN.\n¡Iré curando a tus Pokémon sobre la marcha!
+\tg[Owen]Curaré a tus Pokémon sobre la marcha y Helioptile y yo estaremos a tu lado en combate.\n¡Juntos no habrá quien nos venza!
+\tg[Owen]Curaré a tus Pokémon sobre la marcha y Helioptile y yo estaremos a tu lado en combate.\n¡Juntos no habrá quien nos venza!
+\tg[¿Owen?]\..\..\..\n\..\..\..
+\tg[¿Owen?]\..\..\..\n\..\..\..
+\tg[¿Owen?]¿Todo bien?\nContinuemos.
+\tg[¿Owen?]¿Todo bien?\nContinuemos.
 \tg[Lionel, el Campeón de Galar]¡Soy el Campeón de Galar!\n¡Mi personalidad se basa en ser el Campeón de Galar, y soy el Campeón y tengo un Charizard!
 \tg[Lionel, el Campeón de Galar]¡Soy el Campeón de Galar!\n¡Mi personalidad se basa en ser el Campeón de Galar, y soy el Campeón y tengo un Charizard!
-Anuncios...
-Anuncios...
 \w[1]<ar>\ts[]\wu\wtnp[5]PA: \v[50] ps</ar>
 \w[1]<ar>\ts[]\wu\wtnp[5]PA: \v[50] ps</ar>
 \w[1]<ar>\ts[]\wu\wtnp[5]\v[67]\v[68]ps</ar>
 \w[1]<ar>\ts[]\wu\wtnp[5]\v[67]\v[68]ps</ar>
-\tg[Haya]Ah.\nPues ni idea.
-\tg[Haya]Ah.\nPues ni idea.
-\tg[Simon]¿¡Cómo que ni idea!?\n¿¡Pero tú no te dedicabas a estudiar a los Pokémon!?
-\tg[Simon]¿¡Cómo que ni idea!?\n¿¡Pero tú no te dedicabas a estudiar a los Pokémon!?
-\tg[Haya]¿Y a mí que me cuentas?\n¿¡Cómo voy a saber el paradero de un Pokémon místico que podría estar en cualquier parte!?
-\tg[Haya]¿Y a mí que me cuentas?\n¿¡Cómo voy a saber el paradero de un Pokémon místico que podría estar en cualquier parte!?
-\tg[Haya]¡Sé que es un Pokémon acuático así que digo yo que estará en el agua!\nEn el mar, probablemente\..\..\..
-\tg[Haya]¡Sé que es un Pokémon acuático así que digo yo que estará en el agua!\nEn el mar, probablemente\..\..\..
-¿Sable?
-¿Sable?
-¡HISSSSSSS!\N¡NO TOQUES MI BASSSSURA!
-¡HISSSSSSS!\N¡NO TOQUES MI BASSSSURA!
-¡Ciii!
-¡Ciii!
+"La única forma de hacer un amigo es convertirse en uno."
+"La única forma de hacer un amigo es convertirse en uno."
+Esta Losa parece reforzar la Defensa general de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+Esta Losa parece reforzar la Defensa general de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+¡Has obtenido el poder de esta Losa Unión!
+¡Has obtenido el poder de esta Losa Unión!
+Esta Losa tiene unos extraños grabados inscritos.
+Esta Losa tiene unos extraños grabados inscritos.
+"Todo es posible cuando tienes al compañero indicado a tu lado."
+"Todo es posible cuando tienes al compañero indicado a tu lado."
+Esta Losa parece reforzar el Ataque general de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
+Esta Losa parece reforzar el Ataque general de tu equipo, pero se perderá el efecto de cualquier otra Losa que tengas anteriormente. \n¿De acuerdo?
 [1]
-\tg<<[>>#{@nombreenemigo}<<]>>¿En qué estás pensando?<<n>>Huir en tu primer duelo sería ridículo.
-\tg<<[>>#{@nombreenemigo}<<]>>¿En qué estás pensando?<<n>>Huir en tu primer duelo sería ridículo.
-\tg<<[>>#{@nombreenemigo}<<]>>¿En qué estás pensando?<<n>>Intentar huir en tu primer duelo es realmente patético.
-\tg<<[>>#{@nombreenemigo}<<]>>¿En qué estás pensando?<<n>>Intentar huir en tu primer duelo es realmente patético.
-\tg<<[>>Edward<<]>>Tal y como era de esperar.<<n>>Tu repertorio de provocaciones y contestaciones está prácticamente vacío.
-\tg<<[>>Edward<<]>>Tal y como era de esperar.<<n>>Tu repertorio de provocaciones y contestaciones está prácticamente vacío.
-\tg<<[>>Edward<<]>>La victoria es mía.<<n>>¡Y tu mapa también!
-\tg<<[>>Edward<<]>>La victoria es mía.<<n>>¡Y tu mapa también!
-\tg<<[>>Edward<<]>>Bien, hora de ponernos serios.<<n>>¡No esperes merced de quien aspira a convertirse en el nuevo Punmaster!
-\tg<<[>>Edward<<]>>Bien, hora de ponernos serios.<<n>>¡No esperes merced de quien aspira a convertirse en el nuevo Punmaster!
-\tg<<[>>Edward<<]>>Tal y como esperaba.<<n>>Tu repertorio de provocaciones y contestaciones está prácticamente vacío.
-\tg<<[>>Edward<<]>>Tal y como esperaba.<<n>>Tu repertorio de provocaciones y contestaciones está prácticamente vacío.
-\tg<<[>>Edward<<]>>La victoria es mía.<<n>>¡Y siento decirte que tu mapa también!
-\tg<<[>>Edward<<]>>La victoria es mía.<<n>>¡Y siento decirte que tu mapa también!
-\tg<<[>>Edward<<]>>Bien, hora de ponernos serios.<<n>>¡No esperes piedad de quien aspira a convertirse en el nuevo Punmaster!
-\tg<<[>>Edward<<]>>Bien, hora de ponernos serios.<<n>>¡No esperes piedad de quien aspira a convertirse en el nuevo Punmaster!
-\tg[Edward]¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!
-\tg[Edward]¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!
-\tg<<[>>Edward<<]>>He dicho &quot;¡ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot.<<n>>¿No sabes cómo funcionan los combates en la mar?
-\tg<<[>>Edward<<]>>He dicho &quot;¡ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot.<<n>>¿No sabes cómo funcionan los combates en la mar?
-\tg[Edward]Cuando yo digo &quot;¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot; tu respuesta sería algo así...
-\tg[Edward]Cuando yo digo &quot;¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot; tu respuesta sería algo así...
-\tg[Edward]&quot;Con tu forma de combatir, lo que me extraña es que no acabe en una catástrofe <b>Absoluta</b>.&quot;!
-\tg[Edward]&quot;Con tu forma de combatir, lo que me extraña es que no acabe en una catástrofe <b>Absoluta</b>.&quot;!
-\tg<<[>>Edward<<]>>He dicho &quot;¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot;<<n>>¿No sabes cómo funcionan los combates en la mar?
-\tg<<[>>Edward<<]>>He dicho &quot;¡Ante los movimientos enemigos mi Pokémon ni se <b>inmuta</b>!&quot;<<n>>¿No sabes cómo funcionan los combates en la mar?
-\tg[Edward]&quot;Con tu forma de combatir, lo que me extraña es que no acabe en una catástrofe <b>Absoluta</b>.&quot;
-\tg[Edward]&quot;Con tu forma de combatir, lo que me extraña es que no acabe en una catástrofe <b>Absoluta</b>.&quot;
-\tg<<[>>Edward<<]>>Tal y como esperaba.<<n>>Tu repertorio de provocaciones y contestaciones es prácticamente nulo.
-\tg<<[>>Edward<<]>>Tal y como esperaba.<<n>>Tu repertorio de provocaciones y contestaciones es prácticamente nulo.
-¡Has perdido 10 Cherubíes al huir!
-¡Has perdido 10 Cherubíes al huir!
-¡Has perdido 20 Cherubíes por la derrota!
-¡Has perdido 20 Cherubíes por la derrota!
-¡Has ganado 50 Cherubíes por la victoria!
-¡Has ganado 50 Cherubíes por la victoria!
-\tg[\PN]Ah, ¿¡qué es eso que hay detrás tuya!?
-\tg[\PN]Ah, ¿¡qué es eso que hay detrás tuya!?
-\tg[#{@nombreenemigo}]¿Detrás mía?
-\tg[#{@nombreenemigo}]¿Detrás mía?
-Habilidad Asignada (tecla M)
-Habilidad Asignada (tecla M)
-Habilidad (tecla M): Despejar
-Habilidad (tecla M): Despejar
-A #{$Trainer.party[0].name} no parece gustarle el frío...
-A #{$Trainer.party[0].name} no parece gustarle el frío...
--#{hpchange} PS
--#{hpchange} PS
-Poco eficaz...<<n>>-#{hpchange} PS
-Poco eficaz...<<n>>-#{hpchange} PS
-¡Muy eficaz!<<n>>-#{hpchange} PS
-¡Muy eficaz!<<n>>-#{hpchange} PS
-- #{hpchange} PS
-- #{hpchange} PS
-¡{1} subió al nivel {2}!<<n>>¡Sus stats aumentaron!
-¡{1} subió al nivel {2}!<<n>>¡Sus stats aumentaron!
-¡Crítico!
-¡Crítico!
-Graphics/Pictures/typesbw
-Graphics/Pictures/typesbw
-Graphics/Pictures/categorybw
-Graphics/Pictures/categorybw
-x{1:2d}
-x{1:2d}
-... ... ... ...¡Nada!<<n>>No responde.
-... ... ... ...¡Nada!<<r>><<n>>No responde.
-¡El {1} indica algo justo bajo los pies!<<1>>
-¡El {1} indica algo justo bajo los pies!<<1>>
-¡Alto!<<n>>¡El {1} está respondiendo!<<1>>
-¡Alto!<<n>>¡El {1} está respondiendo!<<1>>
-\se<<[>><<]>>1,\wt<<[>>4<<]>> 2,\wt<<[>>4<<]>> y...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ¡Puf!\se<<[>>balldrop<<]>><<1>>
-\se<<[>><<]>>1,\wt<<[>>4<<]>> 2,\wt<<[>>4<<]>> y...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ¡Puf!\se<<[>>balldrop<<]>><<1>>
-{1} ha olvidado cómo<<n>>usar {2}.<<1>>
-{1} ha olvidado cómo<<r>><<n>>usar {2}.<<1>>
-Huh?<<1>>
-Huh?<<1>>
-...<<1>>
-...<<1>>
-... .... .....<<1>>
-... .... .....<<1>>
-{1} hatched from the Egg!
-{1} hatched from the Egg!
-{1:s}<<n>>ID: {2:05d} OT: {3:s}\wtnp<<[>>0<<]>>
-{1:s}<<r>><<n>>ID: {2:05d}   OT: {3:s}\wtnp<<[>>0<<]>>
-For {1}'s {2},<<n>>{3} sends {4}.<<1>>
-For {1}'s {2},<<r>><<n>>{3} sends {4}.<<1>>
-{1} bids farewell to {2}.
-{1} bids farewell to {2}.
-{1:s}<<n>>ID: {2:05d} OT: {3:s}<<1>>
-{1:s}<<r>><<n>>ID: {2:05d}   OT: {3:s}<<1>>
+469
+Defensa X
+Defensa X
+470
+Defensa X 2
+Defensa X 2
+471
+Defensa X 3
+Defensa X 3
+{1} lost against<<n>>{2}!
+{1} lost against<<r>><<n>>{2}!
+{1} paid ${2}<<n>>as the prize money...
+{1} paid ${2}<<r>><<n>>as the prize money...
+{1} panicked and lost<<n>>${2}...
+{1} panicked and lost<<r>><<n>>${2}...
+{1} blacked out!
+{1} blacked out!
+Graphics/Pictures/battleCommandButtons
+Graphics/Pictures/battleCommandButtons
+{1:s}PP: ---<br>TYPE/{2:s}
+{1:s}PP: ---<br>TYPE/{2:s}
+{1:s}PP: {2: 2d}/{3: 2d}<br>TYPE/{4:s}
+{1:s}PP: {2: 2d}/{3: 2d}<br>TYPE/{4:s}
+Lv{1}
+Lv{1}
+{1: 2d}/{2: 2d}
+{1: 2d}/{2: 2d}
+{1:s}<<1>>
+{1:s}<<1>>
+({1}) PP: {2}/{3}
+ ({1}) PP: {2}/{3}
+Max. HP<r>+{1}<<n>>Attack<r>+{2}<<n>>Defense<r>+{3}<<n>>Sp. Atk<r>+{4}<<n>>Sp. Def<r>+{5}<<n>>Speed<r>+{6}
+Max. HP<r>+{1}<<r>><<n>>Attack<r>+{2}<<r>><<n>>Defense<r>+{3}<<r>><<n>>Sp. Atk<r>+{4}<<r>><<n>>Sp. Def<r>+{5}<<r>><<n>>Speed<r>+{6}
+Max. HP<r>{1}<<n>>Attack<r>{2}<<n>>Defense<r>{3}<<n>>Sp. Atk<r>{4}<<n>>Sp. Def<r>{5}<<n>>Speed<r>{6}
+Max. HP<r>{1}<<r>><<n>>Attack<r>{2}<<r>><<n>>Defense<r>{3}<<r>><<n>>Sp. Atk<r>{4}<<r>><<n>>Sp. Def<r>{5}<<r>><<n>>Speed<r>{6}
+\se<<[>><<]>>1,\wt<<[>>4<<]>> 2,\wt<<[>>4<<]>> and...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> Poof!\se<<[>>balldrop<<]>><<1>>
+\se<<[>><<]>>1,\wt<<[>>4<<]>> 2,\wt<<[>>4<<]>> and...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> ...\wt<<[>>8<<]>> Poof!\se<<[>>balldrop<<]>><<1>>
+{1} forgot how to<<n>>use {2}.<<1>>
+{1} forgot how to<<r>><<n>>use {2}.<<1>>
+\tg<<[>>Edward<<]>>Eres tú.<<n>>Pareces... diferente.
+\tg<<[>>Edward<<]>>Eres tú.<<n>>Pareces... diferente.
+<ac><c2=7FFF5EF7>{1}</c2></ac>
+<ac><c2=7FFF5EF7>{1}</c2></ac>
+Vale, creo que ya se ha ido. Qué a gusto me he quedado liberando ese Pokémon de... de... de KANTOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO.
+Vale, creo que ya se ha ido. Qué a gusto me he quedado liberando ese Pokémon de... de... de KANTOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO.
+\tg<<[>>&quot;Owe&quot;<<]>>¿Por qué... has hecho eso...?<<n>>&quot;Tú&quot;.
+\tg<<[>>&quot;Owe&quot;<<]>>¿Por qué... has hecho eso...?<<n>>&quot;Tú&quot;.

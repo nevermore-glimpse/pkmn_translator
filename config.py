@@ -43,7 +43,7 @@ def resource_path(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.2.1"
+VERSION     = "1.3.0"
 APP_NAME    = "宝可梦同人游戏翻译工具"
 APP_TITLE   = f"{APP_NAME}v{VERSION}"
 
@@ -59,6 +59,12 @@ AVATAR_FILE     = os.path.join(BASE_DIR, "玛俐大小姐.jpg")
 # 无需在目标机器上安装字体。
 FONT_FILE       = resource_path("萝莉体.ttf")
 FONT_NAME       = "Lolita"      # TTF 内读不到族名时的兜底
+
+# ---------- LM Studio 操作指南（LM1/LM2/LM3 截图） ----------
+# 打包时用 --add-data "LM操作指南;LM操作指南" 打进 exe；
+# resource_path 会依次找 exe 同目录 → _MEIPASS 解包目录 → 源码目录，
+# 所以也支持把文件夹放在 exe 旁边随时替换。
+GUIDE_DIR       = resource_path("LM操作指南")
 
 
 # ---------- 文件（默认，可在运行时覆盖） ----------
@@ -150,13 +156,31 @@ INPUT_ENCODING  = "utf-8-sig"
 OUTPUT_ENCODING = "utf-8-sig"
 
 # ---------- 翻译模式 ----------
-TRANSLATE_MODE = "ollama"    # "ollama" = 本地 Ollama；"api" = 云端 API（OpenAI 兼容）
-API_BASE_URL   = "https://api.deepseek.com"
+TRANSLATE_MODE = "api"    # "ollama" = 本地 Ollama；"api" = 云端 API（OpenAI 兼容）
+API_BASE_URL   = "http://127.0.0.1:8080/v1"
 # ★ 不要把密钥写在这里（config.py 会提交到仓库）！
 #   请在「设置」里填写，它会写入 user_config.json（已在 .gitignore 中）。
 API_KEY        = ""
-API_MODEL      = "deepseek-chat"
-API_TIMEOUT    = 120.0
+API_MODEL      = "Qwen_Qwen3.5-4B-Q3_K_S.gguf"
+API_TIMEOUT    = 600.0
+
+# ---------- 本地服务提供商（菜单 9 用） ----------
+# ollama / llamacpp / lmstudio / custom
+#   ollama    → 走 OLLAMA_URL（/api/chat 原生协议）
+#   其余三个  → 走 OpenAI 兼容接口，地址分别取自下面的 *_URL
+PROVIDER         = "llamacpp"
+LLAMACPP_URL     = "http://127.0.0.1:8080/v1"
+LMSTUDIO_URL     = "http://localhost:1234/v1"
+CUSTOM_OPENAI_URL = "http://localhost:8080/v1"
+
+# ---------- llama.cpp（菜单 9 中层用） ----------
+# ★ 保持空值：由用户在界面里选自己的目录，不把个人路径写进仓库
+LLAMACPP_DIR        = ""    # llama-server.exe 所在文件夹
+LLAMACPP_MODEL_DIR  = ""    # 存放 GGUF 的文件夹（会自动扫描）
+LLAMACPP_MODEL_PATH = ""    # 选中要加载的那个 GGUF 文件
+
+# ★ 上一个使用的提供商（内部状态位，只写 user_config.json）
+PROVIDER_PREV    = "ollama"
 
 # ---------- Ollama ----------
 OLLAMA_URL  = "http://localhost:11434/api/chat"
@@ -168,11 +192,16 @@ TEMPERATURE = 0.25
 TOP_P       = 0.9
 KEEP_ALIVE  = "30m"
 THINK       = False
+# ★ OpenAI 兼容端（llama.cpp / LM Studio / 自定义）怎么关推理模式：
+#   本地服务不认 Ollama 的 think 参数，改为在请求里带 reasoning_effort=none。
+#   实测 LM Studio：不关时 token 全被思考过程吃掉，译文直接是空的。
+#   极少数云端服务不接受这个字段时，把它改成 False 即可。
+NO_REASONING = True
 
 # ---------- 翻译策略 ----------
 SOURCE_LANG      = "西班牙文"
 TARGET_LANG      = "简体中文"
-BATCH_SIZE       = 12
+BATCH_SIZE       = 15
 BATCH_RETRIES    = 2
 SINGLE_RETRIES   = 3
 CACHE_SAVE_EVERY = 1
@@ -197,8 +226,9 @@ WRAP_SPACE_MIN = 8
 WRAP_SPACE_MAX = 10
 WRAP_SPACE_MIN_GAP = 5   # ★ 空格重排：插空格后至少 N 字才能再次插
 
-# 特殊行配对：两行头尾匹配的相似度达到该值即视为同一组
-# （例如只差一个 <<r>> 控制码的两行），按"保留第一行、替换第二行"处理
+# 特殊行配对：两行的「相同部分占整句的百分比」达到该值即视为同一组
+# （差异出现在句子哪个位置都算），按"保留第一行、替换第二行"处理。
+# 例：只差一个 <<r>> 控制码的两行、或模板句里只改了中间一项的两行。
 PAIR_SIMILARITY_MIN = 0.80
 
 # ---------- 术语 ----------
@@ -220,16 +250,22 @@ API_MAX_TOKENS = 8192
 # ---------- 中文润色重翻 ----------
 POLISH_ENABLE      = True    # 启用「中文润色重翻」
 POLISH_BATCH_SIZE  = 8
-POLISH_TEMPERATURE = 0.35    # 比翻译略高，给润色一点自由度
+POLISH_TEMPERATURE = 0.4     # 比翻译略高，给润色一点自由度
 POLISH_MIN_LEN     = 4       # 短于该长度的译文不润色（多为控制码/拟声词）
 # ---------- Excel ----------
 EXCEL_SOURCE_LANG = "西班牙文"
 EXCEL_TARGET_LANG = "简体中文"
+# 已有 term_dict.py 时：True = 把新术语接在末尾（原有译法不动），
+#                     False = 整份覆盖，只留本次 Excel 的内容
+EXCEL_APPEND      = True
 # ---------- 句首控制码字典 ----------
 PREFIX_DICT_ENABLE = True    # 启用句首控制码前缀字典
 # ---------- 纯控制符过滤 ----------
 SKIP_PURE_CONTROL = True    # 剥离控制码后无有效内容的句子跳过翻译
 PURE_CONTROL_MIN_LEN = 2    # 剥离后至少保留多少个字母/汉字才算有内容
+# ---------- 资源路径 ----------
+# 形如 Graphics/Pictures/battleCommandButtons 的行不翻译（翻了引擎找不到资源）
+SKIP_PATH_LINES = True
 # ================================================================
 # 用户配置覆盖
 #   源码运行：settings.py 直接改 config.py

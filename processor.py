@@ -93,6 +93,29 @@ _PH_COLLISION_RE = re.compile(r'@\d+@')
 # ================================================================
 # 句首控制码前缀：提取 / 剥离
 # ================================================================
+# 资源路径：形如 Graphics/Pictures/battleCommandButtons
+# 这类是给引擎看的文件名，翻成中文反而会找不到资源，一律跳过。
+_PATH_LIKE_RE = re.compile(r'^[^\s:/\\]+(?:/[^\s:/\\]+){2,}$')
+_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]')
+
+
+def is_path_like(text):
+    """
+    判断是不是资源路径（例如 Graphics/Pictures/battleCommandButtons）。
+
+    规则：整行只有「用 / 分隔的 2 段以上路径」，不含空格、不含中文、
+    也不是 URL（URL 会有 `//`，分段后出现空段，自然被排除）。
+    """
+    if not text:
+        return False
+    t = text.strip()
+    if not t or " " in t or "\t" in t:
+        return False
+    if _CJK_RE.search(t):
+        return False
+    return bool(_PATH_LIKE_RE.match(t))
+
+
 def split_prefix(text):
     """
     提取句子开头的连续控制码串（含 <<[>>...<<]>> 和 HTML 标签）。

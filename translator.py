@@ -19,6 +19,15 @@ log = get_logger("translator")
 # ================================================================
 # 提示词
 # ================================================================
+# ★ 提示词设计原则（改之前先读一遍）：
+#   1. 稳定规则全放 system：system 是每批都一模一样的前缀，
+#      llama.cpp / Ollama 会复用它的 KV 缓存，前缀越长省得越多；
+#      而 user 里每批都变（术语表 + 正文），放那里的规则等于每批重发。
+#   2. 只在 system 里说一遍，user 里绝不重复规则（旧版两处都写，白烧 token）。
+#   3. 术语行 @@T 改为「有专有名词才输出」，大部分台词没有专名，
+#      省掉一半输出 token。
+#   4. 优先级顺序要显式：先准确、再通顺、后生动 —— 小模型最容易为了
+#      "生动" 添油加醋，明确写"不增不删"比抽象要求有效。
 SYSTEM_PROMPT = r"""你是专业游戏本地化译者，把{src}游戏文本翻译成{tgt}。
 
 【输出】
@@ -51,59 +60,41 @@ SYSTEM_PROMPT = r"""你是专业游戏本地化译者，把{src}游戏文本翻�
 
 【示例】
 输入：
-<0>¡Hola!Enfermera\n¿Cómo estás?
+<0>¡Hola!Enfermera¿Cómo estás?
 输出：
-<0>你好！护士\n你怎么样？
+<0>你好！护士。你怎么样？
 <0>@@T:Enfermera=护士
 """
 
-_USER_TEMPLATE = r"""翻译下列每行，编号对应。每行格式：<编号>原文。
-要求：
-1. 每条输出两行：
-<编号>译文
-<编号>@@T:原文术语1=译文术语1|原文术语2=译文术语2...
-2. 无术语输出<编号>@@T:
-3. 原文中@0@ @1@ @2@ @3@等占位符在译文里必须原样保留，位置、数量不变。
-4. 术语表必须遵守，表内词无论大小写都用表中中文。
-5. 不加解释、不漏行、不多输出、不加注释，严格遵循全部规则。
-{terms_block}
+# ★ 规则只在上面写一遍就够了。旧版的 user 里又把同样的规则复述了一遍，
+#   那部分是每批都要重发的纯浪费 —— 这里只留一句任务说明。
+_USER_TEMPLATE = r"""{terms_block}翻译下面各条，编号对应，严格按上面的格式输出：
 {body}
 """
 
 # ---------------- 中文润色 ----------------
-POLISH_SYSTEM_PROMPT = r"""你是资深中文游戏本地化润色编辑，擅长把直译、生硬的译文润色成自然通顺、形象生动、贴合角色身份与情绪的中文游戏台词。
-我会给你若干条已经翻成中文的游戏台词，请你逐条润色成{tgt}。
-
-【润色目标】
-1. 语意通顺：符合中文表达习惯，消除翻译腔、语序别扭、搭配不当、代词/量词误用和重复啰嗦。
-2. 形象生动：在原文信息范围内，用更具体、有画面感的动词、形容词、感官细节、节奏和语气，让台词更有代入感。
-3. 角色贴合：根据说话人的身份、性格、情绪和场景调整口吻；同一角色前后口吻尽量统一。
-4. 适度克制：生动不等于堆砌辞藻；不要网络梗、不要过度文艺、不要添加原文没有的信息。
+POLISH_SYSTEM_PROMPT = r"""你的任务是把已经译成中文的游戏台词润色成更地道的{tgt}。
 
 【输出】
-每条一行：
-<编号>润色后文本
-不要解释、不要空行、不要 markdown、不要编号以外的任何内容。
+每条一行「<编号>润色后文本」，编号与输入一致。
+不要解释、空行、markdown，不要输出【参考原文】。
 
 【必须遵守】
-1. 原样保留所有占位符（@0@ @1@ ⟦0⟧ 等）与控制码，数量、位置、顺序都不能变。
-2. 原样保留换行控制码；\\n 前后不要新增逗号、句号等标点。普通标点可按中文节奏微调，但不得改变句子数量和信息。
-3. 不改变原意、事实、情绪方向、人物关系；不新增剧情信息、动作、心理活动或设定。
-4. 不要为了生动而扩写成长句，也不要删掉内容；不改变句子数量，可以优化表达，但不能增加新信息。
-5. 只做语言层面的优化：让台词更自然、口语化、形象生动、符合说话人身份与情绪；修正生硬直译、语序别扭、量词/代词误用、重复啰嗦。
-6. 如果原文已经自然流畅，也在不损害原意的前提下优化节奏、画面感和角色口吻。
-7. 若末尾附了【参考原文】，它只是给你比对原意、检查漏译用的：不要输出它，也不要照抄里面的控制码；润色结果里的占位符一律沿用待润色原文中的。
+1. 占位符（@0@ ⟦0⟧ 等）与控制码原样保留，数量、位置、顺序都不变。
+2. 保留换行控制码 \\n；不要在 \\n 前后新增标点。
+3. 不改变原意、事实、情绪方向、人物关系；不新增动作、心理活动或设定；
+   不改变句子数量，不扩写也不删减内容。
+
+【润色标准】
+通顺：符合中文口语习惯，消除翻译腔、语序别扭、搭配不当、代词/量词误用、重复啰嗦。
+生动：在原文信息范围内用更具体、有画面感的说法，让台词有代入感。
+贴角色：按说话人身份、性格、情绪调整口吻，同一角色前后一致。
+克制：生动不等于堆辞藻；不要网络梗、不要过度文艺。原文已经自然的地方不用改。
 """
 
-_POLISH_TEMPLATE = r"""润色下列每行，编号对应。每行格式：<编号>中文台词。
-润色目标：语意通顺、形象生动、角色口吻贴合；不新增原文没有的信息。
-先保证语义准确和通顺，再增强画面感与语气；不要堆砌辞藻。
-{body}
-
-【输出】
-只输出 <编号>润色后文本，每行一条，编号与上面一致。
-不要输出【参考原文】，不要解释、不要空行、不要 markdown。
+_POLISH_TEMPLATE = r"""{body}
 """
+
 
 
 # ================================================================
@@ -129,6 +120,15 @@ def _strip_noise(raw):
             continue
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _nothink_hint():
+    """当前服务提供商关掉推理模式的办法（给日志提示用）。"""
+    try:
+        import providers as PV
+        return PV.nothink_hint(PV.current())
+    except Exception:
+        return "Ollama 用 think=false，其余服务请在服务端关闭"
 
 
 def _parse_terms_line(content):
@@ -172,9 +172,10 @@ def _format_terms_block(term_pairs, limit=None):
     items = sorted(term_pairs, key=lambda x: -len(x[0]))
     items = items[:limit]
 
-    lines = ["【术语表 —— 遇到这些词无论大小写都必须使用以下译文】"]
+    # 表头写短一点：这段每批都要发，长表头等于每批多烧一份 token
+    lines = ["【术语表·必须使用】"]
     for src, dst in items:
-        lines.append(f"{src} = {dst}")
+        lines.append(f"{src}={dst}")
     lines.append("")     # 尾空行，与下面 {body} 隔开
     return "\n".join(lines) + "\n"
 
@@ -329,6 +330,11 @@ class OllamaClient:
             "max_tokens": _api_max_tokens(
                 config.NUM_PREDICT if num_predict is None else num_predict),
         }
+        # ★ 关掉推理（思考）模式。
+        #   实测 LM Studio：不关时 1200 个 token 全进 reasoning_content，
+        #   content 是空的（表现为"模型无返回"）；加上这个参数后 29 秒→0.8 秒。
+        if getattr(config, "NO_REASONING", True):
+            payload["reasoning_effort"] = "none"
         timeout = getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
 
         resp = self.session.post(url, json=payload, headers=headers,
@@ -365,6 +371,8 @@ class OllamaClient:
         temp = config.TEMPERATURE if temperature is None else temperature
         if temp is not None:
             payload["temperature"] = temp
+        if getattr(config, "NO_REASONING", True):
+            payload["thinking"] = {"type": "disabled"}
 
         timeout = getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
 
@@ -427,7 +435,14 @@ class OllamaClient:
                 raise
 
         # 部分版本把思考内容单独放在 thinking 字段，正文已分离，这里只清洗正文
-        return _strip_noise(self._content_of(data))
+        content = self._content_of(data)
+        # ★ 本地服务（KoboldCpp / LM Studio / 自定义）不认 think 参数，
+        #   思考输出会吃掉生成预算导致译文截断，这里提示一次怎么关。
+        if "<think" in content:
+            log.warning(
+                "模型输出了思考内容（<think>）——生成预算被推理过程占用，"
+                "译文容易被截断。请在服务端关闭推理模式：%s", _nothink_hint())
+        return _strip_noise(content)
 
     # ---------- 翻译 ----------
     def _system_prompt(self):

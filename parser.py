@@ -29,32 +29,28 @@ def is_number(s): return bool(NUM_RE.match(s))
 
 def pair_similarity(a, b):
     """
-    计算两行的「头尾匹配度」：
-      最长公共前缀 + 最长公共后缀（两者不重叠、不重复计数），再按较长行长度归一。
+    计算两行的相似度：**相同部分占整句的百分比**。
 
-    典型场景：两行只差一个控制码（例如多一个 <<r>>），
-    前缀配到 <<r>> 之前、后缀从 <<n>> 配起，匹配度很高 ——
-    应视为同一组，而不是「文本不同」的特殊行。
+    做法：找出两行所有公共片段，把它们的长度加起来，再除以较长那一行的长度。
+    差异出现在句子的哪个位置都不影响结果。
+
+    与旧算法（只管最长公共前缀 + 最长公共后缀）的区别：
+      旧算法一旦中间有一处不同，前后就接不上，长句极易被算低。
+      例如这种模板句：
+        Max. HP<r>+{1}<<n>>Attack<r>+{2}<<n>>Defense<r>+{3}<<n>>...
+      两行明明绝大部分相同，只因差异不在头尾，旧算法只给出 25%，
+      于是被误判成「特殊行」而不参与翻译。
+      新算法统计的是"整句里有多少字是一样的"，这类行能正确配对。
     """
     if a == b:
         return 1.0
     if not a or not b:
         return 0.0
 
-    m = min(len(a), len(b))
-
-    # 最长公共前缀
-    p = 0
-    while p < m and a[p] == b[p]:
-        p += 1
-
-    # 最长公共后缀：限制在剩余长度内，避免与前缀重叠
-    s = 0
-    limit = m - p
-    while s < limit and a[len(a) - 1 - s] == b[len(b) - 1 - s]:
-        s += 1
-
-    return (p + s) / max(len(a), len(b))
+    import difflib
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    matched = sum(bl.size for bl in sm.get_matching_blocks())
+    return matched / max(len(a), len(b))
 
 # 区块符模式判断
 _BLOCK_MAP_RE = re.compile(r'^\s*\[map\d+\]\s*$', re.IGNORECASE)
@@ -159,7 +155,7 @@ def extract_entries(lines):
             i += 2
             continue
 
-        # 情况 3：下一行不同 → 先看头尾匹配度够不够高（近似配对）
+        # 情况 3：下一行不同 → 先看「相同部分占比」够不够高（近似配对）
         sim = 0.0
         pairable = bool(next_s) and not is_block(next_s) and not is_number(next_s)
         if pairable:
@@ -178,7 +174,7 @@ def extract_entries(lines):
         elif is_number(next_s):
             reason = '下一行为纯数字'
         else:
-            reason = f'下一行文本不同（头尾匹配度 {sim:.0%}）'
+            reason = f'下一行文本不同（相同部分占比 {sim:.0%}）'
 
         special.append({
             'line_no':      i,

@@ -30,6 +30,8 @@ config.py.tmp
 user_config.json
 user_config.json.tmp
 prefix_dict.json
+check_whitelist.json
+check_whitelist.json.tmp
 
 # 翻译输出
 *_translated.txt
@@ -43,6 +45,16 @@ term_dict.py
 .private/
 打包程序.bat
 
+# ---------- 本地推理后端 / 模型 / 安装包（体积巨大，不入库） ----------
+koboldcpp*.exe
+LM-Studio-*.exe
+lmstudio*.exe
+*.gguf
+*.ggml
+# 用户放在工作区的快捷方式
+koboldcpp.exe.lnk
+LM Studio.exe.lnk
+
 # ---------- 系统 ----------
 .DS_Store
 Thumbs.db
@@ -54,3 +66,5 @@ desktop.ini
 # ---------- WorkBuddy 内部数据（非项目源码） ----------
 .workbuddy/
 /RELEASE_NOTES_v1.2.1.md
+/examples/intl_conflicts.json
+/examples/intl_translated_report.txt

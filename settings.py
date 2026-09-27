@@ -29,6 +29,15 @@ USER_CONFIG_PATH = config.USER_CONFIG_FILE
 # key, 显示名, 类型, 说明
 # 顺序对应菜单里显示的序号
 EDITABLE = [
+    # ---------- 本地服务提供商（菜单 9 一键切换） ----------
+    ("PROVIDER",           "服务提供商",        "str",   "ollama / llamacpp / lmstudio / custom"),
+    ("LLAMACPP_URL",       "llama.cpp 地址",    "str",   "OpenAI 兼容，如 http://127.0.0.1:8080/v1"),
+    ("LLAMACPP_DIR",       "llama.cpp 目录",    "str",   "llama-server.exe 所在文件夹"),
+    ("LLAMACPP_MODEL_DIR", "GGUF 模型目录",     "str",   "自动扫描该目录下已安装的模型"),
+    ("LLAMACPP_MODEL_PATH", "选中的模型文件",   "str",   "启动时 -m 加载这个 GGUF"),
+    ("LMSTUDIO_URL",       "LM Studio 地址",    "str",   "OpenAI 兼容，如 http://localhost:1234/v1"),
+    ("CUSTOM_OPENAI_URL",  "自定义服务地址",    "str",   "任意 OpenAI 兼容服务，/v1 结尾"),
+
     # ---------- 翻译模式 ----------
     ("TRANSLATE_MODE",     "翻译模式",          "str",   "ollama=本地  /  api=云端"),
     ("API_BASE_URL",       "API 服务地址",      "str",   "OpenAI 兼容，如 .../v1"),
@@ -47,6 +56,7 @@ EDITABLE = [
     ("TOP_P",              "top_p",             "float", "0.0-1.0"),
     ("KEEP_ALIVE",         "模型驻留时长",      "str",   "如 30m；-1 表示常驻显存"),
     ("THINK",              "推理模式",        "bool",  "True/False"),
+    ("NO_REASONING",       "关闭推理(API端)", "bool",  "OpenAI 兼容端带 reasoning_effort=none"),
 
     # ---------- 翻译策略 ----------
     ("MAX_INPUT_LINES",    "读取行数上限",      "int",   "只处理前 N 行；0 或负数=不限"),
@@ -63,6 +73,7 @@ EDITABLE = [
     ("PREFIX_DICT_ENABLE", "启用前缀字典", "bool", "句首控制码由字典管理"),
     ("SKIP_PURE_CONTROL", "跳过纯控制符", "bool", "剥离后无内容的句子不翻译"),
     ("PURE_CONTROL_MIN_LEN", "纯控制符阈值", "int", "剥离后最少保留几个字"),
+    ("SKIP_PATH_LINES", "跳过资源路径", "bool", "形如 A/B/C 的行不翻译"),
 
     # ---------- 换行重排 ----------
     ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "菜单 6 是否可用（翻译后不再自动重排）"),
@@ -77,6 +88,7 @@ EDITABLE = [
     ("APPLY_TERMS",        "启用术语替换",      "bool",  ""),
     ("EXCEL_SOURCE_LANG",  "Excel 源语言列",    "str",   ""),
     ("EXCEL_TARGET_LANG",  "Excel 目标语言列",  "str",   ""),
+    ("EXCEL_APPEND",       "Excel 追加式写入",  "bool",  "True=新术语接末尾，False=整份覆盖"),
     ("AUTO_EXTRACT_TERMS", "自动提取术语", "bool", "翻译时提取专有名词"),
     ("AUTO_EXTRACT_MIN_LEN", "术语最短长度", "int", ""),
 
@@ -94,7 +106,7 @@ SECRET_KEYS = {"API_KEY"}
 
 # ★ 运行时标志（程序自己会改写的状态位）同样只写 user_config.json：
 #   它们不是用户的设置，源码模式下写回 config.py 只会把仓库弄脏。
-RUNTIME_KEYS = {"SNAPSHOT_INITIALIZED"}
+RUNTIME_KEYS = {"SNAPSHOT_INITIALIZED", "PROVIDER_PREV"}
 
 
 def list_ollama_models():

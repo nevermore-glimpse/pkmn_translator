@@ -3,15 +3,20 @@
 宝可梦同人游戏翻译工具 —— 亚克力毛玻璃图形界面。
 
 布局：
-  左侧  圆形头像（悬停显示作者信息）+ 标题 + 8 个菜单（悬停放大 + 底部阴影）
+  左侧  圆形头像（悬停显示作者信息）+ 标题 + 10 个菜单（悬停放大 + 底部阴影）
   右侧  各功能页面
     · 菜单 1/2/3/4/5/6 右侧带「待操作文件」勾选侧边栏
+    · 菜单 9 右侧带「切换适配」清单侧边栏
     · 底部常驻状态条（进度 + 取消）
-  菜单 9 为日志页，任务启动后自动跳转过去。
+  菜单 10 为日志页，任务启动后自动跳转过去。
 """
 import os
 import queue
+import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 import traceback
 import webbrowser
@@ -27,6 +32,7 @@ import config
 import env_check
 import prefix_dict as PFD
 import processor as PR
+import providers as PV
 import settings
 import term_sync as TS
 
@@ -80,6 +86,11 @@ C_HINT    = TEXT_FAINT    # 说明文字
 C_WARN    = WARN_COLOR    # 需要注意
 C_OK      = OK_COLOR      # 成功 / 正常
 
+# llama.cpp 中层那句固定说明 —— 状态行会拼在它后面，两行刚好，
+# 不能塞太多文字，否则中层卡片（高度受挤压）装不下。
+PV_LLAMA_HINT = ("先指好「程序目录」和「模型目录」，启动时会自动 -m 加载"
+                 "选中的 GGUF，并带 --reasoning off 关掉推理。")
+
 # 方框内文字的左右 / 上下留白（按钮按文字大小自适应时用）
 BTN_PAD_X = 22
 BTN_PAD_Y = 16
@@ -93,13 +104,14 @@ MENU_ITEMS = [
     ("6", "换行重排"),
     ("7", "Excel 转术语表"),
     ("8", "设置"),
-    ("9", "日志"),
+    ("9", "本地模型服务"),
+    ("10", "日志"),
 ]
 
 MENU_KEYS = {
     "1": "translate", "2": "report", "3": "terms", "4": "prefix",
     "5": "polish", "6": "reflow", "7": "excel", "8": "settings",
-    "9": "log",
+    "9": "provider", "10": "log",
 }
 
 
@@ -1391,6 +1403,12 @@ class App:
         self.sheet_vars = {}       # Excel sheet → BooleanVar
         self.setting_widgets = {}  # key → (widget, typ)
 
+        # 菜单 9（本地模型服务）
+        self.pv_param_vars = {}    # config key → StringVar
+        self._pv_btn_groups = []   # 提供商分段按钮组
+        self._pv_models = []       # 当前列表里的模型行
+        self._pv_adapt_text = ""   # 右侧适配清单（供复制）
+
         self._style()
         self._build_root()
         self._build_sidebar()
@@ -1535,6 +1553,7 @@ class App:
         self._page_reflow()
         self._page_excel()
         self._page_settings()
+        self._page_provider()
         self._page_log()
 
     # ---------------- 状态条 ----------------
@@ -1582,6 +1601,8 @@ class App:
             self._load_prefix_rows()
         elif key == "reflow":
             self._load_reflow_blocks()
+        elif key == "provider":
+            self._pv_refresh()
         elif key == "log":
             pass
 
@@ -1669,6 +1690,18 @@ class App:
         self._paint_mode_row()
         return row
 
+    def _mode_text(self, mode):
+        """模式按钮的显示名：本地 OpenAI 兼容服务时显示它自己的名字。"""
+        if mode == "ollama":
+            return "本地 Ollama"
+        try:
+            key = PV.current()
+            if key in ("llamacpp", "lmstudio"):
+                return PV.label_of(key)
+        except Exception:
+            pass
+        return "云端 API"
+
     def _paint_mode_row(self):
         cur = settings.current_mode()
         for group in getattr(self, "_mode_btn_groups", []):
@@ -1676,7 +1709,8 @@ class App:
                 if not btn.winfo_exists():
                     continue
                 on = (mode == cur)
-                btn.configure(bg=ACCENT if on else CARD,
+                btn.configure(text=self._mode_text(mode),
+                              bg=ACCENT if on else CARD,
                               fg="#FFFFFF" if on else TEXT_DIM,
                               font=(FONT_FAMILY, FONT_SMALL[1],
                                     "bold" if on else "normal"))
@@ -1686,6 +1720,7 @@ class App:
         if mode == settings.current_mode():
             return
         changes = settings.set_mode(mode)
+        PV.sync_with_mode(mode)
         self._paint_mode_row()
         self.src_var.set(config.SOURCE_LANG)
         self.tgt_var.set(config.TARGET_LANG)
@@ -1802,15 +1837,51 @@ class App:
                         f"已写回译文文件：{r.get('files', 0)} 个")
                 elif kind == "excel_done":
                     if payload and payload.get("ok"):
-                        messagebox.showinfo(
-                            "完成",
-                            f"共 {payload.get('total')} 条术语 → "
-                            f"{payload.get('out_path')}")
+                        msg = [f"合计 {payload.get('total')} 条术语 → "
+                               f"{payload.get('out_path')}"]
+                        if (payload.get("mode") == "append"
+                                and payload.get("existing")):
+                            msg.append(
+                                f"原有 {payload['existing']} 条，"
+                                f"本次追加 {payload.get('added', 0)} 条，"
+                                f"已存在跳过 "
+                                f"{payload.get('skipped_existing', 0)} 条")
+                            cf = payload.get("conflicts") or []
+                            if cf:
+                                msg.append(
+                                    f"\n⚠ {len(cf)} 条术语的译法与已有字典不同，"
+                                    f"已保留原有译法（未覆盖）：")
+                                for s, old, new in cf[:6]:
+                                    msg.append(f"  · {s}：保留「{old}」"
+                                               f"（Excel 里是「{new}」）")
+                                if len(cf) > 6:
+                                    msg.append(f"  …另有 {len(cf) - 6} 条，"
+                                               f"详见日志")
+                        elif payload.get("mode") == "append":
+                            msg.append(f"本次新建 {payload.get('added', 0)} 条")
+                        messagebox.showinfo("完成", "\n".join(msg))
                     else:
                         messagebox.showwarning(
                             "未完成",
                             "；".join((payload or {}).get("errors", [])
                                       or ["提取失败"]))
+                elif kind == "pv_autodet":
+                    self._pv_apply_autodetect(*payload)
+                elif kind == "pv_probe":
+                    ok, msg = payload
+                    self.pv_probe_lbl.configure(
+                        text=("✔ " if ok else "✘ ") + msg,
+                        fg=C_OK if ok else C_WARN)
+                elif kind == "pv_models":
+                    self._pv_apply_models(*payload)
+                elif kind == "pv_deploy":
+                    ok, msg, model = payload
+                    self.set_busy(False, "部署完成" if ok else "部署失败")
+                    if ok:
+                        messagebox.showinfo("部署完成", f"{model}\n\n{msg}")
+                    else:
+                        messagebox.showwarning("部署未成功", f"{model}\n\n{msg}")
+                    self._pv_refresh()
                 elif kind == "update":
                     has, info, silent = payload
                     self._on_update_result(has, info, silent)
@@ -1898,12 +1969,22 @@ class App:
         ok_service = res.get("ollama_service", (False, ""))[0]
         ok_model = res.get("ollama_model", (False, ""))[0]
         msg = res.get("ollama_service", (False, ""))[1]
+
+        # ★ 提示按菜单 9 选的提供商走，不写死 Ollama
+        label, cur_model = "Ollama", config.MODEL
+        try:
+            import providers as PV
+            label = PV.label_of(PV.current())
+            cur_model = PV.current_model(PV.current()) or config.MODEL
+        except Exception:
+            pass
+
         if ok_service and ok_model:
-            self.status_var.set(f"Ollama 就绪：{msg}")
+            self.status_var.set(f"{label} 就绪：{msg}")
         elif ok_service:
-            self.status_var.set("Ollama 已连接，但模型未安装：" + config.MODEL)
+            self.status_var.set(f"{label} 已连接，但模型未就绪：{cur_model}")
         else:
-            self.status_var.set(f"Ollama 未连接：{msg}（翻译功能不可用）")
+            self.status_var.set(f"{label} 未连接：{msg}（翻译功能不可用）")
 
     # ================================================================
     # 页面 1：翻译
@@ -2019,6 +2100,11 @@ class App:
         GlassButton(head, "刷新报告", width=104, height=34, bg=CARD,
                     font=FONT_SMALL, command=self._do_check).pack(side="left",
                                                                   padx=12)
+        # ★ 白名单：加进来的词不再报「疑似未翻译」，
+        #   加进来的整句在重翻时会被跳过
+        GlassButton(head, "白名单", width=92, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._open_whitelist).pack(side="left")
         self.report_stat = tk.Label(head, text="尚未检查", bg=CARD,
                                     fg=C_KEY, font=FONT_BIG)
         self.report_stat.pack(side="right")
@@ -2198,6 +2284,147 @@ class App:
             ))
         total = len(getattr(self, "report_hits", []))
         self.report_stat.config(text=f"显示 {shown} / 共 {total} 处问题")
+
+    # ================================================================
+    # 白名单（词 + 句子）
+    # ================================================================
+    def _open_whitelist(self):
+        import checker as CK
+        CK.reload_whitelist()
+
+        win = tk.Toplevel(self.root)
+        win.title("白名单")
+        win.configure(bg=CARD)
+        win.transient(self.root)
+        win.resizable(False, False)
+
+        def sec(text, tip):
+            tk.Label(win, text=text, bg=CARD, fg=C_TITLE,
+                     font=FONT_TITLE).pack(anchor="w", padx=16, pady=(12, 0))
+            tk.Label(win, text=tip, bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                     justify="left", wraplength=600).pack(anchor="w", padx=16)
+
+        # ---------- ① 词白名单 ----------
+        sec("检查白名单（词）",
+            "加了词的句子不再报「疑似未翻译」。区分大小写，"
+            "例如加 Tab 不会顺带放行 tab。")
+        wrow = tk.Frame(win, bg=CARD)
+        wrow.pack(fill="x", padx=16, pady=(6, 0))
+        word_var = tk.StringVar()
+        went = ttk.Entry(wrow, textvariable=word_var, width=26,
+                         font=FONT_SMALL)
+        went.pack(side="left")
+        wlist = tk.Listbox(win, height=5, font=FONT_SMALL, bg="#FFFFFF",
+                           fg=TEXT, relief="solid", bd=1,
+                           highlightthickness=1,
+                           highlightbackground=CARD_BORDER)
+        wlist.pack(fill="x", padx=16, pady=(6, 0))
+
+        def refresh_words():
+            wlist.delete(0, "end")
+            for w in sorted(CK.user_words()):
+                wlist.insert("end", w)
+            wcnt.configure(text=f"共 {len(CK.user_words())} 个")
+
+        def add_word():
+            ok, msg = CK.add_word(word_var.get())
+            if not ok:
+                messagebox.showwarning("没加进去", msg, parent=win)
+                return
+            word_var.set("")
+            refresh_words()
+
+        def del_word():
+            sel = wlist.curselection()
+            if not sel:
+                return
+            CK.remove_word(wlist.get(sel[0]))
+            refresh_words()
+
+        GlassButton(wrow, "加入", width=64, height=32, bg=CARD,
+                    font=FONT_SMALL, command=add_word).pack(side="left",
+                                                            padx=6)
+        GlassButton(wrow, "删除选中", width=96, height=32, bg=CARD,
+                    font=FONT_SMALL, command=del_word).pack(side="left")
+        wcnt = tk.Label(wrow, text="", bg=CARD, fg=C_HINT, font=FONT_SMALL)
+        wcnt.pack(side="left", padx=10)
+        went.bind("<Return>", lambda _e: add_word())
+
+        # ---------- ② 句子白名单 ----------
+        sec("重翻白名单（整句）",
+            "加进来的句子在「重翻检查报告内容」时会被跳过，不再重翻。"
+            "可以直接把上面报告里选中的行加进来。")
+        srow = tk.Frame(win, bg=CARD)
+        srow.pack(fill="x", padx=16, pady=(6, 0))
+        slist = tk.Listbox(win, height=5, font=FONT_SMALL, bg="#FFFFFF",
+                           fg=TEXT, relief="solid", bd=1,
+                           highlightthickness=1,
+                           highlightbackground=CARD_BORDER)
+        slist.pack(fill="x", padx=16, pady=(6, 0))
+
+        def refresh_sents():
+            slist.delete(0, "end")
+            for s in sorted(CK.user_sentences()):
+                slist.insert("end", s)
+            scnt.configure(text=f"共 {len(CK.user_sentences())} 句")
+
+        def add_selected():
+            picked = []
+            try:
+                for iid in self.report_tree.selection():
+                    vals = self.report_tree.item(iid, "values")
+                    if vals and str(vals[2]).strip():
+                        picked.append(str(vals[2]))
+            except Exception:
+                pass
+            if not picked:
+                messagebox.showinfo(
+                    "没有选中",
+                    "请先在报告列表里选中要加白名单的行（可按住 Ctrl / Shift 多选）。",
+                    parent=win)
+                return
+            n = CK.add_sentences(picked)
+            refresh_sents()
+            messagebox.showinfo("已加入", f"新增 {n} 句（重复的不计）",
+                                parent=win)
+
+        def del_sent():
+            sel = slist.curselection()
+            if not sel:
+                return
+            CK.remove_sentence(slist.get(sel[0]))
+            refresh_sents()
+
+        GlassButton(srow, "把报告里选中的行加入", width=180, height=32,
+                    bg=CARD, font=FONT_SMALL,
+                    command=add_selected).pack(side="left")
+        GlassButton(srow, "删除选中", width=96, height=32, bg=CARD,
+                    font=FONT_SMALL, command=del_sent).pack(side="left",
+                                                            padx=6)
+        scnt = tk.Label(srow, text="", bg=CARD, fg=C_HINT, font=FONT_SMALL)
+        scnt.pack(side="left", padx=10)
+
+        refresh_words()
+        refresh_sents()
+
+        bar = tk.Frame(win, bg=CARD)
+        bar.pack(fill="x", padx=16, pady=12)
+        tk.Label(bar, text=f"文件：{CK.WHITELIST_FILE}", bg=CARD, fg=C_HINT,
+                 font=FONT_SMALL).pack(side="left")
+        GlassButton(bar, "关闭", width=72, height=32, primary=True, bg=CARD,
+                    command=win.destroy).pack(side="right")
+
+        # 居中
+        try:
+            win.update_idletasks()
+            x = self.root.winfo_rootx() + (
+                self.root.winfo_width() - win.winfo_width()) // 2
+            y = self.root.winfo_rooty() + 120
+            win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+        win.grab_set()
+        win.focus_force()
 
     def _do_check(self):
         paths = self._report_sources()
@@ -3502,11 +3729,27 @@ class App:
         c3.configure(height=136)
         c3.pack_propagate(False)
         c3.grid(row=2, column=0, sticky="ew")
-        GlassButton(c3.body, "开始转换", width=200, height=52, primary=True,
-                    bg=CARD, command=self._do_excel).pack(anchor="w")
-        tk.Label(c3.body, text="提取结果写入 term_dict.py，完成后弹窗提示",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(anchor="w",
-                                                           pady=(8, 0))
+        Brow = tk.Frame(c3.body, bg=CARD)
+        Brow.pack(fill="x")
+        GlassButton(Brow, "开始转换", width=200, height=52, primary=True,
+                    bg=CARD, command=self._do_excel).pack(side="left")
+
+        # ★ 已有术语字典时的写入方式：默认追加（不冲掉校对过的译法）
+        self.excel_append = tk.BooleanVar(
+            value=bool(getattr(config, "EXCEL_APPEND", True)))
+        cb = tk.Checkbutton(
+            Brow, text="已有术语字典时追加到末尾", variable=self.excel_append,
+            bg=CARD, fg=TEXT, activebackground=CARD, selectcolor="#FFFFFF",
+            font=FONT_SMALL, anchor="w",
+            command=self._excel_append_changed)
+        cb.pack(side="left", padx=14)
+        attach_label_copy(cb, self, "Excel 写入方式")
+
+        self.excel_hint = tk.Label(
+            c3.body, text="", bg=CARD, fg=C_HINT, font=FONT_SMALL,
+            anchor="w", justify="left")
+        self.excel_hint.pack(fill="x", pady=(8, 0))
+        self._refresh_excel_hint()
 
         right = tk.Frame(page, bg=BG_BASE, width=330)
         right.grid(row=0, column=1, sticky="nsew")
@@ -3518,6 +3761,8 @@ class App:
         tk.Label(card.body,
                  text="· 表头需同时包含所选的两种语言列名\n"
                       "· 多个工作表会跨表去重\n"
+                      "· 默认追加：已有术语只加不覆盖\n"
+                      "· 新译法与旧译法不同会提示冲突\n"
                       "· 转换后可在菜单 3 里逐条校对译文\n"
                       "· 输出文件：term_dict.py",
                  bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
@@ -3565,6 +3810,40 @@ class App:
         for v in self.sheet_vars.values():
             v.set(True)
 
+    def _excel_append_changed(self):
+        """勾选框变化 → 记下偏好，方便下次打开还是这个选择。"""
+        val = bool(self.excel_append.get())
+        try:
+            settings.set_value("EXCEL_APPEND", val)
+            config.EXCEL_APPEND = val
+        except Exception:
+            pass
+        self._refresh_excel_hint()
+
+    def _refresh_excel_hint(self):
+        """底部那行说明：让用户一眼看清这次会追加还是覆盖。"""
+        if not hasattr(self, "excel_hint"):
+            return
+        n = 0
+        try:
+            import build_terms as BT
+            n = len(BT.read_existing_terms(config.TERM_FILE))
+        except Exception:
+            n = 0
+        if self.excel_append.get():
+            if n:
+                txt = (f"追加模式：已有 term_dict.py（{n} 条），"
+                       f"新术语接在末尾，原译法不动")
+            else:
+                txt = "追加模式：还没有术语字典，本次会新建 term_dict.py"
+        else:
+            txt = (f"⚠ 覆盖模式：会清掉原有 {n} 条术语，"
+                   f"只留本次 Excel 的内容" if n else
+                   "覆盖模式：本次会重写 term_dict.py")
+        self.excel_hint.configure(text=txt,
+                                 fg=(C_HINT if self.excel_append.get()
+                                     else C_WARN))
+
     def _do_excel(self):
         path = self.excel_path.get()
         if not path or not os.path.exists(path):
@@ -3576,8 +3855,22 @@ class App:
             messagebox.showwarning("提示", "源语言与目标语言不能相同")
             return
 
+        mode = "append" if self.excel_append.get() else "overwrite"
+        if mode == "overwrite":
+            try:
+                import build_terms as BT
+                n = len(BT.read_existing_terms(config.TERM_FILE))
+            except Exception:
+                n = 0
+            if n and not messagebox.askyesno(
+                    "确认覆盖",
+                    f"term_dict.py 里已有 {n} 条术语，覆盖后只剩本次 Excel 的"
+                    f"内容（菜单 3 里校对过的译法也会丢）。\n\n确定要覆盖吗？"):
+                return
+
         def work():
-            res = commands.build_terms_from_excel(path, sheets or None, src, tgt)
+            res = commands.build_terms_from_excel(path, sheets or None, src,
+                                                  tgt, mode=mode)
             self.q.put(("excel_done", res))
             return res
 
@@ -3788,7 +4081,932 @@ class App:
         self._load_settings()
 
     # ================================================================
-    # 页面 8：日志
+    # 页面 9：本地模型服务（Ollama / llama.cpp / LM Studio / 自定义）
+    # ================================================================
+    def _page_provider(self):
+        page = self.pages["provider"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+
+        left = tk.Frame(page, bg=BG_BASE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_rowconfigure(1, weight=1)
+        left.grid_columnconfigure(0, weight=1)
+
+        # ---------- 上层：切换服务提供商 ----------
+        c1 = RoundCard(left, radius=16, pad=16, auto_height=True)
+        c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        # ★ 标题与「一句话说明」同行，省下一整行高度给下面的模型列表
+        head1 = tk.Frame(c1.body, bg=CARD)
+        head1.pack(fill="x")
+        tk.Label(head1, text="服务提供商", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        self.pv_summary = tk.Label(head1, text="", bg=CARD, fg=C_HINT,
+                                   font=FONT_SMALL, anchor="w")
+        self.pv_summary.pack(side="left", padx=12)
+
+        seg = tk.Frame(c1.body, bg=CARD)
+        seg.pack(fill="x", pady=(8, 0))
+        self._pv_provider_row(seg)
+
+        url_row = tk.Frame(c1.body, bg=CARD)
+        url_row.pack(fill="x", pady=(8, 0))
+        tk.Label(url_row, text="服务地址", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL).pack(side="left")
+        self.pv_url_var = tk.StringVar()
+        ent = ttk.Entry(url_row, textvariable=self.pv_url_var, width=42,
+                        font=FONT_SMALL)
+        ent.pack(side="left", padx=8)
+        attach_copy(ent, [("复制服务地址",
+                           lambda w=ent: self._entry_value(w))],
+                    app=self, hotkey=False)
+        GlassButton(url_row, "保存", width=64, height=32, bg=CARD,
+                    font=FONT_SMALL, command=self._pv_save_url).pack(side="left")
+        GlassButton(url_row, "检测连接", width=92, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pv_probe).pack(side="left", padx=6)
+        # ★ 一键把对应应用叫起来，省得用户自己去桌面找
+        GlassButton(url_row, "尝试启动服务", width=124, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pv_launch).pack(side="left")
+
+        self.pv_probe_lbl = tk.Label(c1.body, text="", bg=CARD, fg=C_HINT,
+                                     font=FONT_SMALL, anchor="w",
+                                     justify="left")
+        self.pv_probe_lbl.pack(fill="x", pady=(6, 0))
+
+        # ---------- 中层：模型列表 ----------
+        c2 = RoundCard(left, radius=16, pad=16)
+        c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        head = tk.Frame(c2.body, bg=CARD)
+        head.pack(fill="x")
+        self.pv_mid_title = tk.Label(head, text="模型列表", bg=CARD,
+                                     fg=C_TITLE, font=FONT_TITLE)
+        self.pv_mid_title.pack(side="left")
+        GlassButton(head, "刷新", width=72, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pv_refresh_mid).pack(side="right")
+        self.pv_model_hint = tk.Label(head, text="", bg=CARD, fg=C_HINT,
+                                      font=FONT_SMALL)
+        self.pv_model_hint.pack(side="right", padx=10)
+        # ★ llama.cpp 专用按钮放在标题行里，省下一整行高度给下面
+        self.pv_llama_head = tk.Frame(head, bg=CARD)
+
+        # ★ 中层有两套内容，按提供商切换：
+        #   · norm  —— 通用：模型列表 + 详情 + 模型名
+        #   · llama —— llama.cpp 专用：选程序目录 / 扫本地 GGUF / 选模型
+        self.pv_mid_norm = tk.Frame(c2.body, bg=CARD)
+        self.pv_mid_llama = tk.Frame(c2.body, bg=CARD)
+
+        wrap = tk.Frame(self.pv_mid_norm, bg=CARD)
+        wrap.pack(fill="both", expand=True, pady=(8, 0))
+        cols = (("name", "模型名称", 250), ("params", "参数量", 70),
+                ("ctx", "上下文", 80), ("size", "体积", 80),
+                ("quant", "量化", 90), ("status", "状态", 80))
+        # ★ height 只是「最小需求」，卡片有多余空间时列表会自动长高
+        tree = ttk.Treeview(wrap, columns=[c[0] for c in cols],
+                            show="headings", height=3)
+        for cid, text, w in cols:
+            tree.heading(cid, text=text)
+            tree.column(cid, width=w, anchor="w", stretch=(cid == "name"))
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        bind_tree_wheel(tree)
+        attach_tree_copy(tree, self)
+        tree.bind("<<TreeviewSelect>>", self._pv_on_select)
+        self.pv_tree = tree
+
+        self.pv_detail = tk.Text(self.pv_mid_norm, height=3, wrap="word",
+                                 font=FONT_SMALL, bg="#FFFFFF", fg=TEXT,
+                                 relief="solid", bd=1, highlightthickness=1,
+                                 highlightbackground=CARD_BORDER, spacing1=2)
+        self.pv_detail.pack(fill="x", pady=(8, 0))
+        self.pv_detail.configure(state="disabled")
+        attach_copy(self.pv_detail,
+                    [("复制模型信息",
+                      lambda: self._text_pick(self.pv_detail))], app=self)
+
+        # 选中的模型名 + 设为当前（放在列表下面，跟模型走）
+        mrow = tk.Frame(self.pv_mid_norm, bg=CARD)
+        mrow.pack(fill="x", pady=(8, 0))
+        tk.Label(mrow, text="模型名", bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
+                 width=8, anchor="w").pack(side="left")
+        self.pv_model_var = tk.StringVar()
+        ttk.Entry(mrow, textvariable=self.pv_model_var, width=34,
+                  font=FONT_SMALL).pack(side="left", padx=8)
+        GlassButton(mrow, "设为当前模型", width=124, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pv_use_model).pack(side="left", padx=6)
+
+        self._pv_build_llama_mid(self.pv_mid_llama)
+
+        # ---------- 下层：参数设置与部署 ----------
+        c3 = RoundCard(left, radius=16, pad=16, auto_height=True)
+        c3.grid(row=2, column=0, sticky="ew")
+        tk.Label(c3.body, text="参数设置与部署", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+
+        self._pv_param_row(c3.body, [
+            ("上下文", "NUM_CTX", 8), ("最大生成", "NUM_PREDICT", 8),
+            ("温度", "TEMPERATURE", 6), ("top_p", "TOP_P", 6),
+        ])
+
+        trow = tk.Frame(c3.body, bg=CARD)
+        trow.pack(fill="x", pady=4)
+        self.pv_think_var = tk.BooleanVar()
+        self.pv_think_cb = tk.Checkbutton(
+            trow, text="推理模式 think", bg=CARD, activebackground=CARD,
+            selectcolor="#FFFFFF", variable=self.pv_think_var,
+            font=FONT_SMALL, fg=TEXT)
+        self.pv_think_cb.pack(side="left")
+        # ★ OpenAI 兼容端没有 think 参数，改用 reasoning_effort=none 关推理
+        self.pv_noreason_var = tk.BooleanVar()
+        self.pv_noreason_cb = tk.Checkbutton(
+            trow, text="关推理(API端)", bg=CARD, activebackground=CARD,
+            selectcolor="#FFFFFF", variable=self.pv_noreason_var,
+            font=FONT_SMALL, fg=TEXT)
+        self.pv_noreason_cb.pack(side="left", padx=(14, 0))
+        for text, attr, width in (("驻留", "pv_keep_var", 8),
+                                  ("每批条数", "pv_batch_var", 6)):
+            tk.Label(trow, text=text, bg=CARD, fg=TEXT_DIM,
+                     font=FONT_SMALL).pack(side="left", padx=(16, 4))
+            var = tk.StringVar()
+            setattr(self, attr, var)
+            self.pv_param_vars["KEEP_ALIVE" if text == "驻留" else "BATCH_SIZE"] = var
+            ttk.Entry(trow, textvariable=var, width=width,
+                      font=FONT_SMALL).pack(side="left")
+
+        # 分批 / 重试 / 超时（本地小模型最容易卡在这几个值上）
+        self._pv_param_row(c3.body, [
+            ("单批字符", "MAX_BATCH_CHARS", 7),
+            ("术语上限", "MAX_TERMS_IN_PROMPT", 6),
+            ("整批重试", "BATCH_RETRIES", 5),
+            ("超时(秒)", "TIMEOUT", 7),
+        ])
+
+        self.pv_param_hint = tk.Label(c3.body, text="", bg=CARD, fg=C_HINT,
+                                      font=FONT_SMALL, anchor="w",
+                                      justify="left")
+        self.pv_param_hint.pack(fill="x", pady=(2, 0))
+
+        brow = tk.Frame(c3.body, bg=CARD)
+        brow.pack(fill="x", pady=(10, 0))
+        GlassButton(brow, "一键部署模型", width=150, height=42, primary=True,
+                    bg=CARD, command=self._pv_deploy).pack(side="left")
+        GlassButton(brow, "保存参数", width=104, height=42, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pv_save_params).pack(side="left", padx=8)
+        GlassButton(brow, "打开官网", width=104, height=42, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pv_open_home).pack(side="left")
+
+        # ---------- 右侧：切换适配 ----------
+        right = RoundCard(page, radius=16, pad=12, width=272)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_propagate(False)
+        tk.Label(right.body, text="切换适配", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        # ★ 侧栏只有 242px 宽，长标题必须允许换行，否则会被裁掉
+        self.pv_from_to = tk.Label(right.body, text="", bg=CARD, fg=C_KEY,
+                                   font=FONT_SMALL, anchor="w",
+                                   justify="left", wraplength=238)
+        self.pv_from_to.pack(fill="x", pady=(4, 6))
+
+        outer, inner = make_scroll_area(right.body, bg=CARD)
+        outer.pack(fill="both", expand=True)
+        self.pv_adapt_text = tk.Text(inner, wrap="word", font=FONT_SMALL,
+                                     bg=CARD, fg=TEXT, relief="flat", bd=0,
+                                     highlightthickness=0, spacing1=3,
+                                     spacing3=3)
+        self.pv_adapt_text.pack(fill="both", expand=True)
+        self.pv_adapt_text.tag_config(
+            "h", foreground=ACCENT_DEEP,
+            font=(FONT_FAMILY, FONT_SMALL[1], "bold"))
+        self.pv_adapt_text.tag_config("warn", foreground=C_WARN)
+        self.pv_adapt_text.tag_config("ok", foreground=C_OK)
+        self.pv_adapt_text.configure(state="disabled")
+        attach_copy(self.pv_adapt_text,
+                    [("复制适配清单",
+                      lambda: self._text_all(self.pv_adapt_text))], app=self)
+
+        b1 = tk.Frame(right.body, bg=CARD)
+        b1.pack(fill="x", pady=(8, 0))
+        GlassButton(b1, "一键适配", width=200, height=40, primary=True,
+                    bg=CARD, command=self._pv_adapt_apply).pack(anchor="w")
+        b2 = tk.Frame(right.body, bg=CARD)
+        b2.pack(fill="x", pady=(6, 0))
+        GlassButton(b2, "复制清单", width=96, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pv_copy_adapt).pack(side="left")
+        GlassButton(b2, "打开官网", width=96, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pv_open_home).pack(side="left", padx=6)
+
+        # ★ LM Studio 专用：右下角「操作指南」，按 LM1/LM2/LM3 顺序看图
+        self.pv_guide_btn = GlassButton(
+            right.body, "操作指南", width=120, height=38, bg=CARD,
+            font=FONT_SMALL, command=self._pv_open_guide)
+
+        self._pv_render_adapt()
+
+    # ---------- 中层：llama.cpp 专用（选目录 / 扫模型 / 选模型） ----------
+    def _pv_build_llama_mid(self, parent):
+        """
+        llama.cpp 专用中层：定程序目录 / 扫 GGUF / 选模型 / 预览启动命令。
+
+        ★ 这一坨要塞进高度固定的中层卡片里，所以刻意压扁：
+          「自动查找」按钮挂到卡片标题行、状态与说明合成一个 Laber 两行、
+          启动命令用单行只读 Entry（要复制有右键菜单）。
+        """
+        # ---- 标题行右侧：自动查找 ----
+        GlassButton(self.pv_llama_head, "自动查找程序/模型目录", width=196,
+                    height=32, bg=CARD, font=FONT_SMALL,
+                    command=self._pv_autodetect).pack(side="left", padx=6)
+
+        # ---- 说明 + 状态（两行，省掉单独的状态行）----
+        self.pv_llama_exe_lbl = tk.Label(
+            parent, text=PV_LLAMA_HINT,
+            bg=CARD, fg=C_HINT, font=FONT_SMALL, anchor="w", justify="left",
+            wraplength=846)
+        self.pv_llama_exe_lbl.pack(fill="x", pady=(4, 0))
+
+        # ---- 两个目录 ----
+        for attr, text, key, extra in (
+                ("pv_llama_dir_var", "llama.cpp 目录", "LLAMACPP_DIR", False),
+                ("pv_modeldir_var", "GGUF 模型目录", "LLAMACPP_MODEL_DIR", True)):
+            row = tk.Frame(parent, bg=CARD)
+            row.pack(fill="x", pady=(4, 0))
+            tk.Label(row, text=text, bg=CARD, fg=TEXT_DIM,
+                     font=FONT_SMALL, width=13, anchor="w").pack(side="left")
+            var = tk.StringVar()
+            setattr(self, attr, var)
+            ent = ttk.Entry(row, textvariable=var, width=50,
+                            font=FONT_SMALL)
+            ent.pack(side="left", padx=8)
+            attach_copy(ent, [("复制路径",
+                               lambda w=ent: self._entry_value(w))],
+                        app=self, hotkey=False)
+            GlassButton(row, "选择", width=64, height=30, bg=CARD,
+                        font=FONT_SMALL,
+                        command=lambda v=var, k=key, r=extra:
+                        self._pv_pick_dir(v, k, r)).pack(side="left")
+            if extra:
+                GlassButton(row, "扫描", width=64, height=30, bg=CARD,
+                            font=FONT_SMALL,
+                            command=self._pv_scan_gguf).pack(side="left",
+                                                             padx=6)
+
+        # ---- 选模型 ----
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x", pady=(4, 0))
+        tk.Label(row, text="选择模型", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL, width=13, anchor="w").pack(side="left")
+        self.pv_gguf_var = tk.StringVar()
+        self.pv_gguf_cb = ttk.Combobox(row, textvariable=self.pv_gguf_var,
+                                       values=[], width=50,
+                                       state="readonly", font=FONT_SMALL)
+        self.pv_gguf_cb.pack(side="left", padx=8)
+        self.pv_gguf_cb.bind("<<ComboboxSelected>>", self._pv_pick_gguf)
+        self.pv_gguf_lbl = tk.Label(row, text="", bg=CARD, fg=C_HINT,
+                                    font=FONT_SMALL)
+        self.pv_gguf_lbl.pack(side="left", padx=6)
+
+        # ---- 启动命令预览（单行只读 Entry，右键可复制全文）----
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x", pady=(4, 0))
+        tk.Label(row, text="启动命令", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL, width=13, anchor="w").pack(side="left")
+        self.pv_cmd_var = tk.StringVar()
+        self.pv_cmd_ent = ttk.Entry(row, textvariable=self.pv_cmd_var,
+                                    font=FONT_MONO, state="readonly")
+        self.pv_cmd_ent.pack(side="left", fill="x", expand=True, padx=8)
+        attach_copy(self.pv_cmd_ent,
+                    [("复制启动命令",
+                      lambda: self._entry_value(self.pv_cmd_ent))], app=self)
+
+        bar = tk.Frame(parent, bg=CARD)
+        bar.pack(fill="x", pady=(4, 0))
+        GlassButton(bar, "用这个模型启动服务", width=180, height=32,
+                    primary=True, bg=CARD,
+                    command=self._pv_launch).pack(side="left")
+        GlassButton(bar, "重新扫描模型", width=124, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pv_scan_gguf).pack(side="left", padx=8)
+
+    def _pv_pick_dir(self, var, key, rescan=False):
+        cur = var.get().strip()
+        initial = cur if os.path.isdir(cur) else config.BASE_DIR
+        d = filedialog.askdirectory(title="选择文件夹", initialdir=initial)
+        if not d:
+            return
+        d = os.path.normpath(d)
+        var.set(d)
+        ok, msg = settings.set_value(key, d)
+        if not ok:
+            messagebox.showwarning("保存失败", msg)
+            return
+        self.status_var.set(f"已设置：{d}")
+        if rescan:
+            self._pv_scan_gguf()
+        else:
+            self._pv_refresh_llama()
+
+    def _pv_save_llama_dirs(self):
+        """把界面上填的两个目录写回配置（用户手打路径时也要生效）。"""
+        for var, key in ((self.pv_llama_dir_var, "LLAMACPP_DIR"),
+                         (self.pv_modeldir_var, "LLAMACPP_MODEL_DIR")):
+            v = var.get().strip()
+            if v and v != str(getattr(config, key, "") or ""):
+                settings.set_value(key, v)
+
+    def _pv_scan_gguf(self):
+        self._pv_save_llama_dirs()
+        models = PV.scan_gguf()
+        self._pv_gguf_models = models
+        vals = [m["rel"] for m in models]
+        self.pv_gguf_cb.configure(values=vals or ["（没扫到 .gguf 文件）"])
+
+        cur = str(getattr(config, "LLAMACPP_MODEL_PATH", "") or "")
+        hit = next((m for m in models if m["path"] == cur), None)
+        if hit:
+            self.pv_gguf_var.set(hit["rel"])
+        elif models:
+            self.pv_gguf_var.set(models[0]["rel"])
+            self._pv_pick_gguf()          # 默认先选第一个
+        else:
+            self.pv_gguf_var.set("")
+        self.pv_gguf_lbl.configure(
+            text=(f"共 {len(models)} 个" if models else "没扫到模型"))
+        self._pv_refresh_cmd()
+
+    def _pv_pick_gguf(self, _e=None):
+        rel = self.pv_gguf_var.get().strip()
+        m = next((x for x in getattr(self, "_pv_gguf_models", [])
+                  if x["rel"] == rel), None)
+        if not m:
+            return
+        settings.set_value("LLAMACPP_MODEL_PATH", m["path"])
+        # llama.cpp 用 -a 指定的别名做模型名，这里同步成同名
+        alias = os.path.splitext(m["name"])[0][:40]
+        settings.set_value("API_MODEL", alias)
+        self.pv_model_var.set(alias)
+        self.pv_gguf_lbl.configure(text=m["size_text"] or "")
+        self._pv_refresh_cmd()
+
+    def _pv_refresh_cmd(self):
+        argv, msg = PV.llamacpp_args()
+        if argv:
+            self.pv_cmd_var.set(" ".join(argv))
+        else:
+            self.pv_cmd_var.set(str(msg).replace("\n", " "))
+
+    def _pv_refresh_llama(self):
+        self.pv_llama_dir_var.set(
+            str(getattr(config, "LLAMACPP_DIR", "") or ""))
+        self.pv_modeldir_var.set(
+            str(getattr(config, "LLAMACPP_MODEL_DIR", "") or ""))
+        exe = PV.find_llama_server()
+        status = ("✔ 已找到 llama-server.exe" if exe else
+                  "✘ 没找到 llama-server.exe，点右上角「自动查找」或手动选目录")
+        self.pv_llama_exe_lbl.configure(
+            text=PV_LLAMA_HINT + "\n" + status,
+            fg=(C_HINT if exe else C_WARN))
+        self._pv_scan_gguf()
+
+    def _pv_autodetect(self):
+        """扫一遍磁盘根目录，把 llama.cpp 目录和模型目录自动填上。"""
+        self.pv_llama_exe_lbl.configure(
+            text=PV_LLAMA_HINT + "\n正在查找…", fg=C_HINT)
+
+        def work():
+            d1 = PV.autodetect_llama_dir()
+            d2 = PV.autodetect_model_dir()
+            self.q.put(("pv_autodet", (d1, d2)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pv_apply_autodetect(self, d1, d2):
+        msg = []
+        if d1:
+            self.pv_llama_dir_var.set(d1)
+            settings.set_value("LLAMACPP_DIR", d1)
+            msg.append("程序目录：" + d1)
+        else:
+            msg.append("程序目录：没找到（请手动选）")
+        if d2:
+            self.pv_modeldir_var.set(d2)
+            settings.set_value("LLAMACPP_MODEL_DIR", d2)
+            msg.append("模型目录：" + d2)
+        else:
+            msg.append("模型目录：没找到（请手动选）")
+        self._pv_refresh_llama()
+        self.status_var.set("；".join(msg)[:110])
+        self._append_log("[llama.cpp 自动查找] " + "；".join(msg) + "\n")
+
+    def _pv_refresh_mid(self):
+        if PV.current() == "llamacpp":
+            self._pv_scan_gguf()
+        else:
+            self._pv_refresh_models()
+
+    # ---------- 「尝试启动服务」 ----------
+    def _pv_launch(self):
+        key = PV.current()
+        argv, msg = PV.launch_command(key)
+        if not argv:
+            messagebox.showinfo("无法自动启动", msg)
+            return
+        if not messagebox.askyesno(
+                "尝试启动服务",
+                "即将执行：\n" + " ".join(argv) + "\n\n" + msg +
+                "\n\n启动后要等几秒才会就绪，届时状态栏会自动更新。"
+                "\n\n是否继续？"):
+            return
+        ok, m = PV.launch_app(key)
+        self.status_var.set(("已启动 " if ok else "启动失败 ") +
+                            PV.label_of(key))
+        self._append_log("$ " + " ".join(argv) + "\n" + m + "\n")
+        if ok:
+            # 起来要时间，隔几秒自动复查几次
+            for delay in (4000, 8000, 15000, 25000):
+                self.root.after(delay, self._pv_probe)
+
+    # ---------- 操作指南（LM Studio） ----------
+    @staticmethod
+    def _guide_sort_key(name):
+        """按文件名里的数字排序：LM1 < LM2 < LM3 < LM10。"""
+        m = re.search(r"(\d+)", name)
+        return (int(m.group(1)) if m else 999, name.lower())
+
+    def _guide_images(self, folder):
+        exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif")
+        return sorted((f for f in os.listdir(folder)
+                       if f.lower().endswith(exts)), key=self._guide_sort_key)
+
+    def _guide_stable_dir(self, folder, imgs):
+        """
+        打包运行时指南躺在 _MEIPASS 里，exe 一退整目录就被删，
+        拼出来的 HTML 图片会全部裂掉。所以复制一份到 %TEMP% 的稳定目录。
+        """
+        mei = getattr(sys, "_MEIPASS", None)
+        if not mei:
+            return folder
+        try:
+            inside = os.path.abspath(folder).lower().startswith(
+                os.path.abspath(mei).lower())
+        except Exception:
+            inside = False
+        if not inside:
+            return folder          # 用户放在 exe 旁边的，直接用原目录
+
+        dst = os.path.join(tempfile.gettempdir(), "pkmn_translator_guide")
+        try:
+            os.makedirs(dst, exist_ok=True)
+            for f in imgs:
+                shutil.copyfile(os.path.join(folder, f),
+                                os.path.join(dst, f))
+            return dst
+        except Exception as e:
+            self._append_log(f"[指南] 复制到临时目录失败，直接用解包目录：{e}")
+            return folder
+
+    def _pv_open_guide(self):
+        folder = getattr(config, "GUIDE_DIR", "") or os.path.join(
+            config.BASE_DIR, "LM操作指南")
+        if not os.path.isdir(folder):
+            messagebox.showinfo(
+                "没有找到指南",
+                "没找到「LM操作指南」文件夹。\n\n"
+                "· 打包版：正常情况下它已经打进 exe 内部；\n"
+                "  若确实缺图，把文件夹放到程序目录下也能生效：\n"
+                f"{config.BASE_DIR}")
+            return
+
+        try:
+            imgs = self._guide_images(folder)
+        except Exception as e:
+            messagebox.showinfo("读取失败", f"{folder}\n{e}")
+            return
+        if not imgs:
+            messagebox.showinfo("没有图片",
+                                f"{folder}\n下面没有找到图片文件。")
+            return
+
+        # ★ 图片要放到「exe 退出后依然存在」的目录，否则 HTML 会裂图
+        view_dir = self._guide_stable_dir(folder, imgs)
+
+        # 拼一个本地 HTML 按 1/2/3 顺序展示，比连开三个图片窗口好用
+        try:
+            import urllib.parse as _up
+            parts = []
+            for f in imgs:
+                url = "file:///" + _up.quote(
+                    os.path.join(view_dir, f).replace("\\", "/"), safe="/:")
+                parts.append('<figure><figcaption>' + f + '</figcaption>'
+                             '<img src="' + url + '"></figure>')
+            order = "→".join(str(i) for i in range(1, len(imgs) + 1))
+            # ★ 别用 % 或 format 拼：CSS 里的 100% 会和格式化占位符打架
+            html = ("<!doctype html><meta charset='utf-8'>"
+                    "<title>LM Studio 操作指南</title>"
+                    "<style>body{margin:0;padding:18px;background:#eef3fa;"
+                    "font-family:'Microsoft YaHei',sans-serif;"
+                    "text-align:center}"
+                    "h1{font-size:20px;color:#0F4C86;margin:6px 0 18px}"
+                    "figure{margin:0 0 26px}"
+                    "figcaption{font-size:14px;color:#3C5064;"
+                    "margin-bottom:6px}"
+                    "img{max-width:100%;border-radius:10px;"
+                    "box-shadow:0 4px 16px rgba(0,0,0,.15)}</style>"
+                    "<h1>LM Studio 操作指南（按 " + order + " 顺序）</h1>"
+                    + "".join(parts))
+            path = os.path.join(tempfile.gettempdir(),
+                                "LM操作指南_view.html")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+            webbrowser.open("file:///" + path.replace("\\", "/"))
+            self.status_var.set(f"已打开操作指南（共 {len(imgs)} 张）")
+            return
+        except Exception as e:
+            self._append_log(f"[指南] HTML 方式失败，改为逐个打开：{e}")
+
+        # 兜底：按顺序逐个打开
+        for f in imgs:
+            self._open_path(os.path.join(view_dir, f))
+        self.status_var.set(f"已打开操作指南（共 {len(imgs)} 张）")
+
+    def _pv_provider_row(self, parent):
+        """提供商分段按钮组。"""
+        holder = tk.Frame(parent, bg=CARD_BORDER)
+        holder.pack(side="left")
+        group = {}
+        for key in PV.keys():
+            btn = tk.Label(holder, text=PV.label_of(key), font=FONT_SMALL,
+                           padx=14, pady=7, cursor="hand2")
+            btn.pack(side="left", padx=1, pady=1)
+            btn.bind("<Button-1>", lambda _e, k=key: self._pv_switch(k))
+            group[key] = btn
+        self._pv_btn_groups.append(group)
+        self._pv_paint_btns()
+        return holder
+
+    def _pv_paint_btns(self):
+        cur = PV.current()
+        for group in self._pv_btn_groups:
+            for key, btn in group.items():
+                if not btn.winfo_exists():
+                    continue
+                on = (key == cur)
+                btn.configure(bg=ACCENT if on else CARD,
+                              fg="#FFFFFF" if on else TEXT_DIM,
+                              font=(FONT_FAMILY, FONT_SMALL[1],
+                                    "bold" if on else "normal"))
+
+    def _pv_param_row(self, parent, fields):
+        """一行「标签 + 输入框」，变量名登记进 self.pv_param_vars。"""
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x", pady=4)
+        for i, (text, key, width) in enumerate(fields):
+            tk.Label(row, text=text, bg=CARD, fg=TEXT_DIM,
+                     font=FONT_SMALL).pack(side="left",
+                                           padx=(0 if i == 0 else 14, 4))
+            var = tk.StringVar()
+            ttk.Entry(row, textvariable=var, width=width,
+                      font=FONT_SMALL).pack(side="left")
+            self.pv_param_vars[key] = var
+        return row
+
+    @staticmethod
+    def _pv_fmt_ctx(v):
+        try:
+            return f"{int(v):,}"
+        except Exception:
+            return str(v) if v else "-"
+
+    def _pv_refresh(self):
+        """把 config 里的当前值刷进页面。"""
+        key = PV.current()
+        p = PV.get(key)
+
+        self._pv_paint_btns()
+        self.pv_url_var.set(PV.stored_url(key))
+        self.pv_model_var.set(PV.current_model(key))
+        self.pv_summary.configure(text=p["summary"])
+
+        for k, var in self.pv_param_vars.items():
+            var.set(str(getattr(config, k, "")))
+        self.pv_think_var.set(bool(getattr(config, "THINK", False)))
+        self.pv_noreason_var.set(bool(getattr(config, "NO_REASONING", True)))
+
+        # 只有 Ollama 认 think / keep_alive
+        self.pv_think_cb.configure(
+            state=("normal" if p["think"] else "disabled"))
+        self.pv_param_hint.configure(
+            text=("think / 驻留随每次请求发给 Ollama；取消勾选即关闭推理。"
+                  if p["think"] else
+                  f"{p['label']} 不认 think 与驻留，改用「关推理(API端)」"
+                  f"（发 reasoning_effort=none）；上下文请在服务端设。"))
+        self.pv_probe_lbl.configure(
+            text="实际调用：" + PV.endpoints_text(key), fg=C_HINT)
+
+        # ★ 中层：llama.cpp 换成「选目录 / 扫模型 / 选模型」，其余用通用列表
+        if key == "llamacpp":
+            self.pv_mid_norm.pack_forget()
+            self.pv_mid_llama.pack(fill="both", expand=True)
+            self.pv_mid_title.configure(text="模型地址与选择")
+            self.pv_model_hint.configure(text="")
+            self.pv_llama_head.pack(side="right")     # 标题行右侧的「自动查找」
+        else:
+            self.pv_mid_llama.pack_forget()
+            self.pv_llama_head.pack_forget()
+            self.pv_mid_norm.pack(fill="both", expand=True)
+            self.pv_mid_title.configure(text="模型列表")
+
+        # ★ LM Studio 才有操作指南按钮
+        if key == "lmstudio":
+            self.pv_guide_btn.pack(side="right", pady=(6, 0))
+        else:
+            self.pv_guide_btn.pack_forget()
+
+        self._pv_render_adapt()
+        if key == "llamacpp":
+            self._pv_refresh_llama()
+        else:
+            self._pv_refresh_models()
+        # ★ 顺手探一次，切完立刻能看到新服务通不通
+        self._pv_probe()
+
+    def _pv_switch(self, key):
+        key = PV.normalize(key)
+        old = PV.current()
+        if key == old:
+            return
+
+        PV.set_prev_provider(old)
+        changes = PV.apply_provider(key)
+
+        # 同步菜单 1 / 菜单 8 上的模式与模型显示
+        self._paint_mode_row()
+        self.model_var.set(PV.current_model(key))
+        self._detect_models_async()
+        self._pv_refresh()
+
+        _auto, manual = PV.adaptation(old, key)
+        lines = [f"· {n}：{o}  →  {v}" for n, o, v in changes]
+        msg = (f"已切换到 {PV.label_of(key)}\n\n已自动调整：\n"
+               + ("\n".join(lines) if lines else "（无需调整）"))
+        if manual:
+            msg += ("\n\n还需要你手动处理（右侧「切换适配」栏可复制）：\n"
+                    + "\n".join(f"· {it['title']}" for it in manual))
+        messagebox.showinfo("已切换服务提供商", msg)
+
+    def _pv_save_url(self):
+        key = PV.current()
+        url = self.pv_url_var.get().strip()
+        if not url:
+            messagebox.showwarning("提示", "服务地址不能为空")
+            return
+        ok, msg = PV.set_url(url, key)
+        if not ok:
+            messagebox.showwarning("保存失败", msg)
+            return
+        # 非 Ollama 走 OpenAI 兼容，地址要同步给 API_BASE_URL
+        if PV.get(key)["protocol"] != "ollama":
+            settings.set_value("API_BASE_URL", PV.base_url(key))
+        self.status_var.set(f"服务地址已更新：{url}")
+        self._pv_refresh()     # 内含重新探测
+
+
+    def _pv_probe(self):
+        key = PV.current()
+        self.pv_probe_lbl.configure(
+            text=f"正在检测 {PV.label_of(key)} …", fg=C_HINT)
+
+        def work():
+            self.q.put(("pv_probe", PV.probe(key)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pv_refresh_models(self):
+        key = PV.current()
+        self.pv_model_hint.configure(text="正在读取模型列表…")
+
+        def work():
+            rows = PV.all_models(key)
+            probed = PV.probe(key, timeout=2)[0]
+            self.q.put(("pv_models", (key, rows, probed)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pv_apply_models(self, key, rows, probed=True):
+        if key != PV.current() or not self.pv_tree.winfo_exists():
+            return
+        self._pv_models = rows or []
+        tree = self.pv_tree
+        tree.delete(*tree.get_children())
+
+        cur = str(PV.current_model(key) or "")
+        hit = None
+        for r in self._pv_models:
+            name = r.get("name", "")
+            iid = tree.insert("", "end", values=(
+                name,
+                r.get("params", "") or "-",
+                self._pv_fmt_ctx(r.get("ctx", "")),
+                r.get("size", "") or "-",
+                r.get("quant", "") or "-",
+                "已安装" if r.get("installed") else "可拉取",
+            ))
+            if str(name) == cur:
+                hit = iid
+
+        if hit is not None:
+            tree.selection_set(hit)
+            tree.see(hit)
+            row = next((r for r in self._pv_models
+                        if str(r.get("name", "")) == cur), None)
+            if row:
+                self._pv_show_detail(PV.info_from_row(row, key))
+
+        n_inst = sum(1 for r in self._pv_models if r.get("installed"))
+        if not probed:
+            self.pv_model_hint.configure(
+                text=f"服务未响应，下面是推荐目录（{len(self._pv_models)} 个）")
+        elif n_inst:
+            self.pv_model_hint.configure(
+                text=f"服务在线：已装 {n_inst} 个 / 共 {len(self._pv_models)} 个")
+        else:
+            self.pv_model_hint.configure(
+                text="服务在线但还没加载模型，下面是推荐目录")
+
+    def _pv_show_detail(self, info):
+        box = self.pv_detail
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+        name = info.get("name", "")
+        box.insert("end", f"{info.get('display') or name}\n")
+        box.insert("end",
+                   f"参数量 {info.get('params') or '—'}　"
+                   f"上下文 {self._pv_fmt_ctx(info.get('ctx', ''))}　"
+                   f"体积 {info.get('size') or '—'}　"
+                   f"量化 {info.get('quant') or '—'}　"
+                   f"{'已安装' if info.get('installed') else '未部署'}\n")
+        if info.get("level"):
+            box.insert("end", f"定位：{info['level']}\n")
+        if info.get("note"):
+            box.insert("end", info["note"] + "\n")
+        if info.get("think"):
+            box.insert("end",
+                       "注意：会输出思考过程，Ollama 下用 think=False 关掉。\n")
+        box.configure(state="disabled")
+
+    def _pv_on_select(self, _e=None):
+        sel = self.pv_tree.selection()
+        if not sel:
+            return
+        vals = self.pv_tree.item(sel[0], "values")
+        if not vals:
+            return
+        name = str(vals[0])
+        self.pv_model_var.set(name)
+        # ★ 直接用列表里已有的那行，不再为每次点击打一次本地服务
+        row = next((r for r in self._pv_models
+                    if str(r.get("name", "")) == name), {"name": name})
+        self._pv_show_detail(PV.info_from_row(row, PV.current()))
+
+    def _pv_use_model(self):
+        name = self.pv_model_var.get().strip()
+        if not name:
+            messagebox.showwarning("提示", "模型名不能为空")
+            return
+        if PV.set_current_model(name, PV.current()):
+            self.model_var.set(name)
+            self.status_var.set(f"已设为当前模型：{name}")
+            self._pv_refresh_models()
+        else:
+            messagebox.showwarning("失败", f"写入模型名失败：{name}")
+
+    def _pv_save_params(self):
+        fail = []
+        for key, var in self.pv_param_vars.items():
+            ok, msg, _v = settings.set_value(key, var.get())
+            if not ok:
+                fail.append(f"{key}：{msg}")
+        for key, var in (("THINK", self.pv_think_var),
+                         ("NO_REASONING", self.pv_noreason_var)):
+            ok, msg, _v = settings.set_value(key, var.get())
+            if not ok:
+                fail.append(f"{key}：{msg}")
+
+        self._pv_refresh()
+        if fail:
+            messagebox.showwarning("部分失败", "\n".join(fail[:8]))
+        else:
+            messagebox.showinfo("设置", "参数已保存，当前会话立即生效")
+
+    def _pv_deploy(self):
+        key = PV.current()
+        model = self.pv_model_var.get().strip()
+        if not model:
+            messagebox.showwarning("提示", "请先在模型列表里选一个模型")
+            return
+
+        argv, note = PV.deploy_command(model, key)
+        if not argv:
+            messagebox.showinfo("无法一键部署", note)
+            return
+
+        if not messagebox.askyesno(
+                "一键部署模型",
+                f"即将执行：\n{' '.join(argv)}\n\n{note}\n\n"
+                "模型体积较大时会比较久，输出会实时写进日志页。是否开始？"):
+            return
+
+        def work():
+            ok, msg = PV.run_deploy(model, key, emit=bridge.emit)
+            return (ok, msg, model)
+
+        self.show("log")
+        self._pv_async(work, label=f"部署 {model}…", done_kind="pv_deploy")
+
+    def _pv_async(self, fn, label, done_kind):
+        """与 run_async 同款，但结果交给 done_kind 自己处理。"""
+        if self.busy:
+            messagebox.showinfo("提示", "已有任务在运行，请稍候")
+            return
+        self.set_busy(True, label)
+
+        def work():
+            try:
+                self.q.put((done_kind, fn()))
+            except Exception:
+                self.q.put(("err", traceback.format_exc()))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pv_render_adapt(self):
+        cur = PV.current()
+        pre = PV.prev_provider()
+        if pre == cur:
+            self.pv_from_to.configure(
+                text=f"当前：{PV.label_of(cur)}（未发生跨提供商切换）")
+        else:
+            self.pv_from_to.configure(
+                text=f"{PV.label_of(pre)}  →  {PV.label_of(cur)}")
+
+        # ★ 只展示「需要你手动处理」：自动改掉的那些在切换时已经弹窗列过了，
+        #   留在侧栏只是占地方。
+        _auto, manual = PV.adaptation(pre, cur)
+        box = self.pv_adapt_text
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+
+        if manual:
+            box.insert("end", "需要你手动处理\n", ("h",))
+            for it in manual:
+                box.insert("end", "⚠ " + it["title"] + "\n", ("warn",))
+                box.insert("end", "   " + it["detail"] + "\n")
+        else:
+            box.insert("end", "当前没有需要手动处理的事项。\n", ("ok",))
+
+        box.configure(state="disabled")
+        self._pv_adapt_text = box.get("1.0", "end-1c")
+
+    def _pv_copy_adapt(self):
+        self.copy_to_clipboard(self._pv_adapt_text, "适配清单")
+
+    def _pv_adapt_apply(self):
+        cur = PV.current()
+        pre = PV.prev_provider()
+        if pre == cur:
+            messagebox.showinfo("无需适配",
+                                f"当前就是 {PV.label_of(cur)}，"
+                                "没有跨提供商切换。")
+            return
+
+        changes = PV.apply_adaptation(pre, cur)
+        self._paint_mode_row()
+        self.model_var.set(PV.current_model(cur))
+        self._detect_models_async()
+        self._pv_refresh()
+
+        if not changes:
+            messagebox.showinfo("一键适配",
+                                "参数已经是适配后的推荐值，无需改动。")
+            return
+        messagebox.showinfo(
+            "一键适配完成",
+            f"已为 {PV.label_of(cur)} 套用模型名与推荐参数：\n"
+            + "\n".join(f"· {n}：{o}  →  {v}" for n, o, v in changes))
+
+    def _pv_open_home(self):
+        p = PV.get(PV.current())
+        url = p.get("install_url") or p.get("home")
+        if not url:
+            messagebox.showinfo(
+                "提示", "自定义服务没有官方地址，请直接填你自己的服务地址。")
+            return
+        webbrowser.open(url)
+
+    # ================================================================
+    # 页面 10：日志
     # ================================================================
     def _page_log(self):
         page = self.pages["log"]

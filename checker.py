@@ -10,9 +10,11 @@
 
 输出：与输出文件同目录的 <名>_report.txt
 """
+import json
 import os
 import re
 
+import config
 from logger import get_logger
 
 from processor import (
@@ -35,6 +37,7 @@ _ENGLISH_RE = re.compile(r"[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{3,}")
 # 白名单：这些英文不算"未翻译"
 # ★ 比对的是 _ENGLISH_RE 抽出的纯字母词，所以 &quot 要写 "quot" 才命中；
 #   两个都放进去，兼容后续若改用整串匹配的情况。
+# ★ 区分大小写：命中判断用原样字符串，不做 lower()。
 WHITELIST = {
     "Pokémon", "Pokemon", "Pokédex", "Pokedex",
     "Twitter", "Discord", "YouTube", "Facebook",
@@ -42,7 +45,134 @@ WHITELIST = {
     "AMD", "NVIDIA", "Intel", "Haya",
     "quot", "&quot",          # HTML 实体 &quot; / &quot
     "amp", "&amp", "nbsp", "&nbsp",
+    # ★ 游戏里本来就该保留的按键名 / 专有缩写
+    "Tab", "Ctrl", "Fn", "Alt", "Esc", "MVP", "txt", "PBS",
 }
+
+# 译文残留控制码白名单：这些 \字母 是游戏自己的写法，不算"未识别的残留"
+# ★ 区分大小写 —— 只放 \b 和 \pn，\B / \PN 不在内
+CTRL_WHITELIST = {r'\b', r'\pn'}
+# 匹配时按长度降序，保证 \pn 优先于 \p（以后加更长的写法也不会被短的截胡）
+_CTRL_WL_SORTED = sorted(CTRL_WHITELIST, key=len, reverse=True)
+
+# ================================================================
+# 用户白名单（可增删，落盘到 check_whitelist.json）
+#   words     —— 额外允许保留的英文词（检查报告里不再算"疑似未翻译"）
+#   sentences —— 加入白名单的整句（重翻时跳过，不再重翻）
+# ================================================================
+WHITELIST_FILE = os.path.join(config.BASE_DIR, "check_whitelist.json")
+
+_user_words = None        # set
+_user_sentences = None    # set
+
+
+def _load_user_whitelist():
+    global _user_words, _user_sentences
+    if _user_words is not None and _user_sentences is not None:
+        return
+    words, sentences = set(), set()
+    if os.path.exists(WHITELIST_FILE):
+        try:
+            with open(WHITELIST_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f) or {}
+            words = {str(w) for w in (d.get("words") or []) if str(w).strip()}
+            sentences = {str(s) for s in (d.get("sentences") or [])
+                         if str(s).strip()}
+        except Exception as e:
+            log.warning("白名单读取失败（按空处理）：%s", e)
+    _user_words, _user_sentences = words, sentences
+
+
+def _save_user_whitelist():
+    _load_user_whitelist()
+    tmp = WHITELIST_FILE + ".tmp"
+    data = {
+        "version": 1,
+        "words": sorted(_user_words),
+        "sentences": sorted(_user_sentences),
+    }
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, WHITELIST_FILE)
+
+
+def reload_whitelist():
+    """外部改过文件后强制重读。"""
+    global _user_words, _user_sentences
+    _user_words = _user_sentences = None
+    _load_user_whitelist()
+
+
+def word_whitelist():
+    """默认词 + 用户词（区分大小写）。"""
+    _load_user_whitelist()
+    return set(WHITELIST) | set(_user_words)
+
+
+def user_words():
+    _load_user_whitelist()
+    return set(_user_words)
+
+
+def user_sentences():
+    _load_user_whitelist()
+    return set(_user_sentences)
+
+
+def add_word(word):
+    """加一个词进检查白名单。返回 (ok, msg)。"""
+    _load_user_whitelist()
+    w = (word or "").strip()
+    if not w:
+        return False, "空词"
+    if w in WHITELIST:
+        return False, f"「{w}」本来就在默认白名单里"
+    if w in _user_words:
+        return False, f"「{w}」已在白名单里"
+    _user_words.add(w)          # ★ 原样保存，区分大小写
+    _save_user_whitelist()
+    log.info("检查白名单新增词：%r", w)
+    return True, w
+
+
+def remove_word(word):
+    _load_user_whitelist()
+    w = (word or "").strip()
+    if w in _user_words:
+        _user_words.discard(w)
+        _save_user_whitelist()
+        return True, w
+    return False, f"「{w}」不在用户白名单里"
+
+
+def add_sentences(sentences):
+    """把若干整句加入句子白名单（重翻时跳过）。返回新增条数。"""
+    _load_user_whitelist()
+    n = 0
+    for s in sentences or []:
+        t = (s or "").strip()
+        if t and t not in _user_sentences:
+            _user_sentences.add(t)
+            n += 1
+    if n:
+        _save_user_whitelist()
+        log.info("句子白名单新增 %d 条", n)
+    return n
+
+
+def remove_sentence(sentence):
+    _load_user_whitelist()
+    t = (sentence or "").strip()
+    if t in _user_sentences:
+        _user_sentences.discard(t)
+        _save_user_whitelist()
+        return True
+    return False
+
+
+def is_sentence_whitelisted(text):
+    _load_user_whitelist()
+    return (text or "").strip() in _user_sentences
 
 # 占位符匹配
 PLACEHOLDER_RE = re.compile(r'@\s*\d+\s*@|⟦\s*\d+\s*⟧')
@@ -82,6 +212,8 @@ def _find_unprotected_ctrl(text):
     """
     找出 text 中真正未被识别的 \\字母 形式。
     逐位置尝试 ALL_CTRL_RE.match，匹配不上才算残留。
+
+    ★ CTRL_WHITELIST 里的写法（\\b / \\pn）是游戏自己的，不算残留。
     """
     if not text:
         return []
@@ -93,6 +225,13 @@ def _find_unprotected_ctrl(text):
             m = ALL_CTRL_RE.match(text, i)
             if m:
                 i = m.end()
+                continue
+            # ★ 白名单里的写法（\b / \pn）按「已识别控制码」对待，
+            #   只跳掉这几个字符本身，后面的字母照常继续扫描。
+            hit = next((w for w in _CTRL_WL_SORTED
+                        if text.startswith(w, i)), None)
+            if hit:
+                i += len(hit)
                 continue
             # 未识别：收集 \ 后面的连续字母
             j = i + 1
@@ -162,9 +301,10 @@ def check(src_lines, out_lines, entries, special, report_path,
 
         # ★① 疑似未翻译：剥离控制码后仍含英文
         dst_clean = _strip_all_ctrl(dst)
+        allowed = word_whitelist()      # 默认词 + 用户加的词（区分大小写）
         english_words = [
             w for w in _ENGLISH_RE.findall(dst_clean)
-            if w not in WHITELIST
+            if w not in allowed
         ]
         if english_words:
             hits.append({

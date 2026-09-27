@@ -675,19 +675,23 @@ def _translate_batch(client, batch_texts, cache,
         if getattr(config, "PLAYER_TOKEN", None):
             body_final = _restore_player_token(body_final)
 
-        prefix = prefix_list.get(k, "")
-        if prefix:
-            final = PFD.apply_prefix(prefix) + body_final
-        else:
-            final = body_final
-
         # ★ 控制码回退：译文里缺失/未原样保留的控制码，一律按原文补回
         #   前缀是交给前缀字典单独处理的（可能已被用户或术语改写成另一套控制码），
         #   所以校验时把前缀从原文侧剔除，只比真正参与翻译的正文部分：
         #     · 避免把字典已处理的前缀误判成"译文缺失控制码"（否则会谎报并回退原文）
         #     · 正文里真正丢失的控制码照样会被检测并补回
+        prefix = prefix_list.get(k, "")
         src_body = (src[len(prefix):]
                     if (prefix and src.startswith(prefix)) else src)
+
+        if prefix:
+            # ★ 模型有时会把前缀原样回显；旧版缓存里也可能已经带过前缀。
+            #   先剥掉再拼当前前缀，否则会出现 `\tg[新]\tg[旧]正文`。
+            body_final = PFD.strip_prefix_echo(body_final, prefix, src_body)
+            final = PFD.apply_prefix(prefix) + body_final
+        else:
+            final = body_final
+
         final, fixed_ctrl = PR.repair_missing_controls(src_body, final)
         if fixed_ctrl:
             log.warning("[批 %d][%d] 译文缺失控制码 %s，已按原文补回",
@@ -835,6 +839,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
 
     seen, todo = set(), []
     skipped_pure = 0
+    skipped_path = 0
     for _, txt in entries:
         if txt in seen:
             continue
@@ -845,12 +850,22 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
             cache.put(txt, txt)
             skipped_pure += 1
             continue
+        # ★ 资源路径（Graphics/Pictures/xxx）不翻译，原样保留
+        if getattr(config, "SKIP_PATH_LINES", True) and PR.is_path_like(txt):
+            cache.put(txt, txt)
+            skipped_path += 1
+            continue
         todo.append(txt)
 
     if skipped_pure:
         cache.save()
         log.info("跳过纯控制符句子 %d 条（已缓存原文）", skipped_pure)
         emit(f"[过滤] 跳过 {skipped_pure} 条纯控制符句子（不送模型）")
+
+    if skipped_path:
+        cache.save()
+        log.info("跳过资源路径句子 %d 条（已缓存原文）", skipped_path)
+        emit(f"[过滤] 跳过 {skipped_path} 条资源路径（形如 A/B/C，不翻译）")
 
     emit(f"[待翻] 唯一 {len(seen)}  需翻 {len(todo)}  "
          f"缓存命中 {len(seen) - len(todo)}")
@@ -1187,7 +1202,16 @@ def retranslate_report_paths(paths, src_lang=None, tgt_lang=None, model=None,
         emit("  问题分布：" + "  ".join(f"{k}:{n}"
                                        for k, n in kinds_cnt.items()))
 
-        to_re = [h for h in hits if h['kind'] in active]
+        # ★ 句子白名单：加了白名单的句子不再重翻（用户手动确认过没问题）
+        wl_sent = checker.user_sentences()
+        picked = [h for h in hits if h['kind'] in active]
+        to_re = [h for h in picked
+                 if (h.get('src') or '').strip() not in wl_sent]
+
+        wl_hit = len(picked) - len(to_re)
+        if wl_hit:
+            emit(f"  白名单跳过：{wl_hit} 条")
+
         if not to_re:
             emit(f"  勾选的类型（{'、'.join(sorted(active))}）里没有可重翻的句子"
                  f"，已跳过")
@@ -1462,20 +1486,17 @@ def apply_prefix_dict_paths(paths, entries_map=None):
                 continue
 
             new_prefix = PFD.apply_prefix(prefix)
-            if new_prefix and new_prefix != prefix:
-                if cached_final.startswith(prefix):
-                    body_final = cached_final[len(prefix):]
-                elif cached_final.startswith(new_prefix):
-                    body_final = cached_final[len(new_prefix):]
-                else:
-                    body_final = cached_final
-                # 防御：上面都没命中时，译文开头可能残留旧前缀，
-                #       再剥一次避免新旧前缀并存（重复）
-                for p in (new_prefix, prefix):
-                    if p and body_final.startswith(p):
-                        body_final = body_final[len(p):]
-                        break
-                translations[src] = new_prefix + body_final
+            # ★ 缓存里存的是「已经拼过前缀的整行」，而那版前缀未必等于
+            #   现在字典里的写法（用户改过前缀译法、或当时用的是术语替换版）。
+            #   统一交给 strip_prefix_echo 按「当前前缀 / 原文前缀 / 术语替换版」
+            #   逐个比对，并用「原文正文是否自带控制码」做安全兜底，
+            #   避免出现 `\tg[新]\tg[旧]正文` 这种新旧并存。
+            src_body = (src[len(prefix):]
+                        if src.startswith(prefix) else src)
+            body_final = PFD.strip_prefix_echo(cached_final, prefix, src_body)
+            new_final = new_prefix + body_final
+            if new_final != cached_final:
+                translations[src] = new_final
                 hit_prefix += 1
             else:
                 translations[src] = cached_final
@@ -1924,22 +1945,43 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None):
 # 核心 7：Excel 转术语表
 # ================================================================
 def build_terms_from_excel(excel_path, sheets=None, source_lang="英文",
-                           target_lang="简体中文", out_path=None):
-    """Excel → term_dict.py（无交互）。返回结果 dict。"""
+                           target_lang="简体中文", out_path=None,
+                           mode="append"):
+    """
+    Excel → term_dict.py（无交互）。返回结果 dict。
+
+    mode="append"（默认）已有术语字典时把新术语接在末尾、保留原有译法；
+    mode="overwrite" 整份重写。
+    """
     import importlib
     import build_terms as BT
 
     out_path = out_path or config.TERM_FILE
-    log.info("Excel 转术语表：%s  %s → %s", excel_path, source_lang, target_lang)
+    log.info("Excel 转术语表：%s  %s → %s（%s）",
+             excel_path, source_lang, target_lang, mode)
 
     result = BT.build_terms(excel_path, out_path, source_lang, target_lang,
-                            sheets=sheets, dedup=True, verbose=False)
+                            sheets=sheets, dedup=True, verbose=False,
+                            mode=mode)
 
     for e in result.get("errors", []):
         emit(f"  [err] {e}")
 
     if result.get("ok"):
-        emit(f"✔ 共 {result['total']} 条 → {result['out_path']}")
+        if result.get("mode") == "append" and result.get("existing"):
+            emit(f"原有 {result['existing']} 条 → 追加 {result['added']} 条、"
+                 f"跳过已存在 {result['skipped_existing']} 条")
+            cf = result.get("conflicts") or []
+            if cf:
+                emit(f"⚠ {len(cf)} 条术语的新旧译法不一致，"
+                     f"已保留字典里的原译法（不改已有内容）：")
+                for src, old, new in cf[:8]:
+                    emit(f"    {src}：保留「{old}」，Excel 里是「{new}」")
+                if len(cf) > 8:
+                    emit(f"    …另有 {len(cf) - 8} 条，详见日志")
+        elif result.get("mode") == "append":
+            emit(f"没有可追加的旧字典，新建 {result['total']} 条")
+        emit(f"✔ 合计 {result['total']} 条 → {result['out_path']}")
         try:
             import processor
             importlib.reload(processor)
@@ -2124,7 +2166,26 @@ def cmd_build_terms():
             chosen = None
 
     out_path = input(f"\n输出文件 [{config.TERM_FILE}]: ").strip().strip('"')
-    build_terms_from_excel(excel_path, chosen, src, tgt, out_path or None)
+    out_path = out_path or config.TERM_FILE
+
+    # ★ 已有术语字典时默认追加：新术语接在末尾，原有译法不动
+    mode = "append" if getattr(config, "EXCEL_APPEND", True) else "overwrite"
+    if os.path.exists(out_path):
+        try:
+            import build_terms as _BT
+            old_n = len(_BT.read_existing_terms(out_path))
+        except Exception:
+            old_n = 0
+        if old_n:
+            emit(f"\n检测到已有术语字典：{out_path}（{old_n} 条）")
+            raw2 = input("  回车 = 在末尾追加新术语 / 输入 o = 整份覆盖: ")
+            mode = "overwrite" if raw2.strip().lower() in ("o", "over",
+                                                          "overwrite") else "append"
+        else:
+            emit(f"\n{out_path} 已存在但读不到 TERM_DICT，将整份重写")
+
+    emit(f"模式：{'追加到末尾' if mode == 'append' else '整份覆盖'}")
+    build_terms_from_excel(excel_path, chosen, src, tgt, out_path, mode=mode)
 
 
 def _choose_language(prompt, default_key, exclude=None):
@@ -2154,8 +2215,101 @@ def _choose_language(prompt, default_key, exclude=None):
     return None
 
 
+def cmd_provider():
+    """菜单 9：本地模型服务（切换提供商 / 模型 / 部署）"""
+    import providers as PV
+
+    while True:
+        key = PV.current()
+        p = PV.get(key)
+        emit("\n" + "=" * 62)
+        emit(f"  本地模型服务   当前：{p['label']}")
+        emit("=" * 62)
+        emit(f"  服务地址：{PV.chat_url(key)}")
+        emit(f"  模型：{PV.current_model(key) or '（未设置）'}")
+        emit(f"  说明：{p['summary']}")
+        emit("-" * 62)
+        for i, k in enumerate(PV.keys(), 1):
+            mark = " ← 当前" if k == key else ""
+            emit(f"  {i}. 切换到 {PV.label_of(k)}{mark}")
+        emit(f"  {len(PV.keys()) + 1}. 修改当前服务地址")
+        emit(f"  {len(PV.keys()) + 2}. 检测服务是否在线")
+        emit(f"  {len(PV.keys()) + 3}. 列出本机可用模型")
+        emit(f"  {len(PV.keys()) + 4}. 一键部署模型（拉取 / 下载）")
+        emit("  0. 返回主菜单")
+        emit("=" * 62)
+
+        raw = input("请选择：").strip()
+        if raw in ("0", ""):
+            return
+
+        keys = PV.keys()
+        if raw.isdigit() and 1 <= int(raw) <= len(keys):
+            target = keys[int(raw) - 1]
+            if target == key:
+                emit("已经是当前提供商")
+                continue
+            PV.set_prev_provider(key)
+            changes = PV.apply_provider(target)
+            emit(f"\n已切换到 {PV.label_of(target)}")
+            for name, old, new in changes:
+                emit(f"  · {name}：{old}  →  {new}")
+            auto, manual = PV.adaptation(key, target)
+            emit("\n[已自动完成]")
+            for it in auto:
+                emit(f"  ✔ {it['title']}：{it['detail']}")
+            if manual:
+                emit("\n[还需要你手动处理]")
+                for it in manual:
+                    emit(f"  ⚠ {it['title']}：{it['detail']}")
+            continue
+
+        extra = len(keys)
+        if raw == str(extra + 1):
+            new_url = input(f"新的服务地址（当前 {PV.chat_url(key)}）：").strip()
+            if not new_url:
+                emit("已取消")
+                continue
+            ok, msg = PV.set_url(new_url, key)
+            emit(f"{'✔ 已更新' if ok else '✘ 失败'}：{msg}")
+            continue
+
+        if raw == str(extra + 2):
+            ok, msg = PV.probe(key)
+            emit(f"  [{'✔' if ok else '✘'}] {msg}")
+            continue
+
+        if raw == str(extra + 3):
+            rows = PV.all_models(key)
+            if not rows:
+                emit("  （没查到模型；服务可能没开，下面是推荐目录）")
+                rows = PV.catalog(key)
+            emit(f"  共 {len(rows)} 个：")
+            for r in rows:
+                tag = "已装" if r.get("installed") else "可拉取"
+                emit(f"   [{tag}] {r['name']}  "
+                     f"{r.get('params') or '?'}  "
+                     f"ctx={r.get('ctx') or '?'}  "
+                     f"{r.get('size') or '?'}")
+            continue
+
+        if raw == str(extra + 4):
+            name = input("要部署的模型名（回车用当前）：").strip()
+            if not name:
+                name = PV.current_model(key)
+            if not name:
+                emit("没有指定模型")
+                continue
+            emit("开始部署，输出如下（可随时 Ctrl+C 中断）：\n")
+            ok, msg = PV.run_deploy(name, key, emit=emit)
+            emit(f"\n{'✔' if ok else '✘'} {msg}")
+            continue
+
+        emit("无效选项")
+
+
 def cmd_show_logs():
-    """菜单 9：日志 / 环境检查"""
+    """菜单 10：日志 / 环境检查"""
     import env_check
 
     log_dir = os.path.join(config.BASE_DIR, "logs")

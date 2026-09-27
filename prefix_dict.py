@@ -263,6 +263,56 @@ def apply_prefix(prefix):
     return substitute_terms(prefix)
 
 
+def strip_prefix_echo(text, src_prefix="", src_body=""):
+    r"""
+    剥掉译文开头重复出现的「前缀回显」。
+
+    背景：译后前缀是拼回去的，但缓存里存的是**已经拼过前缀的整行**，
+    而历史上写进去的那版前缀可能和现在字典里的不一样
+    （比如上次是术语替换版 \tg[丹帝, el 伽勒尔冠军]，这次用户改成了
+    \tg[丹帝, 伽勒尔的冠军]）。按字符串比对认不出来，就会出现
+    `\tg[新]\tg[旧]正文` 这种新旧并存。
+
+    做法：
+      ① 先用「当前应生效的译后前缀 / 原文前缀 / 术语替换版」逐个比对剥掉
+      ② 都不匹配时兜底：**仅当原文正文本身不以控制码开头**，
+         才把译文开头的那段控制码当作旧前缀剥掉（避免误伤正文自带的控制码）
+
+    text      —— 待处理的译文（可能已经带了旧前缀）
+    src_prefix—— 该行原文的前缀（可为空）
+    src_body  —— 原文去掉前缀后的正文（用于兜底判断，可为空）
+    """
+    if not text:
+        return text
+
+    # ① 已知的几种前缀写法
+    cands = []
+    if src_prefix:
+        cands.append(apply_prefix(src_prefix))
+        cands.append(src_prefix)
+        cands.append(substitute_terms(src_prefix))
+    for c in cands:
+        if c and text.startswith(c):
+            return text[len(c):]
+
+    # ② 兜底：原文正文不以控制码开头 → 译文开头的控制码串只可能是前缀回显
+    if src_prefix:
+        try:
+            import processor as _PR
+            if src_body:
+                h_src, _ = _PR.split_prefix(src_body)
+                if h_src:
+                    return text          # 正文自己就带控制码，不动它
+            head, rest = _PR.split_prefix(text)
+            if head:
+                log.info("剥掉译文开头残留的旧前缀：%r", head)
+                return rest
+        except Exception as e:
+            log.debug("前缀回显剥离失败（已回退原文本）：%s", e)
+
+    return text
+
+
 def update_many(mapping):
     """批量写入 {前缀原文: 译文}，返回改动条数。"""
     _load()

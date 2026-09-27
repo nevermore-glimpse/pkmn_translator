@@ -78,14 +78,16 @@ launch it for you (Ollama Desktop App is preferred, with `ollama serve` as fallb
 GUI pages:
 
 ```
-1. Translate            5. Chinese polish
-2. Re-translate report  6. Excel to terminology
-3. Re-translate terms   7. Settings
-4. Prefix dictionary    8. Log
+1. Translate                  6. Line rewrap
+2. Re-translate report        7. Excel to terminology
+3. Re-translate terms         8. Settings
+4. Prefix dictionary          9. Local model server
+5. Chinese polish            10. Log
 ```
 
-Pages 1–5 have a file checklist sidebar on the right; add files via
-"Single file" or "Whole folder".
+Pages 1–6 have a file checklist sidebar on the right; add files via
+"Single file" or "Whole folder". Page 9 has an "Adaptation" sidebar
+instead, listing what changed after switching provider.
 
 Command-line menu:
 
@@ -95,9 +97,11 @@ Command-line menu:
 3. Re-translate after terminology update
 4. Prefix dictionary (view / apply)
 5. Chinese polish
-6. Excel to terminology
-7. Settings
-8. Log / environment check
+6. Line rewrap
+7. Excel to terminology
+8. Settings
+9. Local model server (Ollama / llama.cpp / LM Studio)
+10. Log / environment check
 0. Exit
 ```
 
@@ -257,12 +261,23 @@ Open a Command Prompt in the exe folder and run it manually to see the error:
 pip install pyinstaller
 pyinstaller --onefile --name "宝可梦翻译工具" --icon=start.ico ^
     --add-data "萝莉体.ttf;." ^
+    --add-data "LM操作指南;LM操作指南" ^
     --hidden-import openpyxl --hidden-import tkinter --hidden-import PIL main.py
 ```
 
 The bundled font (`萝莉体.ttf`) is loaded privately via GDI at runtime, so
 the exe works on machines where the font is not installed. If you want to
 swap the font, just drop a different `萝莉体.ttf` next to the exe.
+
+`LM操作指南/` (the LM Studio screenshots behind the "操作指南" button on
+menu 9) is bundled the same way. Lookup order is **next to the exe →
+inside the exe → source tree**, so dropping the folder next to the exe
+overrides the built-in copy. Because a one-file exe deletes its unpack
+directory on exit, the images are copied to `%TEMP%\pkmn_translator_guide\`
+before the viewer HTML is written.
+
+`打包程序.bat` already passes both `--add-data` flags and checks that the
+files exist first — a missing font or guide folder only produces a warning.
 
 Then copy `start.ico` next to the produced exe in `dist\`.
 

@@ -38,7 +38,8 @@ BANNER = """\
   6. 换行重排
   7. Excel 转术语表
   8. 设置
-  9. 日志 / 环境检查
+  9. 本地模型服务（Ollama / llama.cpp / LM Studio）
+  10. 日志 / 环境检查
   0. 退出
 ====================================================================
 """
@@ -66,14 +67,29 @@ def _startup_checks():
         print("\n✘ 依赖缺失，请运行：pip install -r requirements.txt")
         input("按回车继续（Ollama 相关功能可能失败）...")
 
+    # ★ 提示按菜单 9 选的提供商给出，切到本地 OpenAI 兼容服务后
+    #   不再让用户去装 Ollama。
+    try:
+        import providers as PV
+        pv_key, pv_label = PV.current(), PV.label_of(PV.current())
+        pv_model = PV.current_model(pv_key)
+    except Exception:
+        pv_key, pv_label, pv_model = "ollama", "Ollama", config.MODEL
+
     if not result["ollama_service"][0]:
-        ok = env_check.ensure_ollama_interactive()
-        if not ok:
-            print("\n⚠ Ollama 未就绪，翻译功能将不可用（其余功能正常）")
+        if pv_key == "ollama":
+            ok = env_check.ensure_ollama_interactive()
+            if not ok:
+                print(f"\n⚠ {pv_label} 未就绪，翻译功能将不可用（其余功能正常）")
+                input("按回车继续...")
+        else:
+            print(f"\n⚠ {pv_label} 未就绪，翻译功能将不可用（其余功能正常）")
+            print(f"  当前地址：{PV.chat_url(pv_key)}")
+            print(f"  请在 {pv_label} 里开启本地服务，或到菜单 9 换一个提供商")
             input("按回车继续...")
     elif not result["ollama_model"][0]:
         print(f"\n⚠ {result['ollama_model'][1]}")
-        print(f"  修复：ollama pull {config.MODEL}")
+        print(f"  修复：到菜单 9 选模型并点「一键部署」（{pv_model}）")
         input("按回车继续...")
 
 
@@ -159,6 +175,8 @@ def run_cli():
             elif choice == "8":
                 settings.show_menu()
             elif choice == "9":
+                commands.cmd_provider()
+            elif choice == "10":
                 commands.cmd_show_logs()
             elif choice == "0":
                 log.info("用户退出")

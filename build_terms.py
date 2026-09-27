@@ -6,8 +6,13 @@
     · 命令行：python build_terms.py -i 术语表.xlsx -o term_dict.py
     · 被调用：from build_terms import build_terms
               build_terms("术语表.xlsx", "term_dict.py", "英文", "简体中文")
+
+★ 默认是「追加」模式：输出文件已存在且能读出 TERM_DICT 时，
+  只把新术语接在末尾，已有键保留原译文（不覆盖用户校对过的内容）。
+  要整份重写请传 mode="overwrite"（命令行加 --overwrite）。
 """
 import argparse
+import ast
 import json
 import os
 import sys
@@ -128,20 +133,99 @@ def extract_from_sheet(ws, source_lang, target_lang):
     return pairs, stats
 
 
-def write_term_dict(all_pairs, out_path, source_lang, target_lang):
+def write_term_dict(pairs, out_path, source_lang, target_lang, note=None):
+    """把 (源, 译) 列表写成 term_dict.py。note 会补一行到文件头的说明里。"""
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
+    with open(out_path, "w", encoding="utf-8", newline="") as f:
         f.write("# -*- coding: utf-8 -*-\n")
         f.write('"""\n')
         f.write("术语表：由 build_terms.py 自动生成\n")
         f.write(f"源语言：{source_lang}    目标语言：{target_lang}\n")
-        f.write(f"共 {len(all_pairs)} 条\n")
+        f.write(f"共 {len(pairs)} 条{note or ''}\n")
         f.write('"""\n\n')
         f.write("TERM_DICT = {\n")
-        for s, t in all_pairs:
+        for s, t in pairs:
             f.write(f"    {json.dumps(s, ensure_ascii=False)}: "
                     f"{json.dumps(t, ensure_ascii=False)},\n")
         f.write("}\n")
+
+
+# ============================================================
+# 追加模式：已有术语字典时，把新术语接在末尾
+# ============================================================
+def read_existing_terms(path):
+    """
+    读出已有术语字典，保持文件里的原始顺序。
+
+    用 ast 解析而不是 import（import 会执行文件、留下 __pycache__，
+    还可能被同名模块缓存干扰）。解析不了就返回空字典 —— 上层会当成
+    「没有已有字典」，最坏情况是覆盖写入，不会把文件写坏。
+    """
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            src = f.read()
+    except Exception as e:
+        _log_warning("读取已有术语字典失败（%s）：%s", path, e)
+        return {}
+
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        _log_warning("已有术语字典语法有误，本次按覆盖处理：%s", e)
+        return {}
+
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "TERM_DICT"
+                   for t in node.targets):
+            continue
+        try:
+            val = ast.literal_eval(node.value)
+        except Exception as e:
+            _log_warning("TERM_DICT 不是字面量字典，本次按覆盖处理：%s", e)
+            return {}
+        if isinstance(val, dict):
+            return {str(k): str(v) for k, v in val.items()}
+    return {}
+
+
+def merge_terms(existing, new_pairs):
+    """
+    把新术语追加到已有字典末尾。
+
+    ★ 已有键一律保留原译文，只追加不存在的键 ——
+      用户可能已经在菜单 3 里逐条校对过、或在术语更新流程里改过译法，
+      Excel 里的旧数据不该把它冲掉。
+    ★ 大小写不同视为同一个词（跟 Excel 内部的去重口径一致）。
+
+    返回 (merged_dict, stats)；stats 含 added / skipped / conflicts。
+    conflicts 是「同一个原文术语、新旧译法不一致」的三元组列表，
+    只是提示，不会改已有值。
+    """
+    merged = {str(k): str(v) for k, v in (existing or {}).items()}
+    lower = {k.lower(): k for k in merged}
+    added = skipped = 0
+    conflicts = []
+
+    for s, t in new_pairs:
+        s, t = str(s), str(t)
+        low = s.lower()
+        if low in lower:
+            skipped += 1
+            keep = lower[low]
+            old = merged[keep]
+            if old != t:
+                conflicts.append((keep, old, t))
+            continue
+        merged[s] = t
+        lower[low] = s
+        added += 1
+
+    return merged, {"added": added, "skipped": skipped,
+                    "conflicts": conflicts}
 
 
 # ============================================================
@@ -164,15 +248,27 @@ def build_terms(excel_path,
                 target_lang="简体中文",
                 sheets=None,
                 dedup=True,
-                verbose=True):
-    """从 Excel 提取术语字典并写入 out_path。返回 dict 结果。"""
+                verbose=True,
+                mode="append"):
+    """
+    从 Excel 提取术语字典并写入 out_path。
+
+    mode="append"    （默认）已有 term_dict.py 时，把新术语接在末尾，
+                      已有键保留原译文不覆盖；
+    mode="overwrite" 整份重写，只留本次 Excel 的内容。
+
+    返回 dict 结果，含 total / added / skipped_existing / conflicts 等。
+    """
+    mode = "overwrite" if str(mode).lower().startswith("over") else "append"
+    base = {"ok": False, "total": 0, "out_path": out_path, "mode": mode,
+            "existing": 0, "added": 0, "skipped_existing": 0,
+            "conflicts": [], "sheet_stats": [], "errors": []}
+
     if openpyxl is None:
-        return {"ok": False, "total": 0, "out_path": out_path,
-                "sheet_stats": [], "errors": ["缺少 openpyxl"]}
+        return {**base, "errors": ["缺少 openpyxl"]}
 
     if not os.path.exists(excel_path):
-        return {"ok": False, "total": 0, "out_path": out_path,
-                "sheet_stats": [], "errors": [f"文件不存在：{excel_path}"]}
+        return {**base, "errors": [f"文件不存在：{excel_path}"]}
 
     wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
     targets = sheets or wb.sheetnames
@@ -182,7 +278,8 @@ def build_terms(excel_path,
     sheet_stats = []
     errors = []
 
-    _log_info("Excel 提取开始：%s  源=%s  译=%s", excel_path, source_lang, target_lang)
+    _log_info("Excel 提取开始：%s  源=%s  译=%s  模式=%s",
+              excel_path, source_lang, target_lang, mode)
 
     for name in targets:
         if name not in wb.sheetnames:
@@ -222,14 +319,42 @@ def build_terms(excel_path,
 
     if not all_pairs:
         errors.append("未提取到任何术语对，请检查源/目标语言列名")
-        return {"ok": False, "total": 0, "out_path": out_path,
-                "sheet_stats": sheet_stats, "errors": errors}
+        return {**base, "sheet_stats": sheet_stats, "errors": errors}
 
-    write_term_dict(all_pairs, out_path, source_lang, target_lang)
-    _log_info("Excel 提取完成：%d 条 → %s", len(all_pairs), out_path)
+    # ---------- 追加 / 覆盖 ----------
+    existing = read_existing_terms(out_path) if mode == "append" else {}
+    if existing:
+        merged, mstat = merge_terms(existing, all_pairs)
+        note = f"（本次追加 {mstat['added']} 条，已存在跳过 {mstat['skipped']} 条）"
+        _log_info("追加模式：原有 %d 条 → 追加 %d 条、跳过已存在 %d 条 → 合计 %d 条",
+                  len(existing), mstat["added"], mstat["skipped"], len(merged))
+        if mstat["conflicts"]:
+            _log_warning("有 %d 条术语的译法与已有字典不一致，已保留已有译法：",
+                         len(mstat["conflicts"]))
+            for src, old, new in mstat["conflicts"][:20]:
+                _log_warning("    %s：保留「%s」，Excel 里是「%s」", src, old, new)
+    else:
+        merged = {}
+        for s, t in all_pairs:
+            merged.setdefault(str(s), str(t))
+        mstat = {"added": len(merged), "skipped": 0, "conflicts": []}
+        note = None
+        if mode == "append" and os.path.exists(out_path):
+            # 文件在但解析不出 TERM_DICT（被改坏 / 不是术语字典）→ 明确提示
+            _log_warning("已有文件 %s 里读不到 TERM_DICT，本次整份重写。", out_path)
 
-    return {"ok": True, "total": len(all_pairs), "out_path": out_path,
-            "sheet_stats": sheet_stats, "errors": errors}
+    write_term_dict(list(merged.items()), out_path, source_lang, target_lang,
+                    note=note)
+    _log_info("Excel 提取完成：合计 %d 条（本次新增 %d）→ %s",
+              len(merged), mstat["added"], out_path)
+
+    return {
+        "ok": True, "out_path": out_path, "mode": mode,
+        "total": len(merged), "added": mstat["added"],
+        "existing": len(existing), "skipped_existing": mstat["skipped"],
+        "conflicts": mstat["conflicts"],
+        "sheet_stats": sheet_stats, "errors": errors,
+    }
 
 
 # ============================================================
@@ -247,6 +372,8 @@ def main(argv=None):
     ap.add_argument("--sheet", action="append", help="只处理指定工作表")
     ap.add_argument("--list-sheets", action="store_true", help="列出所有工作表")
     ap.add_argument("--no-dedup", action="store_true", help="跨表不去重")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="整份重写（默认是：已有术语字典时在末尾追加新术语）")
     args = ap.parse_args(argv)
 
     if args.list_sheets:
@@ -257,11 +384,19 @@ def main(argv=None):
     result = build_terms(
         args.input, args.output, args.source, args.target,
         sheets=args.sheet, dedup=not args.no_dedup,
+        mode="overwrite" if args.overwrite else "append",
     )
     for e in result["errors"]:
         print(f"[err] {e}")
     if result["ok"]:
-        print(f"\n✔ 共 {result['total']} 条 → {result['out_path']}")
+        if result["mode"] == "append" and result["existing"]:
+            print(f"\n原有 {result['existing']} 条 → 追加 {result['added']} 条、"
+                  f"跳过已存在 {result['skipped_existing']} 条")
+            for src, old, new in result["conflicts"][:10]:
+                print(f"  [冲突] {src}：保留「{old}」，Excel 里是「{new}」")
+            if len(result["conflicts"]) > 10:
+                print(f"  …另有 {len(result['conflicts']) - 10} 条冲突，见日志")
+        print(f"\n✔ 合计 {result['total']} 条 → {result['out_path']}")
         return 0
     return 1
 

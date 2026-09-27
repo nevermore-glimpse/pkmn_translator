@@ -70,6 +70,50 @@ def list_ollama_models(timeout=4):
         return []
 
 
+def check_provider_service():
+    """
+    按当前服务提供商探测服务是否在线（Ollama 走 /api/tags，其余走 /v1/models）。
+    返回 (ok, msg)。
+    """
+    try:
+        import providers as PV
+    except Exception:
+        return check_ollama_service()
+    return PV.probe(PV.current())
+
+
+def check_provider_model():
+    """
+    按当前服务提供商检查「要用的模型在不在」。
+    返回 (ok, msg, names)
+    """
+    try:
+        import providers as PV
+    except Exception:
+        ok, msg, names = check_ollama_model()
+        return ok, msg, names
+
+    key = PV.current()
+    model = PV.current_model(key)
+    names = [m.get("name", "") for m in PV.local_models(key)]
+    names = [n for n in names if n]
+
+    if not names:
+        return False, f"服务未返回模型列表，无法确认 {model or '（未设置模型）'}", names
+    if not model:
+        return False, "未设置模型名", names
+
+    low = model.strip().lower()
+    for n in names:
+        if n.strip().lower() == low or n.strip().lower().startswith(low + ":"):
+            return True, f"模型已就绪（{n}）", names
+    # 目录里有、本机还没拉
+    for m in PV.catalog(key):
+        if str(m.get("name", "")).strip().lower() == low:
+            return False, f"模型尚未部署：{model}（可在菜单 9 一键部署）", names
+    return False, f"服务里没有该模型：{model}", names
+
+
 def check_ollama_model(model=None):
     import requests
     model = model or config.MODEL
@@ -315,19 +359,31 @@ def check_all(verbose=True):
         if missing:
             print(f"      修复：pip install {' '.join(missing)}")
 
-    ok, msg = check_ollama_service()
+    # ★ 服务/模型检查按菜单 9 选的服务提供商走，
+    #   切到 llama.cpp / LM Studio 后不会再误报 Ollama 未启动。
+    label = "Ollama"
+    try:
+        import providers as PV
+        label = PV.label_of(PV.current())
+    except Exception:
+        pass
+
+    ok, msg = check_provider_service()
     result["ollama_service"] = (ok, msg)
+    result["service"] = (ok, msg)
     if verbose:
-        print(f"  [{'✔' if ok else '✘'}] Ollama 服务：{msg}")
+        print(f"  [{'✔' if ok else '✘'}] {label} 服务：{msg}")
 
     if ok:
-        ok2, msg2, _ = check_ollama_model()
+        ok2, msg2, _ = check_provider_model()
         result["ollama_model"] = (ok2, msg2)
+        result["model"] = (ok2, msg2)
         if verbose:
-            print(f"  [{'✔' if ok2 else '✘'}] Ollama 模型：{msg2}")
+            print(f"  [{'✔' if ok2 else '✘'}] {label} 模型：{msg2}")
     else:
         result["ollama_model"] = (False, "服务未启动，跳过")
+        result["model"] = (False, "服务未启动，跳过")
         if verbose:
-            print("  [ ] Ollama 模型：跳过")
+            print(f"  [ ] {label} 模型：跳过")
 
     return result
