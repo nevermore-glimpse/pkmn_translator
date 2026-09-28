@@ -34,6 +34,17 @@ def _normalize_key(s):
     return s.strip().lower()
 
 
+def _normalize_value(s):
+    """
+    归一化译文，用于「已有译文与新增译文是否相同」的比较。
+    规则：NFKC（全角→半角、全角数字/字母折叠）+ 去全部空白。
+    招式学习器１３ / 招式学习器13、ＰＰ草 / PP草 视为同一种译法，
+    不再记为术语冲突。
+    """
+    import unicodedata
+    return re.sub(r'\s+', '', unicodedata.normalize('NFKC', s or ''))
+
+
 def _validate(terms, min_len):
     """过滤掉不合格的术语。"""
     result = {}
@@ -115,7 +126,8 @@ def merge_into_term_dict(new_terms, conflicts_out=None):
         norm = _normalize_key(k)
         if norm in existing_index:
             old_k, old_v = existing_index[norm]
-            if old_v == v:
+            # ★ 全半角 / 空白差异不算冲突：招式学习器１３ == 招式学习器13
+            if old_v == v or _normalize_value(old_v) == _normalize_value(v):
                 skipped_same.append(k)
             else:
                 skipped_diff.append((k, old_v, v))

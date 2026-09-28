@@ -29,7 +29,7 @@ USER_CONFIG_PATH = config.USER_CONFIG_FILE
 # key, 显示名, 类型, 说明
 # 顺序对应菜单里显示的序号
 EDITABLE = [
-    # ---------- 本地服务提供商（菜单 9 一键切换） ----------
+    # ---------- 本地服务提供商（菜单 10 一键切换） ----------
     ("PROVIDER",           "服务提供商",        "str",   "ollama / llamacpp / lmstudio / custom"),
     ("LLAMACPP_URL",       "llama.cpp 地址",    "str",   "OpenAI 兼容，如 http://127.0.0.1:8080/v1"),
     ("LLAMACPP_DIR",       "llama.cpp 目录",    "str",   "llama-server.exe 所在文件夹"),
@@ -76,7 +76,7 @@ EDITABLE = [
     ("SKIP_PATH_LINES", "跳过资源路径", "bool", "形如 A/B/C 的行不翻译"),
 
     # ---------- 换行重排 ----------
-    ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "菜单 6 是否可用（翻译后不再自动重排）"),
+    ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "菜单 7 是否可用（翻译后不再自动重排）"),
     ("WRAP_CHARS_MIN",     "换行下限(字)",      "int",   ""),
     ("WRAP_CHARS_MAX",     "换行上限(字)",      "int",   ""),
     ("WRAP_MIN_GAP",       "换行最小间隔(字)",  "int",   "换行后至少 N 字才换"),
@@ -93,7 +93,7 @@ EDITABLE = [
     ("AUTO_EXTRACT_MIN_LEN", "术语最短长度", "int", ""),
 
     # ---------- 中文润色 ----------
-    ("POLISH_ENABLE",      "启用中文润色",     "bool",  "菜单 5 是否可用"),
+    ("POLISH_ENABLE",      "启用中文润色",     "bool",  "菜单 6 是否可用"),
     ("POLISH_BATCH_SIZE",  "润色每批条数",     "int",   "建议 6-12"),
     ("POLISH_TEMPERATURE", "润色采样温度",     "float", "略高于翻译，给润色自由度"),
     ("POLISH_MIN_LEN",     "润色最短长度",     "int",   "短于该长度不润色"),

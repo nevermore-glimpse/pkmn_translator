@@ -50,7 +50,7 @@ PROVIDERS = {
         "home":        "https://ollama.com",
         "summary":     "最省事，模型一条命令拉取，参数每次请求都能带。",
         # ★ 关掉推理/思考的办法（每条请求都带 think=false 就够）
-        "nothink":     "菜单 9 取消勾选「推理模式 think」，请求里会带 think=false。",
+        "nothink":     "菜单 10 取消勾选「推理模式 think」，请求里会带 think=false。",
         "pull":        "ollama pull {model}",
     },
     "llamacpp": {
@@ -906,7 +906,7 @@ def run_deploy(model, key=None, emit=None, timeout=7200):
         return False, msg
 
     ok = (proc.returncode == 0)
-    msg = ("部署完成。回到菜单 1 选好文件即可翻译。"
+    msg = ("部署完成。回到菜单 2 选好文件即可翻译。"
            if ok else f"命令退出码 {proc.returncode}，部署未成功。")
     emit(msg)
     return ok, msg
@@ -1040,11 +1040,11 @@ def llamacpp_args(model_path=None, exe=None):
     exe = exe or find_llama_server()
     if not exe:
         return None, ("未找到 llama-server.exe。\n"
-                      "请在菜单 9 中层把「llama.cpp 目录」指到解压出来的那个文件夹。")
+                      "请在菜单 10 中层把「llama.cpp 目录」指到解压出来的那个文件夹。")
     model = (model_path or getattr(config, "LLAMACPP_MODEL_PATH", "") or "").strip()
     if not model:
         return None, ("还没选模型。\n"
-                      "请在菜单 9 中层的「已安装模型」里选一个 GGUF。")
+                      "请在菜单 10 中层的「已安装模型」里选一个 GGUF。")
     if not os.path.exists(model):
         return None, f"模型文件不存在：{model}"
 

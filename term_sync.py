@@ -276,6 +276,65 @@ def save_term_values(updates):
     return changed
 
 
+def rename_term_keys(renames):
+    """
+    批量重命名术语原文（renames: {旧原文: 新原文}），原地改写 term_dict.py 的 key。
+    目标原文已存在（归一化后重复）时跳过该条。返回实际改名条数。
+    """
+    if not renames:
+        return 0
+    if not os.path.exists(config.TERM_FILE):
+        log.warning("term_dict.py 不存在，无法改名")
+        return 0
+
+    existing_norm = {_normalize_key(k): k for k in load_current_terms()}
+
+    ok = {}
+    for old, new in renames.items():
+        old = (old or "").strip()
+        new = (new or "").strip()
+        if not old or not new or old == new:
+            continue
+        if _normalize_key(old) not in existing_norm:
+            log.warning("术语改名跳过（原文不存在）：%s", old)
+            continue
+        hit = existing_norm.get(_normalize_key(new))
+        if hit is not None and hit != existing_norm[_normalize_key(old)]:
+            log.warning("术语改名跳过（目标原文已存在）：%s → %s", old, new)
+            continue
+        ok[old] = new
+
+    if not ok:
+        return 0
+
+    with open(config.TERM_FILE, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    out = []
+    renamed = 0
+    for line in text.splitlines():
+        m = _PAIR_LINE_RE.match(line)
+        if m:
+            try:
+                k = json.loads(m.group(2))
+            except Exception:
+                k = None
+            if k in ok:
+                new_key = json.dumps(ok[k], ensure_ascii=False)
+                line = (f"{m.group(1)}{new_key}{m.group(3)}"
+                        f"{m.group(4)}{m.group(5)}{m.group(6)}")
+                renamed += 1
+        out.append(line)
+
+    if not renamed:
+        return 0
+
+    _atomic_write(config.TERM_FILE, "\n".join(out) + "\n")
+    log.info("术语表改名 %d 条：%s", renamed,
+             "、".join(f"{o}→{n}" for o, n in list(ok.items())[:8]))
+    return renamed
+
+
 def delete_term_keys(keys):
     """
     从 term_dict.py 中删除指定原文 key 对应的条目（整行移除）。

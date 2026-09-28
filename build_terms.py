@@ -197,7 +197,7 @@ def merge_terms(existing, new_pairs):
     把新术语追加到已有字典末尾。
 
     ★ 已有键一律保留原译文，只追加不存在的键 ——
-      用户可能已经在菜单 3 里逐条校对过、或在术语更新流程里改过译法，
+      用户可能已经在菜单 4 里逐条校对过、或在术语更新流程里改过译法，
       Excel 里的旧数据不该把它冲掉。
     ★ 大小写不同视为同一个词（跟 Excel 内部的去重口径一致）。
 
@@ -217,7 +217,8 @@ def merge_terms(existing, new_pairs):
             skipped += 1
             keep = lower[low]
             old = merged[keep]
-            if old != t:
+            # ★ 全半角 / 空白差异不算冲突（招式学习器１３ == 招式学习器13）
+            if old != t and _norm_value(old) != _norm_value(t):
                 conflicts.append((keep, old, t))
             continue
         merged[s] = t
@@ -226,6 +227,13 @@ def merge_terms(existing, new_pairs):
 
     return merged, {"added": added, "skipped": skipped,
                     "conflicts": conflicts}
+
+
+def _norm_value(s):
+    """译文案值归一化：NFKC（全角→半角）+ 去空白，用于冲突比较。"""
+    import re as _re
+    import unicodedata
+    return _re.sub(r'\s+', '', unicodedata.normalize('NFKC', s or ''))
 
 
 # ============================================================

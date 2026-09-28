@@ -43,7 +43,7 @@ def resource_path(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.3.1"
+VERSION     = "1.3.5"
 APP_NAME    = "宝可梦同人游戏翻译工具"
 APP_TITLE   = f"{APP_NAME}v{VERSION}"
 
@@ -91,6 +91,7 @@ class Runtime:
     cache_file  = CACHE_FILE
     conflict_file = CONFLICT_FILE   # ★ 术语冲突记录（与缓存同源）
     last_dir    = BASE_DIR      # ★ 最近一次浏览的目录（GUI 用）
+    plugin_font = ""            # ★ 植入中文插件时用户自选的字体（空=内置萝莉体）
 
     @classmethod
     def reset(cls):
@@ -99,6 +100,7 @@ class Runtime:
         cls.cache_file  = CACHE_FILE
         cls.conflict_file = CONFLICT_FILE
         cls.last_dir    = BASE_DIR
+        cls.plugin_font = ""
 
     @classmethod
     def set_input(cls, path):
@@ -123,7 +125,8 @@ class Runtime:
             with open(os.path.join(BASE_DIR, ".runtime.json"),
                       "w", encoding="utf-8") as f:
                 json.dump({"input_file": cls.input_file,
-                           "last_dir":   cls.last_dir}, f,
+                           "last_dir":   cls.last_dir,
+                           "plugin_font": cls.plugin_font}, f,
                           ensure_ascii=False)
         except Exception:
             pass
@@ -144,6 +147,9 @@ class Runtime:
             ip = d.get("input_file")
             if ip and os.path.exists(ip):
                 cls.set_input(ip)
+            pf = d.get("plugin_font")
+            if pf and os.path.isfile(pf):
+                cls.plugin_font = pf
         except Exception:
             pass
 
@@ -161,10 +167,10 @@ API_BASE_URL   = "http://127.0.0.1:8080/v1"
 # ★ 不要把密钥写在这里（config.py 会提交到仓库）！
 #   请在「设置」里填写，它会写入 user_config.json（已在 .gitignore 中）。
 API_KEY        = ""
-API_MODEL      = "Qwen3.5-4B-Q4_K_M"
+API_MODEL      = "qwen3.5:4b"
 API_TIMEOUT    = 600.0
 
-# ---------- 本地服务提供商（菜单 9 用） ----------
+# ---------- 本地服务提供商（菜单 10 用） ----------
 # ollama / llamacpp / lmstudio / custom
 #   ollama    → 走 OLLAMA_URL（/api/chat 原生协议）
 #   其余三个  → 走 OpenAI 兼容接口，地址分别取自下面的 *_URL
@@ -173,7 +179,7 @@ LLAMACPP_URL     = "http://127.0.0.1:8080/v1"
 LMSTUDIO_URL     = "http://localhost:1234/v1"
 CUSTOM_OPENAI_URL = "http://localhost:8080/v1"
 
-# ---------- llama.cpp（菜单 9 中层用） ----------
+# ---------- llama.cpp（菜单 10 中层用） ----------
 # ★ 保持空值：由用户在界面里选自己的目录，不把个人路径写进仓库
 LLAMACPP_DIR        = ""    # llama-server.exe 所在文件夹
 LLAMACPP_MODEL_DIR  = ""    # 存放 GGUF 的文件夹（会自动扫描）

@@ -13,7 +13,9 @@ Supports terminology lists, placeholder protection, resume from cache, and autom
 - 💾 **Resume from cache** — Cache is saved after each batch; you can Ctrl+C and continue anytime
 - ✅ **Auto-check** — Automatically reports untranslated lines / symbol mismatches / special lines after translation
 - 🔄 **Auto re-translate** — Re-translates untranslated / suspected-untranslated sentences with one click
-- 🔀 **Line rewrapping** — Dedicated step (menu 6): by character count for `[map*]` (`\n`) and other blocks (spaces). Not applied automatically after translation.
+- 🔀 **Line rewrapping** — Dedicated step (menu 7): by character count for `[map*]` (`\n`) and other blocks (spaces). Not applied automatically after translation.
+- 🐞 **Enable debug mode (Beta)** — Extracts game scripts to .rb files with a loader (loading them in the original order via `!load_order.txt`), then injects via one of four methods: add `000_OpenDebug.rb`, strip `$DEBUG` conditions, trigger from the 100-step Repel, or an F9 hotkey script. **None of them calls the model**; writes a change report and offers a one-click restore (menu 1).
+- 🈶 **Chinese text plugin** — Injects a per-character Chinese rendering patch into the game. Pick any TTF/OTF you like (otherwise the bundled Lolita font is used); the injection is a pure file operation that never calls the model, only adds/overwrites the two plugin scripts plus the font, and can be reverted with one click (menu 1).
 - 🧠 **Terminology re-translation** — Detects newly added terms and re-translates only the affected sentences
 - ⚙️ **In-app settings** — Edit all configuration values from the menu, no manual file editing
 - 📋 **One-click copy** — Right-click any report / term / prefix list to copy it as
@@ -78,34 +80,37 @@ launch it for you (Ollama Desktop App is preferred, with `ollama serve` as fallb
 GUI pages:
 
 ```
-1. Translate                  6. Line rewrap
-2. Re-translate report        7. Excel to terminology
-3. Re-translate terms         8. Settings
-4. Prefix dictionary          9. Local model server
-5. Chinese polish (resumable) 10. Log
+1. Enable debug mode (Beta)   7. Line rewrap
+2. Translate                  8. Excel to terminology
+3. Re-translate report        9. Settings
+4. Re-translate terms        10. Local model server
+5. Prefix dictionary         11. Log
+6. Chinese polish (resumable)
 ```
 
-Pages 1–6 have a file checklist sidebar on the right; add files via
-"Single file" or "Whole folder". Page 9 has an "Adaptation" sidebar
-instead, listing what changed after switching provider.
+Pages 2–7 have a file checklist sidebar on the right; add files via
+"Single file" or "Whole folder". Page 1 uses a game-folder picker
+instead (it also hosts the Chinese text plugin). Page 10 has an
+"Adaptation" sidebar listing what changed after switching provider.
 
 Command-line menu:
 
 ```
-1. Translate
-2. Re-translate check report
-3. Re-translate after terminology update
-4. Prefix dictionary (view / apply)
-5. Chinese polish (resumable, writes a detail report)
-6. Line rewrap
-7. Excel to terminology
-8. Settings
-9. Local model server (Ollama / llama.cpp / LM Studio)
-10. Log / environment check
+1. Enable debug mode (Beta) (extract scripts / inject / report / restore)
+2. Translate
+3. Re-translate check report
+4. Re-translate after terminology update
+5. Prefix dictionary (view / apply)
+6. Chinese polish (resumable, writes a detail report)
+7. Line rewrap
+8. Excel to terminology
+9. Settings
+10. Local model server (Ollama / llama.cpp / LM Studio)
+11. Log / environment check
 0. Exit
 ```
 
-Menus 2 / 3 / 4 ask for "single file / whole folder" first.
+Menus 3 / 4 / 5 ask for "single file / whole folder" first.
 
 ### Create Desktop Shortcut (Optional)
 
@@ -237,7 +242,7 @@ ollama pull qwen2.5:14b
 
 **Translation output contains raw English**
 
-Run menu `2` to auto re-translate, or open `<output>_report.txt` and fix manually.
+Run menu `3` to auto re-translate, or open `<output>_report.txt` and fix manually.
 
 **Placeholder lost**
 

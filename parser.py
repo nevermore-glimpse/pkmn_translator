@@ -134,6 +134,11 @@ def extract_entries(lines):
             i += 1
             continue
 
+        # ★ # 开头的行视为注释 / 标记行：不翻译、不进入检查报告
+        if s.startswith('#'):
+            i += 1
+            continue
+
         # 情况 1：文件末尾孤立文本
         if i + 1 >= n:
             special.append({

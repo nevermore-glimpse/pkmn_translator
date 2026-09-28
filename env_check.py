@@ -110,7 +110,7 @@ def check_provider_model():
     # 目录里有、本机还没拉
     for m in PV.catalog(key):
         if str(m.get("name", "")).strip().lower() == low:
-            return False, f"模型尚未部署：{model}（可在菜单 9 一键部署）", names
+            return False, f"模型尚未部署：{model}（可在菜单 10 一键部署）", names
     return False, f"服务里没有该模型：{model}", names
 
 
@@ -359,7 +359,7 @@ def check_all(verbose=True):
         if missing:
             print(f"      修复：pip install {' '.join(missing)}")
 
-    # ★ 服务/模型检查按菜单 9 选的服务提供商走，
+    # ★ 服务/模型检查按菜单 10 选的服务提供商走，
     #   切到 llama.cpp / LM Studio 后不会再误报 Ollama 未启动。
     label = "Ollama"
     try:

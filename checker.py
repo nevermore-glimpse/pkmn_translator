@@ -297,6 +297,10 @@ def check(src_lines, out_lines, entries, special, report_path,
         dst = out_lines[line_no].strip()
         src_strip = src.strip()
 
+        # ★ # 开头的行是注释 / 标记行，不进入检查报告
+        if src_strip.startswith('#'):
+            continue
+
         if src_strip in failed_srcs:
             continue
 

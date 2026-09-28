@@ -5,10 +5,10 @@
 布局：
   左侧  圆形头像（悬停显示作者信息）+ 标题 + 10 个菜单（悬停放大 + 底部阴影）
   右侧  各功能页面
-    · 菜单 1/2/3/4/5/6 右侧带「待操作文件」勾选侧边栏
-    · 菜单 9 右侧带「切换适配」清单侧边栏
+    · 菜单 2/3/4/5/6/7 右侧带「待操作文件」勾选侧边栏
+    · 菜单 10 右侧带「切换适配」清单侧边栏
     · 底部常驻状态条（进度 + 取消）
-  菜单 10 为日志页，任务启动后自动跳转过去。
+  菜单 11 为日志页，任务启动后自动跳转过去。
 """
 import os
 import queue
@@ -96,22 +96,23 @@ BTN_PAD_X = 22
 BTN_PAD_Y = 16
 
 MENU_ITEMS = [
-    ("1", "翻译"),
-    ("2", "重翻检查报告"),
-    ("3", "术语更新后重翻"),
-    ("4", "前缀字典"),
-    ("5", "中文润色"),
-    ("6", "换行重排"),
-    ("7", "Excel 转术语表"),
-    ("8", "设置"),
-    ("9", "本地模型服务"),
-    ("10", "日志"),
+    ("1", "开启调试(Beta)"),
+    ("2", "翻译"),
+    ("3", "重翻检查报告"),
+    ("4", "术语更新后重翻"),
+    ("5", "前缀字典"),
+    ("6", "中文润色"),
+    ("7", "换行重排"),
+    ("8", "Excel 转术语表"),
+    ("9", "设置"),
+    ("10", "本地模型服务"),
+    ("11", "日志"),
 ]
 
 MENU_KEYS = {
-    "1": "translate", "2": "report", "3": "terms", "4": "prefix",
-    "5": "polish", "6": "reflow", "7": "excel", "8": "settings",
-    "9": "provider", "10": "log",
+    "1": "debug", "2": "translate", "3": "report", "4": "terms",
+    "5": "prefix", "6": "polish", "7": "reflow", "8": "excel",
+    "9": "settings", "10": "provider", "11": "log",
 }
 
 
@@ -1014,22 +1015,26 @@ class FilePanel(tk.Frame):
     右侧「待操作文件」侧边栏：单个文件 / 整个文件夹 + 勾选列表。
 
     mode:
-      "source" —— 菜单 1/3/4/5：不限格式，只跳过 *_translated.txt
+      "source" —— 菜单 2/4/5/6/7：不限格式，只跳过 *_translated.txt
                   与 *_translated_report.txt
-      "report" —— 菜单 2：只识别 *_translated_report.txt
+      "report" —— 菜单 3：只识别 *_translated_report.txt
     """
 
-    # 菜单 1/3/4/5 需要跳过的后缀
+    # 菜单 2/4/5/6/7 需要跳过的后缀
     SKIP_SUFFIX = ("_translated.txt", "_translated_report.txt")
 
     def __init__(self, master, bg=CARD, width=272, mode="source",
-                 on_change=None, app=None):
+                 on_change=None, app=None, allow_game_root=False,
+                 on_game_root=None):
         tk.Frame.__init__(self, master, bg=bg, width=width)
         self.bg = bg
         self.mode = mode
         self.on_change = on_change
         self.app = app                # 用于复制到剪贴板时的状态栏反馈
         self.panel_w = width          # ★ 供 clear() 等重画提示文字时算 wraplength
+        self.allow_game_root = allow_game_root
+        self.on_game_root = on_game_root
+        self.game_root = None
         self.files = []
         self.vars = {}
 
@@ -1053,6 +1058,18 @@ class FilePanel(tk.Frame):
         self.count_lbl = tk.Label(row2, text="已选 0", bg=bg, fg=C_KEY,
                                   font=FONT_BIG)
         self.count_lbl.pack(side="right")
+
+        # ★ 菜单 7：可以直接选游戏根目录（自动扫描里面的 txt 文件）
+        if allow_game_root:
+            row3 = tk.Frame(self, bg=bg)
+            row3.pack(fill="x", padx=10, pady=(4, 2))
+            GlassButton(row3, "游戏根目录", width=120, height=32, bg=bg,
+                        font=FONT_SMALL,
+                        command=self.pick_game_root).pack(side="left")
+            self.root_lbl = tk.Label(row3, text="未选择", bg=bg, fg=C_HINT,
+                                     font=FONT_SMALL, anchor="w",
+                                     wraplength=max(100, width - 150))
+            self.root_lbl.pack(side="left", padx=6)
 
         outer, inner = make_scroll_area(self, bg=bg)
         outer.pack(fill="both", expand=True, padx=6, pady=(4, 8))
@@ -1079,7 +1096,10 @@ class FilePanel(tk.Frame):
     def _hint_text(self):
         if self.mode == "report":
             return "点击上方按钮选择检查报告\n（只识别 *_translated_report.txt）"
-        return "点击上方按钮选择文件\n（不限格式，自动跳过译文与检查报告）"
+        text = "点击上方按钮选择文件\n（不限格式，自动跳过译文与检查报告）"
+        if getattr(self, "allow_game_root", False):
+            text += "\n也可点「游戏根目录」自动扫描里面的 txt 文件"
+        return text
 
     def _accept(self, name):
         low = name.lower()
@@ -1126,6 +1146,45 @@ class FilePanel(tk.Frame):
             messagebox.showinfo("提示", self._hint_text().replace("\n", ""))
             return
         self.add_files(files)
+
+    def pick_game_root(self):
+        """选择游戏根目录：自动扫描里面的 txt 文件（跳过译文与报告）。"""
+        folder = filedialog.askdirectory(
+            title="选择游戏根目录（会自动扫描里面的 .txt 文件）",
+            initialdir=self._initial())
+        if not folder:
+            return
+        config.Runtime.set_dir(folder)
+        found = []
+        for root, dirs, files in os.walk(folder):
+            # 别钻进太深的目录，也跳过生成物目录
+            depth = os.path.relpath(root, folder).count(os.sep)
+            if depth > 4:
+                dirs[:] = []
+                continue
+            for f in files:
+                if not f.lower().endswith(".txt"):
+                    continue
+                if not self._accept(f):
+                    continue
+                found.append(os.path.join(root, f))
+                if len(found) >= 2000:
+                    break
+            if len(found) >= 2000:
+                break
+        found.sort()
+        if not found:
+            messagebox.showinfo(
+                "提示", f"该目录下没找到可处理的 .txt 文件：\n{folder}")
+            return
+        self.game_root = folder
+        self.root_lbl.config(text=os.path.basename(folder) or folder)
+        self.add_files(found)
+        if self.on_game_root:
+            try:
+                self.on_game_root(folder)
+            except Exception:
+                pass
 
     def add_files(self, paths, silent=False):
         if self._hint and self._hint.winfo_exists():
@@ -1403,7 +1462,7 @@ class App:
         self.sheet_vars = {}       # Excel sheet → BooleanVar
         self.setting_widgets = {}  # key → (widget, typ)
 
-        # 菜单 9（本地模型服务）
+        # 菜单 10（本地模型服务）
         self.pv_param_vars = {}    # config key → StringVar
         self._pv_btn_groups = []   # 提供商分段按钮组
         self._pv_models = []       # 当前列表里的模型行
@@ -1545,6 +1604,7 @@ class App:
                      lambda e, c=bgc: paint_bg(c, e.width, e.height))
             self.pages[key] = page
 
+        self._page_debug()
         self._page_translate()
         self._page_report()
         self._page_terms()
@@ -1606,18 +1666,21 @@ class App:
         elif key == "log":
             pass
 
-    def _make_file_panel(self, holder, mode):
-        """统一创建右侧文件侧边栏，并把菜单 1 的选择同步给其余菜单。"""
+    def _make_file_panel(self, holder, mode, allow_game_root=False,
+                         on_game_root=None):
+        """统一创建右侧文件侧边栏，并把菜单 2 的选择同步给其余菜单。"""
         fp = FilePanel(holder.body, bg=CARD, mode=mode,
-                       on_change=self._sync_file_panels, app=self)
+                       on_change=self._sync_file_panels, app=self,
+                       allow_game_root=allow_game_root,
+                       on_game_root=on_game_root)
         fp.pack(fill="both", expand=True)
         self.file_panels.append(fp)
         return fp
 
     def _sync_file_panels(self, paths):
         """
-        菜单 1（翻译）选中文件后，自动同步到菜单 2~5。
-        菜单 2 只认检查报告，所以这里做一次「源文件 → 报告」的换算。
+        菜单 2（翻译）选中文件后，自动同步到菜单 3~6。
+        菜单 3 只认检查报告，所以这里做一次「源文件 → 报告」的换算。
         """
         paths = list(paths or [])
         for fp in self.file_panels:
@@ -1826,6 +1889,26 @@ class App:
                     self._fill_report(payload)
                 elif kind == "term_conflict_done":
                     self._after_conflicts(payload)
+                elif kind == "debug_done":
+                    self._fill_debug_mods(payload)
+                elif kind == "debug_extract_done":
+                    r = payload or {}
+                    n = r.get("files", 0)
+                    self.debug_extract_stat.config(
+                        text=f"{n} 个脚本" if n else "已解包过")
+                elif kind == "plugin_done":
+                    r = (payload or [{}])[0] if isinstance(payload, list) else {}
+                    fam = r.get("font", "")
+                    self.plugin_stat.config(
+                        text=f"已植入（字体 {fam}）" if fam else "已植入")
+                    self._refresh_plugin_font()
+                elif kind == "plugin_restore_done":
+                    r = (payload or [{}])[0] if isinstance(payload, list) else {}
+                    removed = r.get("removed") or []
+                    self.plugin_stat.config(text="")
+                    self.plugin_restore_lbl.config(
+                        text=("已还原：" + "、".join(removed)) if removed
+                        else "没有找到插件脚本（可能本来就没植入过）")
                 elif kind == "prefix_done":
                     messagebox.showinfo("完成",
                                         "前缀字典已写入并应用到翻译文件")
@@ -1970,7 +2053,7 @@ class App:
         ok_model = res.get("ollama_model", (False, ""))[0]
         msg = res.get("ollama_service", (False, ""))[1]
 
-        # ★ 提示按菜单 9 选的提供商走，不写死 Ollama
+        # ★ 提示按菜单 10 选的提供商走，不写死 Ollama
         label, cur_model = "Ollama", config.MODEL
         try:
             import providers as PV
@@ -1987,7 +2070,294 @@ class App:
             self.status_var.set(f"{label} 未连接：{msg}（翻译功能不可用）")
 
     # ================================================================
-    # 页面 1：翻译
+    # 页面 1：开启调试（Beta）
+    # ================================================================
+    def _page_debug(self):
+        page = self.pages["debug"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(1, weight=1)
+
+        left = tk.Frame(page, bg=BG_BASE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_rowconfigure(1, weight=1)
+        left.grid_columnconfigure(0, weight=1)
+
+        # ---- 上层：提取脚本为 rb 文件 ----
+        c1 = RoundCard(left, radius=16, pad=18, auto_height=True)
+        c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        head1 = tk.Frame(c1.body, bg=CARD)
+        head1.pack(fill="x")
+        tk.Label(head1, text="提取脚本为 rb 文件", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        self.debug_extract_stat = tk.Label(head1, text="", bg=CARD,
+                                           fg=C_KEY, font=FONT_BIG)
+        self.debug_extract_stat.pack(side="right")
+        attach_label_copy(self.debug_extract_stat, self, "提取统计")
+        tk.Label(c1.body,
+                 text="把游戏的 Data/Scripts.rxdata 解包成 rb 脚本并装上「加载器」"
+                      "（原文件自动备份为 ScriptsBackup.rxdata），"
+                      "此后改动 rb 文件即时生效，无需重新编译。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
+        GlassButton(c1.body, "提取脚本", width=160, height=46, primary=True,
+                    bg=CARD,
+                    command=self._do_debug_extract).pack(anchor="w",
+                                                         pady=(8, 0))
+
+        # ---- 中层：修改列表 ----
+        c2 = RoundCard(left, radius=16, pad=14)
+        c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        head2 = tk.Frame(c2.body, bg=CARD)
+        head2.pack(fill="x")
+        tk.Label(head2, text="修改列表", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        tk.Label(head2, text="尚未执行", bg=CARD, fg=C_HINT,
+                 font=FONT_SMALL).pack(side="right")
+        wrap = tk.Frame(c2.body, bg=CARD)
+        wrap.pack(fill="both", expand=True, pady=(6, 0))
+        cols = ("file", "how", "change")
+        tree = ttk.Treeview(wrap, columns=cols, show="headings", height=3)
+        for c, w, t in (("file", 170, "文件"), ("how", 80, "方式"),
+                        ("change", 300, "修改内容")):
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        bind_tree_wheel(tree)
+        attach_tree_copy(tree, self)
+        self.debug_tree = tree
+        self.debug_stat = head2.winfo_children()[-1]
+
+        # ---- 下层：选择调试注入方式 ----
+        c3 = RoundCard(left, radius=16, pad=18, auto_height=True)
+        c3.grid(row=2, column=0, sticky="ew")
+        tk.Label(c3.body, text="选择调试注入方式", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+
+        from game_tools import DEBUG_MODES as _DM
+        self.debug_modes = list(_DM)
+        row = tk.Frame(c3.body, bg=CARD)
+        row.pack(fill="x", pady=(8, 0))
+        self.debug_mode_var = tk.StringVar(
+            value=self.debug_modes[0]["label"])
+        cb = ttk.Combobox(row, textvariable=self.debug_mode_var,
+                          values=[m["label"] for m in self.debug_modes],
+                          width=40, state="readonly", font=FONT)
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>",
+                lambda _e: self._update_debug_mode_desc())
+        GlassButton(row, "开始注入", width=140, height=46, primary=True,
+                    bg=CARD,
+                    command=self._do_debug_enable).pack(side="right")
+        self.debug_mode_desc = tk.Label(c3.body, text="", bg=CARD,
+                                        fg=C_HINT, font=FONT_SMALL,
+                                        justify="left", wraplength=560)
+        self.debug_mode_desc.pack(anchor="w", pady=(6, 0))
+        self._update_debug_mode_desc()
+        self.debug_report_lbl = tk.Label(c3.body, text="", bg=CARD,
+                                         fg=C_KEY, font=FONT_SMALL,
+                                         justify="left", wraplength=560)
+        self.debug_report_lbl.pack(anchor="w", pady=(4, 0))
+        attach_label_copy(self.debug_report_lbl, self, "报告路径")
+
+        # ---- 还原按钮（在开始注入下面） ----
+        row_restore = tk.Frame(c3.body, bg=CARD)
+        row_restore.pack(fill="x", pady=(10, 0))
+        GlassButton(row_restore, "还原", width=120, height=44, bg=CARD,
+                    command=self._do_debug_restore).pack(side="left")
+        tk.Label(row_restore,
+                 text="还原注入操作（清除注入、脚本回到解包状态）／"
+                      "还原提取脚本（删掉解包目录、装回原始 rxdata）",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=430).pack(side="left", padx=10)
+
+        # ---- 下层②：植入中文文本处理插件（独立一块，原在菜单 7） ----
+        c4 = RoundCard(left, radius=16, pad=18, auto_height=True)
+        c4.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        head3 = tk.Frame(c4.body, bg=CARD)
+        head3.pack(fill="x")
+        tk.Label(head3, text="植入中文文本处理插件", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        self.plugin_stat = tk.Label(head3, text="", bg=CARD, fg=C_KEY,
+                                    font=FONT_SMALL)
+        self.plugin_stat.pack(side="left", padx=10)
+        attach_label_copy(self.plugin_stat, self, "插件统计")
+
+        row_font = tk.Frame(c4.body, bg=CARD)
+        row_font.pack(fill="x", pady=(8, 0))
+        GlassButton(row_font, "选择字体", width=120, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pick_plugin_font).pack(side="left")
+        self.plugin_font_lbl = tk.Label(row_font, text="", bg=CARD,
+                                        fg=C_HINT, font=FONT_SMALL,
+                                        justify="left", wraplength=430)
+        self.plugin_font_lbl.pack(side="left", padx=10)
+        attach_label_copy(self.plugin_font_lbl, self, "字体信息")
+        GlassButton(row_font, "开始植入", width=140, height=46,
+                    primary=True, bg=CARD,
+                    command=self._do_plugin_inject).pack(side="right")
+        tk.Label(c4.body,
+                 text="自动解包脚本并安装加载器，写入中文逐字渲染补丁"
+                      "（Chinese text manager）；字体可自选，会复制到游戏 "
+                      "目录下的 Fonts 文件夹。"
+                      "只新增／覆盖这两个插件脚本与字体文件。"
+                      "原文里的 \\n 换行与空格重排都不影响插件排版。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
+
+        # ---- 插件：还原（与上层「还原」同一排版） ----
+        row_restore2 = tk.Frame(c4.body, bg=CARD)
+        row_restore2.pack(fill="x", pady=(10, 0))
+        GlassButton(row_restore2, "还原", width=120, height=44, bg=CARD,
+                    command=self._do_plugin_restore).pack(side="left")
+        tk.Label(row_restore2,
+                 text="还原插件植入（删掉两个插件脚本，"
+                      "以及当初复制进 Fonts 的字体；游戏自带字体不动）",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=430).pack(side="left", padx=10)
+        self.plugin_restore_lbl = tk.Label(c4.body, text="", bg=CARD,
+                                           fg=C_KEY, font=FONT_SMALL,
+                                           justify="left", wraplength=560)
+        self.plugin_restore_lbl.pack(anchor="w", pady=(4, 0))
+        attach_label_copy(self.plugin_restore_lbl, self, "插件还原结果")
+        self._refresh_plugin_font()
+
+        # ---- 右侧：游戏文件夹 ----
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder.grid(row=0, column=1, rowspan=3, sticky="nsew")
+        fp_holder.grid_propagate(False)
+        body = fp_holder.body
+        tk.Label(body, text="游戏文件夹", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 4))
+        GlassButton(body, "选择游戏根目录", width=132, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pick_debug_folder).pack(anchor="w",
+                                                          padx=10)
+        self.debug_folder_lbl = tk.Label(body, text="未选择", bg=CARD,
+                                         fg=C_KEY, font=FONT_SMALL,
+                                         wraplength=200, justify="left")
+        self.debug_folder_lbl.pack(anchor="w", padx=10, pady=(6, 0))
+        attach_copy(self.debug_folder_lbl, [
+            ("复制路径", lambda: getattr(self, "debug_folder", "")),
+        ], app=self, hotkey=False)
+        tk.Label(body,
+                 text="提示：\n"
+                      "· 要选游戏根目录（里面有 Data/Scripts.rxdata）\n"
+                      "· 适用于 Pokémon Essentials / mkxp / RMXP 游戏\n"
+                      "· 提取前自动备份，可随时用备份还原\n"
+                      "· 开启调试后：F9 调试菜单 · Ctrl 穿墙 · "
+                      "Ctrl 快进对话",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=200).pack(anchor="w", padx=10,
+                                                      pady=(10, 0))
+
+    def _pick_debug_folder(self):
+        d = filedialog.askdirectory(
+            title="选择游戏根目录（含 Data/Scripts.rxdata）",
+            initialdir=(config.Runtime.last_dir
+                        if os.path.isdir(config.Runtime.last_dir)
+                        else config.BASE_DIR))
+        if not d:
+            return
+        if not os.path.exists(os.path.join(d, "Data", "Scripts.rxdata")):
+            messagebox.showwarning(
+                "提示", "该目录下没有 Data/Scripts.rxdata，"
+                        "请选择游戏根目录（Game.exe 所在文件夹）")
+            return
+        self.debug_folder = d
+        self.debug_folder_lbl.config(text=d)
+        config.Runtime.set_dir(d)
+
+    def _debug_folder(self):
+        d = getattr(self, "debug_folder", None)
+        if not d or not os.path.isdir(d):
+            messagebox.showwarning("提示", "请先在右侧选择游戏根目录")
+            return None
+        return d
+
+    def _do_debug_extract(self):
+        d = self._debug_folder()
+        if not d:
+            return
+        force = False
+        try:
+            import game_tools as GT
+            if GT.is_dumped(d):
+                force = messagebox.askyesno(
+                    "已经解包过",
+                    "这个游戏已经解包过。\n\n"
+                    "是否用备份重新提取？\n"
+                    "· 是 → 按 ScriptsBackup.rxdata 重新生成 rb 文件"
+                    "（可修复「加载顺序被打乱」导致的报错）\n"
+                    "· 否 → 跳过，保持现状")
+                if not force:
+                    return
+        except Exception:
+            pass
+        self.show("log")
+
+        def work():
+            res = commands.debug_extract_paths([d], force=force)
+            self.q.put(("debug_extract_done", res))
+            return res
+
+        self.run_async(work, label="提取脚本中…", done_label="脚本提取完成")
+
+    def _debug_mode_key(self):
+        label = getattr(self, "debug_mode_var", None)
+        label = label.get() if label else ""
+        for m in getattr(self, "debug_modes", []):
+            if m["label"] == label:
+                return m["key"]
+        return "startfile"
+
+    def _update_debug_mode_desc(self):
+        key = self._debug_mode_key()
+        for m in self.debug_modes:
+            if m["key"] == key:
+                self.debug_mode_desc.config(text=m["desc"])
+                break
+
+    def _do_debug_enable(self):
+        d = self._debug_folder()
+        if not d:
+            return
+        mode = self._debug_mode_key()
+        model = self.model_var.get()
+
+        def work():
+            res = commands.debug_enable_paths(
+                [d], model=(False if mode == "startfile" else model),
+                mode=mode)
+            self.q.put(("debug_done", res))
+            return res
+
+        self.show("log")
+        self.run_async(work, label="注入调试修改中…（可能需要几十秒）",
+                       done_label="调试注入完成")
+
+    def _fill_debug_mods(self, results):
+        tree = self.debug_tree
+        for iid in tree.get_children():
+            tree.delete(iid)
+        total = 0
+        report = ""
+        for r in (results or []):
+            for mod in (r.get("mods") or []):
+                tree.insert("", "end", values=(
+                    mod.get("file", ""), mod.get("how", ""),
+                    mod.get("change", "")[:300]))
+                total += 1
+            if r.get("report"):
+                report = r["report"]
+        self.debug_stat.config(
+            text=f"{total} 处修改" if total else "无需额外修改")
+        self.debug_report_lbl.config(text=f"报告：{report}" if report else "")
+
+    # ================================================================
+    # 页面 2：翻译
     # ================================================================
     def _page_translate(self):
         page = self.pages["translate"]
@@ -2499,7 +2869,8 @@ class App:
 
     def _build_conflict_bar(self, bar):
         tk.Label(bar, text="单击「已有译文」或「新增译文」选中该译文；"
-                           "双击「保留」列可输入自定义译文",
+                           "双击「保留」列可输入自定义译文；"
+                           "双击「术语原文」可修改术语原文",
                  bg=CARD, fg=C_WARN, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w")
         row = tk.Frame(bar, bg=CARD)
@@ -2592,8 +2963,25 @@ class App:
         info["keep"] = keep
         info["value"] = value or ""
         tree = self.report_tree
-        tree.item(iid, values=(info["term"], info["old"], info["new"],
+        term = info.get("new_term") or info["term"]
+        tree.item(iid, values=(term, info["old"], info["new"],
                               f"● {info['value']}"), tags=(f"k_{keep}",))
+
+    def _conflict_set_term(self, iid, new_term):
+        """修改术语原文（写回术语字典时先改名）。"""
+        info = self.conflict_choices.get(iid)
+        if not info:
+            return
+        new_term = (new_term or "").strip()
+        if not new_term or new_term == info["term"]:
+            info.pop("new_term", None)
+        else:
+            info["new_term"] = new_term
+        tree = self.report_tree
+        term = info.get("new_term") or info["term"]
+        tree.item(iid, values=(term, info["old"], info["new"],
+                              f"● {info['value']}"),
+                  tags=(f"k_{info['keep']}",))
 
     def _conflict_keep_all(self, keep):
         for iid in list(getattr(self, "conflict_choices", {}).keys()):
@@ -2656,6 +3044,47 @@ class App:
         ent.bind("<FocusOut>", commit)
         ent.bind("<Escape>", cancel)
 
+    def _conflict_edit_term(self, iid):
+        """双击「术语原文」列：就地输入新的术语原文。"""
+        tree = self.report_tree
+        bbox = tree.bbox(iid, "#1")
+        if not bbox:
+            return
+        x, y, w, h = bbox
+        info = self.conflict_choices.get(iid, {})
+        ent = tk.Entry(tree, font=FONT_SMALL, relief="solid", bd=1)
+        ent.insert(0, info.get("new_term") or info.get("term", ""))
+        ent.select_range(0, "end")
+        ent.place(x=x, y=y, width=max(w, 120), height=h)
+        ent.focus_set()
+        self._conflict_entry = ent
+        state = {"done": False}
+
+        def close():
+            if state["done"]:
+                return False
+            state["done"] = True
+            try:
+                ent.destroy()
+            except Exception:
+                pass
+            self._conflict_entry = None
+            return True
+
+        def commit(_e=None):
+            val = ent.get().strip()
+            if not close():
+                return
+            if val:
+                self._conflict_set_term(iid, val)
+
+        def cancel(_e=None):
+            close()
+
+        ent.bind("<Return>", commit)
+        ent.bind("<FocusOut>", commit)
+        ent.bind("<Escape>", cancel)
+
     def _on_conflict_click(self, event):
         if getattr(self, "report_mode", "report") != "conflict":
             return
@@ -2677,6 +3106,8 @@ class App:
         col = tree.identify_column(event.x)
         if iid and col == "#4":
             self._conflict_cell_entry(iid, col)
+        elif iid and col == "#1":
+            self._conflict_edit_term(iid)
 
     def _apply_conflicts(self):
         choices = [dict(v) for v in
@@ -2709,7 +3140,9 @@ class App:
         messagebox.showinfo(
             "术语冲突已处理",
             f"写入术语字典：{r.get('saved', 0)} 条\n"
-            f"重翻文件：{r.get('files', 0)} 个\n"
+            + (f"修改术语原文：{r.get('renamed', 0)} 条\n"
+               if r.get('renamed') else "")
+            + f"重翻文件：{r.get('files', 0)} 个\n"
             f"删除缓存：{r.get('removed', 0)} 条")
         if getattr(self, "report_mode", "report") == "conflict":
             try:
@@ -2731,7 +3164,7 @@ class App:
             self._do_check()
 
     def _report_sources(self):
-        """菜单 2 里选的是检查报告，这里换回真正的源文件。"""
+        """菜单 3 里选的是检查报告，这里换回真正的源文件。"""
         paths = self.fp_report.ensure()
         srcs = []
         for p in paths:
@@ -3451,7 +3884,7 @@ class App:
                "· 保留全部占位符与控制码；占位符不全的条目会保留原译文\n"
                "· 短句、纯控制符句不参与润色\n"
                "· 断点续翻：进度存在 *_polish_cache.json，润色过的会跳过，"
-               "中途改动的译文会自动重润（CLI 菜单 5 答 y 可清空进度全量重做）\n"
+               "中途改动的译文会自动重润（CLI 菜单 6 答 y 可清空进度全量重做）\n"
                "· 润色完成后自动重写 *_translated.txt，并生成 <输出名>_polished.txt "
                "明细报告（改动 / 未变 / 跳过三段逐条列出）")
         tk.Label(c2.body, text=txt, bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
@@ -3484,94 +3917,116 @@ class App:
                        label="中文润色中…", done_label="润色完成")
 
     # ================================================================
-    # 页面 6：换行重排
+    # 页面 7：换行重排 + 中文文本处理插件
     # ================================================================
+    # 两种重排模式的参数（原上下两层已合并为一层，按区块类型切换）
+    _REFLOW_SPECS = {
+        "newline": ("[map*] 区块（\\n 换行）",
+                    (("WRAP_CHARS_MIN", "换行下限", 15),
+                     ("WRAP_CHARS_MAX", "换行上限", 18),
+                     ("WRAP_MIN_GAP",   "换行最小间隔", 10))),
+        "space":   ("其它区块（插空格）",
+                    (("WRAP_SPACE_MIN",     "空格下限", 8),
+                     ("WRAP_SPACE_MAX",     "空格上限", 10),
+                     ("WRAP_SPACE_MIN_GAP", "空格最小间隔", 5))),
+    }
+
     def _page_reflow(self):
         page = self.pages["reflow"]
         page.grid_columnconfigure(0, weight=1)
         page.grid_rowconfigure(0, weight=1)
-        page.grid_rowconfigure(1, weight=1)
 
-        self.reflow_cfgs = {}
-        self.reflow_lists = {}
-        self.reflow_previews = {}
-        self.reflow_stats = {}
-        self._reflow_data = {"newline": [], "space": []}
+        left = tk.Frame(page, bg=BG_BASE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_rowconfigure(0, weight=1)
+        left.grid_columnconfigure(0, weight=1)
 
-        specs = (
-            ("newline", 0, "[map*] 区块的换行重排（\\n）",
-             (("WRAP_CHARS_MIN", "换行下限", 15),
-              ("WRAP_CHARS_MAX", "换行上限", 18),
-              ("WRAP_MIN_GAP",   "换行最小间隔", 10))),
-            ("space", 1, "其它区块标记的空格重排（空格）",
-             (("WRAP_SPACE_MIN", "空格下限", 8),
-              ("WRAP_SPACE_MAX", "空格上限", 10),
-              ("WRAP_SPACE_MIN_GAP", "空格最小间隔", 5))),
-        )
-        for mode, row, title, fields in specs:
-            card = RoundCard(page, radius=16, pad=14)
-            card.grid(row=row, column=0, sticky="nsew", pady=(0, 8))
-            self._build_reflow_half(card.body, mode, title, fields)
+        # ---- 换行重排（[map*] / 其它区块 合并为一层） ----
+        # ★ 植入中文文本处理插件已移到菜单 1 的下层
+        c1 = RoundCard(left, radius=16, pad=14)
+        c1.grid(row=0, column=0, sticky="nsew")
+        self._build_reflow_panel(c1.body)
 
+        # ---- 右侧：待操作的译文 txt 文件 ----
         fp_holder = RoundCard(page, radius=16, pad=8, width=272)
-        fp_holder.grid(row=0, column=1, rowspan=2, sticky="nsew")
+        fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         self.fp_reflow = self._make_file_panel(fp_holder, "source")
 
-        # 右下角：开始重排
-        bottom = tk.Frame(page, bg=BG_BASE)
-        bottom.grid(row=2, column=0, columnspan=2, sticky="ew")
-        tk.Label(bottom,
-                 text="· 只重排换行方式，不改动译文文字、不调用模型；"
-                      "两种重排各用一套参数（会保存到设置）",
-                 bg=BG_BASE, fg=TEXT_DIM, font=FONT_SMALL).pack(side="left")
-        GlassButton(bottom, "开始重排", width=180, height=50, primary=True,
-                    bg=BG_BASE,
-                    command=self._do_reflow).pack(side="right", pady=(8, 0))
+    def _build_reflow_panel(self, body):
+        self.reflow_cfgs = {}
+        self._reflow_cfg_frames = {}
+        self._reflow_mode = "newline"
+        self._reflow_data = {"newline": [], "space": []}
 
-    def _build_reflow_half(self, body, mode, title, fields):
-        """构建半屏重排面板：上=参数，左=区块列表，右=区块文本。"""
         head = tk.Frame(body, bg=CARD)
         head.pack(fill="x")
-        tk.Label(head, text=title, bg=CARD, fg=C_TITLE,
+        tk.Label(head, text="换行重排", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(side="left")
+        # 切换方式：选择 [map*] 或其它区块
+        holder = tk.Frame(head, bg=CARD_BORDER)
+        holder.pack(side="left", padx=12)
+        self._reflow_tab_btns = {}
+        for mode, text in (("newline", "[map*] 区块"),
+                           ("space", "其它区块")):
+            btn = tk.Label(holder, text=text, font=FONT_SMALL, padx=14,
+                           pady=6, cursor="hand2")
+            btn.pack(side="left", padx=(1, 1), pady=1)
+            btn.bind("<Button-1>",
+                     lambda _e, m=mode: self._reflow_switch(m))
+            self._reflow_tab_btns[mode] = btn
         stat = tk.Label(head, text="", bg=CARD, fg=C_KEY, font=FONT_BIG)
         stat.pack(side="right")
         attach_label_copy(stat, self, "统计")
+        self.reflow_stat = stat
+
+        tk.Label(body,
+                 text="只重排换行方式，不改动译文文字；"
+                      "两种重排各用一套参数（会保存到设置）",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left").pack(anchor="w", pady=(4, 0))
 
         cfgrow = tk.Frame(body, bg=CARD)
         cfgrow.pack(fill="x", pady=(8, 8))
-        varmap = {}
-        for key, name, default in fields:
-            tk.Label(cfgrow, text=name, bg=CARD, fg=TEXT_DIM,
-                     font=FONT_SMALL).pack(side="left", padx=(0, 4))
-            var = tk.StringVar(value=str(getattr(config, key, default)))
-            ttk.Entry(cfgrow, textvariable=var, width=6,
-                      font=FONT).pack(side="left", padx=(0, 14))
-            varmap[key] = var
+        self.reflow_cfg_holder = tk.Frame(cfgrow, bg=CARD)
+        self.reflow_cfg_holder.pack(side="left")
+        for mode, (_title, fields) in self._REFLOW_SPECS.items():
+            fr = tk.Frame(self.reflow_cfg_holder, bg=CARD)
+            varmap = {}
+            for key, name, default in fields:
+                tk.Label(fr, text=name, bg=CARD, fg=TEXT_DIM,
+                         font=FONT_SMALL).pack(side="left", padx=(0, 4))
+                var = tk.StringVar(value=str(getattr(config, key, default)))
+                ttk.Entry(fr, textvariable=var, width=6,
+                          font=FONT).pack(side="left", padx=(0, 14))
+                varmap[key] = var
+            self.reflow_cfgs[mode] = varmap
+            self._reflow_cfg_frames[mode] = fr
         GlassButton(cfgrow, "刷新列表", width=100, height=34, bg=CARD,
                     font=FONT_SMALL,
                     command=self._load_reflow_blocks).pack(side="left")
+        GlassButton(cfgrow, "开始重排", width=120, height=40, primary=True,
+                    bg=CARD, command=self._do_reflow).pack(side="right")
 
         mid = tk.Frame(body, bg=CARD)
         mid.pack(fill="both", expand=True)
 
-        left = tk.Frame(mid, bg=CARD)
-        left.pack(side="left", fill="both")
-        tree = ttk.Treeview(left, columns=("block", "count"),
+        blockfr = tk.Frame(mid, bg=CARD)
+        blockfr.pack(side="left", fill="both")
+        tree = ttk.Treeview(blockfr, columns=("block", "count"),
                             show="headings", height=3)
         tree.heading("block", text="区块")
         tree.heading("count", text="条数")
         tree.column("block", width=160, anchor="w")
         tree.column("count", width=56, anchor="center")
-        sb = ttk.Scrollbar(left, orient="vertical", command=tree.yview)
+        sb = ttk.Scrollbar(blockfr, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         bind_tree_wheel(tree)
         attach_tree_copy(tree, self)      # ★ 右键 / Ctrl+C 复制区块列表
-        tree.bind("<<TreeviewSelect>>",
-                  lambda _e, m=mode: self._render_reflow_block(m))
+        tree.bind("<<TreeviewSelect>>", lambda _e: self._render_reflow_block())
+        self.reflow_tree = tree
 
         right = tk.Frame(mid, bg=CARD)
         right.pack(side="left", fill="both", expand=True, padx=(10, 0))
@@ -3589,14 +4044,200 @@ class App:
             ("复制（选中，未选中则全部）", lambda b=box: self._text_pick(b)),
             ("复制全部", lambda b=box: self._text_all(b)),
         ], app=self)
+        self.reflow_preview = box
 
-        self.reflow_cfgs[mode] = varmap
-        self.reflow_lists[mode] = tree
-        self.reflow_previews[mode] = box
-        self.reflow_stats[mode] = stat
+    def _reflow_switch(self, mode):
+        if mode == getattr(self, "_reflow_mode", "newline"):
+            return
+        self._reflow_mode = mode
+        self._paint_reflow_tabs()
+        self._load_reflow_blocks()
+
+    def _paint_reflow_tabs(self):
+        cur = getattr(self, "_reflow_mode", "newline")
+        for mode, btn in getattr(self, "_reflow_tab_btns", {}).items():
+            if not btn.winfo_exists():
+                continue
+            on = (mode == cur)
+            btn.configure(bg=ACCENT if on else CARD,
+                          fg="#FFFFFF" if on else TEXT_DIM,
+                          font=(FONT_FAMILY, FONT_SMALL[1],
+                                "bold" if on else "normal"))
+        fr_cur = self._reflow_cfg_frames.get(cur)
+        for fr in self._reflow_cfg_frames.values():
+            if fr is not fr_cur:
+                fr.pack_forget()
+        if fr_cur is not None:
+            fr_cur.pack(side="left")
+
+    # ---------- 插件字体 ----------
+    def _current_plugin_font(self):
+        """返回当前生效的字体文件路径（未自选时为空 = 内置萝莉体）。"""
+        p = getattr(self, "plugin_font", None) or ""
+        if p and os.path.isfile(p):
+            return p
+        p = getattr(config.Runtime, "plugin_font", "") or ""
+        if p and os.path.isfile(p):
+            self.plugin_font = p
+            return p
+        return ""
+
+    def _refresh_plugin_font(self):
+        """刷新字体标签（文件名 + 字族名 + 来源）。"""
+        lbl = getattr(self, "plugin_font_lbl", None)
+        if lbl is None:
+            return
+        path = self._current_plugin_font()
+        if not path:
+            family = config.FONT_NAME or "Lolita"
+            src = "内置萝莉体"
+            name = os.path.basename(config.FONT_FILE)
+        else:
+            family = ""
+            try:
+                import game_tools as GT
+                family = GT.font_family_name(path) or (config.FONT_NAME or "")
+            except Exception:
+                family = config.FONT_NAME or ""
+            family = family or config.FONT_NAME or "Lolita"
+            src = "自选"
+            name = os.path.basename(path)
+        self.plugin_font_lbl.config(
+            text=f"{name}（族名「{family}」· {src}）"
+                 + ("" if path else "\n不选则使用内置萝莉体"))
+
+    def _pick_plugin_font(self):
+        """自选字体文件（任意 TTF/OTF，纯本地操作，不影响其它文件）。"""
+        init = (self._current_plugin_font() or config.FONT_FILE)
+        path = filedialog.askopenfilename(
+            title="选择字体（任意 TTF / OTF）",
+            initialdir=os.path.dirname(os.path.abspath(init)),
+            filetypes=[("字体文件", "*.ttf *.otf"), ("所有文件", "*.*")])
+        if not path:
+            return
+        if not os.path.isfile(path):
+            messagebox.showwarning("提示", "文件不存在，请选择有效的字体文件")
+            return
+        self.plugin_font = path
+        config.Runtime.plugin_font = path
+        try:
+            config.Runtime.save()
+        except Exception:
+            pass
+        self._refresh_plugin_font()
+
+    def _do_plugin_inject(self):
+        d = self._debug_folder()
+        if not d:
+            return
+        font_file = self._current_plugin_font() or None
+
+        def work():
+            res = commands.plugin_inject_paths([d], font_file=font_file)
+            self.q.put(("plugin_done", res))
+            return res
+
+        self.show("log")
+        self.run_async(work, label="植入中文文本处理插件中…",
+                       done_label="插件植入完成")
+
+    def _do_plugin_restore(self):
+        """还原插件植入（删插件脚本 + 当初复制进 Fonts 的字体）。"""
+        d = self._debug_folder()
+        if not d:
+            return
+        if not messagebox.askyesno(
+                "还原插件植入",
+                f"将删除该游戏里的：\n"
+                f"· Data/Scripts/{'~zz_ChineseTextSettings.rb'}\n"
+                f"· Data/Scripts/~zz_ChineseTextRenderer.rb\n"
+                f"· Fonts 里当初复制进去的字体（游戏自带字体不动）\n\n"
+                f"游戏：{d}\n\n确定还原吗？"):
+            return
+
+        def work():
+            res = commands.plugin_restore_paths([d])
+            self.q.put(("plugin_restore_done", res))
+            return res
+
+        self.show("log")
+        self.run_async(work, label="还原插件植入中…",
+                       done_label="插件还原完成")
+
+    def _do_debug_restore(self):
+        """还原：让用户选「还原注入操作」或「还原提取脚本」。"""
+        d = getattr(self, "debug_folder", None)
+        if not d or not os.path.isdir(d):
+            messagebox.showwarning("提示", "请先在右侧选择游戏根目录")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("还原")
+        win.configure(bg=CARD)
+        win.transient(self.root)
+        win.resizable(False, False)
+
+        card = RoundCard(win, radius=16, pad=16, width=520, auto_height=True)
+        card.pack(padx=12, pady=12)
+        body = card.body
+
+        tk.Label(body, text="选择还原方式", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(body, text=f"游戏：{d}", bg=CARD, fg=C_HINT,
+                 font=FONT_SMALL, justify="left",
+                 wraplength=460).pack(anchor="w", pady=(4, 10))
+
+        def desc(title, text):
+            tk.Label(body, text=title, bg=CARD, fg=TEXT,
+                     font=FONT_B).pack(anchor="w", pady=(6, 0))
+            tk.Label(body, text=text, bg=CARD, fg=C_HINT,
+                     font=FONT_SMALL, justify="left",
+                     wraplength=460).pack(anchor="w")
+
+        def run(which):
+            win.destroy()
+            self.show("log")
+            self.run_async(
+                lambda: commands.debug_restore_paths([d], which),
+                label="还原中…", done_label="还原完成")
+
+        b1 = tk.Frame(body, bg=CARD)
+        b1.pack(fill="x", pady=(10, 0))
+        GlassButton(b1, "还原注入操作", width=150, height=44, primary=True,
+                    bg=CARD, font=FONT_SMALL,
+                    command=lambda: run("injection")).pack(side="left")
+        b2 = tk.Frame(body, bg=CARD)
+        b2.pack(fill="x", pady=(10, 0))
+        GlassButton(b2, "还原提取脚本", width=150, height=44, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: run("extraction")).pack(side="left")
+
+        desc("· 还原注入操作",
+             "把工具注入 / 改写过的脚本恢复成解包时的状态"
+             "（按 ScriptsBackup.rxdata 重新生成 rb 文件），提取仍然保留。")
+        desc("· 还原提取脚本",
+             "删除 Data/Scripts 目录，把备份改回 Scripts.rxdata，"
+             "游戏回到完全未解包的状态。")
+
+        bar = tk.Frame(body, bg=CARD)
+        bar.pack(fill="x", pady=(14, 0))
+        GlassButton(bar, "取消", width=80, height=34, bg=CARD,
+                    font=FONT_SMALL, command=win.destroy).pack(side="right")
+
+        try:
+            win.update_idletasks()
+            x = self.root.winfo_rootx() + (
+                self.root.winfo_width() - win.winfo_width()) // 2
+            y = self.root.winfo_rooty() + 120
+            win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+        win.grab_set()
+        win.focus_force()
 
     def _load_reflow_blocks(self):
-        """扫描已选文件，按 [map*] / 其它区块 填入两半的列表。"""
+        """扫描已选文件，按当前模式（[map*] / 其它区块）填入列表。"""
+        self._paint_reflow_tabs()
         paths = []
         fp = getattr(self, "fp_reflow", None)
         if fp is not None:
@@ -3612,26 +4253,30 @@ class App:
             log.error("重排扫描失败：\n%s", traceback.format_exc())
             self._reflow_data = {"newline": [], "space": []}
 
-        for mode in ("newline", "space"):
-            tree = self.reflow_lists.get(mode)
-            if tree is None or not tree.winfo_exists():
-                continue
-            for iid in tree.get_children():
-                tree.delete(iid)
-            blocks = self._reflow_data.get(mode, [])
-            total = 0
-            for b in blocks:
-                tree.insert("", "end",
-                            values=(f"{b['file']} · {b['block']}", b["total"]))
-                total += b["total"]
-            self.reflow_stats[mode].config(
-                text=f"{len(blocks)} 个区块 / {total} 条译文")
-            self._render_reflow_block(mode)
+        self._render_reflow_list()
+        self._render_reflow_block()
 
-    def _render_reflow_block(self, mode):
+    def _render_reflow_list(self):
+        mode = getattr(self, "_reflow_mode", "newline")
+        tree = getattr(self, "reflow_tree", None)
+        if tree is None or not tree.winfo_exists():
+            return
+        for iid in tree.get_children():
+            tree.delete(iid)
+        blocks = self._reflow_data.get(mode, [])
+        total = 0
+        for b in blocks:
+            tree.insert("", "end",
+                        values=(f"{b['file']} · {b['block']}", b["total"]))
+            total += b["total"]
+        self.reflow_stat.config(
+            text=f"{len(blocks)} 个区块 / {total} 条译文")
+
+    def _render_reflow_block(self):
         """把选中区块的原文 / 译文摘要填到右侧预览框。"""
-        tree = self.reflow_lists.get(mode)
-        box = self.reflow_previews.get(mode)
+        mode = getattr(self, "_reflow_mode", "newline")
+        tree = getattr(self, "reflow_tree", None)
+        box = getattr(self, "reflow_preview", None)
         if tree is None or box is None:
             return
         blocks = self._reflow_data.get(mode, [])
@@ -3768,7 +4413,7 @@ class App:
                       "· 多个工作表会跨表去重\n"
                       "· 默认追加：已有术语只加不覆盖\n"
                       "· 新译法与旧译法不同会提示冲突\n"
-                      "· 转换后可在菜单 3 里逐条校对译文\n"
+                      "· 转换后可在菜单 4 里逐条校对译文\n"
                       "· 输出文件：term_dict.py",
                  bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
                  justify="left").pack(anchor="w", pady=(10, 0))
@@ -3870,7 +4515,7 @@ class App:
             if n and not messagebox.askyesno(
                     "确认覆盖",
                     f"term_dict.py 里已有 {n} 条术语，覆盖后只剩本次 Excel 的"
-                    f"内容（菜单 3 里校对过的译法也会丢）。\n\n确定要覆盖吗？"):
+                    f"内容（菜单 4 里校对过的译法也会丢）。\n\n确定要覆盖吗？"):
                 return
 
         def work():
@@ -4750,7 +5395,7 @@ class App:
         PV.set_prev_provider(old)
         changes = PV.apply_provider(key)
 
-        # 同步菜单 1 / 菜单 8 上的模式与模型显示
+        # 同步菜单 2 / 菜单 9 上的模式与模型显示
         self._paint_mode_row()
         self.model_var.set(PV.current_model(key))
         self._detect_models_async()

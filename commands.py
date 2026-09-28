@@ -11,6 +11,7 @@ import json
 import os
 import re
 import time
+import traceback
 from collections import Counter, defaultdict
 
 import bridge
@@ -406,7 +407,10 @@ def _force_restore(raw, maps, src=None):
     if not maps:
         return raw
 
-    missing = [item["token"] for item in maps if item["token"] not in raw]
+    # ★ 被合并进连续占位符的成员（consumed）由 merged 项代表，
+    #   模型输出里本来就只有合并后的 @K@，不能当「缺失」处理
+    missing = [item["token"] for item in maps
+               if not item.get("consumed") and item["token"] not in raw]
     if not missing:
         return raw
 
@@ -415,7 +419,7 @@ def _force_restore(raw, maps, src=None):
 
     for m_idx, item in enumerate(maps):
         token = item["token"]
-        if token not in missing_set:
+        if token not in missing_set or item.get("consumed"):
             continue
         original = item.get("original", "")
 
@@ -924,7 +928,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
     if conflict_records:
         _record_term_conflicts(conflict_records)
         emit(f"  [术语冲突] 记录 {len(conflict_records)} 条，"
-             f"可在菜单 2 用「解决术语冲突」处理")
+             f"可在菜单 3 用「解决术语冲突」处理")
 
     # ---------- 回写 ----------
     translations = {txt: cache.get(txt) for _, txt in entries if cache.get(txt)}
@@ -971,7 +975,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
             if s["pending"]:
                 emit(f"\n[前缀字典] 共 {s['total']} 条，"
                      f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
-                emit("  请到菜单 4「前缀字典」补全译文后应用")
+                emit("  请到菜单 5「前缀字典」补全译文后应用")
         except Exception as e:
             log.debug("前缀字典统计失败：%s", e)
 
@@ -1268,7 +1272,7 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
 
     current = TS.load_current_terms()
     if not current:
-        emit("术语表为空或不存在，请先运行菜单 7 生成")
+        emit("术语表为空或不存在，请先运行菜单 8 生成")
         return {"files": 0, "removed": 0}
 
     if not TS.snapshot_exists():
@@ -1344,31 +1348,86 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
 #   报告页把「同一原文、两种译文」的冲突列出来，用户挑一个（或自定义）
 #   作为最终译文，这里负责写回术语字典、删掉相关缓存并重翻。
 # ================================================================
+def _rename_conflict_keys(renames):
+    """冲突记录文件里的术语原文同步改名（{旧: 新}）。"""
+    if not renames:
+        return
+    data = load_term_conflicts()
+    if not data:
+        return
+    changed = False
+    for old, new in renames.items():
+        item = data.pop(old, None)
+        if not isinstance(item, dict):
+            continue
+        exist = data.get(new)
+        if isinstance(exist, dict):
+            for s in item.get("src") or []:
+                if s and s not in exist.setdefault("src", []):
+                    exist["src"].append(s)
+        else:
+            data[new] = item
+        changed = True
+    if changed:
+        save_term_conflicts(data)
+
+
 def apply_term_conflicts(choices, paths=None, src_lang=None, tgt_lang=None,
                          model=None):
     """
-    choices: [{"term": 原文, "value": 最终采用的译文}, ...]
+    choices: [{"term": 原文, "value": 最终采用的译文,
+               "new_term": 可选，修改后的术语原文}, ...]
              只处理 value 非空的项。
     paths:   要重翻的文件（None / 空 → 只写字典不重翻）。
 
-    返回 {"saved": n, "files": n, "removed": n}
+    返回 {"saved": n, "renamed": n, "files": n, "removed": n}
     """
     import term_sync as TS
 
     mapping = {}
+    renames = {}
     for c in (choices or []):
         term = (c.get("term") or "").strip()
         val = c.get("value")
-        if term and val is not None and str(val).strip():
+        new_term = (c.get("new_term") or "").strip()
+        if not term:
+            continue
+        if new_term and new_term != term:
+            renames[term] = new_term
+        if val is not None and str(val).strip():
             mapping[term] = str(val).strip()
 
     emit("\n" + "=" * 55)
     emit("  解决术语冲突")
     emit("=" * 55)
 
-    if not mapping:
+    if not mapping and not renames:
         emit("  没有选择任何要保留的译文，已取消")
-        return {"saved": 0, "files": 0, "removed": 0}
+        return {"saved": 0, "renamed": 0, "files": 0, "removed": 0}
+
+    # ★ 修改术语原文：先改名（写回 term_dict.py），值再跟着新原文走
+    renamed = 0
+    if renames:
+        renamed = TS.rename_term_keys(renames)
+        if renamed:
+            emit(f"  ✔ 术语原文已改名 {renamed} 条")
+            for o, nv in list(renames.items())[:8]:
+                emit(f"    {o}  →  {nv}")
+            if len(renames) > 8:
+                emit(f"    … 其余 {len(renames) - 8} 条省略")
+            mapping = {renames.get(k, k): v for k, v in mapping.items()}
+            _rename_conflict_keys(renames)
+        else:
+            emit("  ⚠ 术语原文改名没有生效（见日志），译文仍按原原文写入")
+
+    if not mapping:
+        try:
+            TS.save_snapshot(TS.load_current_terms())
+        except Exception:
+            pass
+        drop_term_conflicts(list(renames.keys()))
+        log.info("解决术语冲突：改名 %d 条，无需重翻", renamed)
+        return {"saved": 0, "renamed": renamed, "files": 0, "removed": 0}
 
     for t, v in list(mapping.items())[:10]:
         emit(f"    {t}  →  {v}")
@@ -1387,7 +1446,7 @@ def apply_term_conflicts(choices, paths=None, src_lang=None, tgt_lang=None,
     if paths:
         result = retranslate_terms_paths(
             list(paths), src_lang, tgt_lang, model,
-            extra_terms=list(mapping.keys()))
+            extra_terms=[renames.get(t, t) for t in mapping.keys()])
         files = (result or {}).get("files", 0)
         removed = (result or {}).get("removed", 0)
     else:
@@ -1399,13 +1458,14 @@ def apply_term_conflicts(choices, paths=None, src_lang=None, tgt_lang=None,
             pass
 
     # 已解决的冲突从记录里移除，避免报告一直报同一个
-    n = drop_term_conflicts(list(mapping.keys()))
+    n = drop_term_conflicts(list(mapping.keys()) + list(renames.keys()))
     if n:
         emit(f"  ✔ 已清理 {n} 条冲突记录")
 
-    log.info("解决术语冲突：写入 %d 条，重翻 %d 个文件，删缓存 %d 条",
-             saved, files, removed)
-    return {"saved": saved, "files": files, "removed": removed}
+    log.info("解决术语冲突：写入 %d 条，改名 %d 条，重翻 %d 个文件，删缓存 %d 条",
+             saved, renamed, files, removed)
+    return {"saved": saved, "renamed": renamed,
+            "files": files, "removed": removed}
 
 
 def scan_term_conflicts():
@@ -1781,6 +1841,8 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
     changed = 0
     kept = 0
     total = len(todo)
+    done = 0
+    t0 = time.time()
 
     def _mark_unchanged(t):
         """润色没拿到有效结果 → 保留原译文，并记进报告。"""
@@ -1851,6 +1913,14 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
                             "old": cache.get(txt, ""), "new": new_text})
 
         cache.tick()
+        ok = sum(1 for k in range(len(batch_texts))
+                 if (result.get(k) or "").strip())
+        done += len(batch_texts)
+        elapsed = time.time() - t0
+        rate = done / elapsed if elapsed > 0 else 0
+        eta = (total - done) / rate / 60 if rate > 0 else 0
+        log.info("[批 %d] 成功 %d/%d  累计 %d/%d  %.2f条/秒  ETA %.1f分",
+                 bi, ok, len(batch_texts), done, total, rate, eta)
         state["stats"] = {"round": round_no, "changed": changed,
                           "kept": kept, "skipped": skipped,
                           "done_total": len(state["done"])}
@@ -2136,6 +2206,168 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None):
 
 
 # ================================================================
+# 核心 6b：开启调试（Beta） / 植入中文文本处理插件
+#   纯本地 + 可选模型分析，全部走 game_tools。
+# ================================================================
+def debug_extract_paths(game_dirs, force=False):
+    """提取脚本为 rb 文件（无交互）。返回 {"files": n}。"""
+    import game_tools as GT
+    files_total = 0
+    for gd in game_dirs or []:
+        if bridge.cancelled():
+            break
+        emit("\n" + "=" * 55)
+        emit(f"  提取脚本：{gd}")
+        emit("=" * 55)
+        try:
+            n, sdir, already = GT.dump_scripts(gd, emit=emit, force=force)
+            files_total += n
+            if already:
+                emit("  （已经解包过，跳过；如需重新解包请先还原）")
+        except Exception as e:
+            log.error("提取脚本失败：%s\n%s", e, traceback.format_exc())
+            emit(f"  ✘ 提取失败：{e}")
+    return {"files": files_total}
+
+
+def debug_enable_paths(game_dirs, mode="startfile"):
+    """
+    开启调试：按注入方式（startfile/unlock/repel/f9）注入。
+    ★ 四种方式全部纯规则 / 纯文件写入，不调用模型、不联网。
+    """
+    import game_tools as GT
+    out = []
+    for gd in game_dirs or []:
+        if bridge.cancelled():
+            break
+        emit("\n" + "=" * 55)
+        emit(f"  开启调试：{gd}")
+        emit("=" * 55)
+        try:
+            mods, report = GT.enable_debug(gd, mode=mode, emit=emit)
+            out.append({"game": gd, "mods": mods, "report": report})
+        except Exception as e:
+            log.error("开启调试失败：%s\n%s", e, traceback.format_exc())
+            emit(f"  ✘ 失败：{e}")
+    return out
+
+
+def plugin_inject_paths(game_dirs, font_file=None):
+    """
+    植入中文文本处理插件（无交互）。
+    ★ 纯文件写入，不调用模型：只新增/覆盖插件脚本与字体文件。
+    font_file：用户自选的 TTF/OTF；留空 = 内置萝莉体。
+    """
+    import game_tools as GT
+    out = []
+    for gd in game_dirs or []:
+        if bridge.cancelled():
+            break
+        emit("\n" + "=" * 55)
+        emit(f"  植入中文文本处理插件：{gd}")
+        emit("=" * 55)
+        try:
+            written, family = GT.inject_cn_plugin(gd, emit=emit,
+                                                  font_file=font_file)
+            out.append({"game": gd, "files": written, "font": family})
+        except Exception as e:
+            log.error("插件植入失败：%s\n%s", e, traceback.format_exc())
+            emit(f"  ✘ 失败：{e}")
+    return out
+
+
+def plugin_restore_paths(game_dirs):
+    """
+    还原「植入中文文本处理插件」：删掉两个插件脚本，
+    以及当初复制进游戏 Fonts 的那份字体（游戏自带字体不动）。
+    """
+    import game_tools as GT
+    out = []
+    for gd in game_dirs or []:
+        if bridge.cancelled():
+            break
+        emit("\n" + "=" * 55)
+        emit(f"  还原插件植入：{gd}")
+        emit("=" * 55)
+        try:
+            out.append({**GT.restore_plugin(gd, emit=emit), "game": gd})
+        except Exception as e:
+            log.error("插件还原失败：%s\n%s", e, traceback.format_exc())
+            emit(f"  ✘ 失败：{e}")
+            out.append({"game": gd, "ok": False, "removed": []})
+    return out
+
+
+def debug_restore_paths(game_dirs, what="injection"):
+    """
+    what="injection"  → 还原注入操作（脚本恢复成解包时状态）
+    what="extraction" → 还原提取脚本（回到未解包状态）
+    """
+    import game_tools as GT
+    out = []
+    for gd in game_dirs or []:
+        emit("\n" + "=" * 55)
+        emit(f"  还原{'注入操作' if what == 'injection' else '提取脚本'}：{gd}")
+        emit("=" * 55)
+        try:
+            res = (GT.restore_injection(gd, emit=emit) if what == "injection"
+                   else GT.restore_extraction(gd, emit=emit))
+            out.append({"game": gd, **res})
+        except Exception as e:
+            log.error("还原失败：%s\n%s", e, traceback.format_exc())
+            emit(f"  ✘ 失败：{e}")
+            out.append({"game": gd, "ok": False})
+    return out
+
+
+def cmd_debug():
+    """菜单 1：开启调试(Beta)"""
+    import filepicker
+    import game_tools as GT
+
+    emit("\n[开启调试(Beta)]")
+    emit("  适用于 Pokémon Essentials（mkxp / RMXP）游戏：")
+    emit("  ① 提取脚本为 rb 文件并安装加载器（原文件自动备份）；")
+    emit("  ② 按你选的注入方式开启调试；")
+    emit("  ③ 输出「调试修改报告.txt」说明改了哪里、怎么修改。")
+
+    folder = filepicker.pick_dir(
+        initial_dir=config.Runtime.last_dir or config.BASE_DIR,
+        title="选择游戏根目录（含 Data/Scripts.rxdata）")
+    if not folder:
+        emit("已取消")
+        return
+    if not os.path.exists(os.path.join(folder, "Data", "Scripts.rxdata")):
+        emit(f"✘ 该目录下没有 Data/Scripts.rxdata：{folder}")
+        return
+    config.Runtime.set_dir(folder)
+
+    if not GT.is_dumped(folder):
+        debug_extract_paths([folder])
+    else:
+        emit("脚本已解包过，跳过提取")
+
+    raw = input("\n1=注入调试 / 2=还原注入操作 / 3=还原提取脚本 [1]: ").strip()
+    if raw == "2":
+        debug_restore_paths([folder], "injection")
+        return
+    if raw == "3":
+        debug_restore_paths([folder], "extraction")
+        return
+
+    emit("\n请选择调试注入方式：")
+    for i, m in enumerate(GT.DEBUG_MODES, 1):
+        emit(f"  {i}. {m['label']}")
+        emit(f"     {m['desc']}")
+    raw = input("请输入序号 [1]: ").strip()
+    idx = int(raw) - 1 if raw.isdigit() else 0
+    mode = (GT.DEBUG_MODES[idx]["key"]
+            if 0 <= idx < len(GT.DEBUG_MODES) else "startfile")
+    debug_enable_paths([folder], mode=mode)
+    emit("\n✔ 完成，详见游戏目录里的「调试修改报告.txt」")
+
+
+# ================================================================
 # 核心 7：Excel 转术语表
 # ================================================================
 def build_terms_from_excel(excel_path, sheets=None, source_lang="英文",
@@ -2192,7 +2424,7 @@ def build_terms_from_excel(excel_path, sheets=None, source_lang="英文",
 # 命令行外壳
 # ================================================================
 def cmd_translate():
-    """菜单 1：翻译"""
+    """菜单 2：翻译"""
     if not _ask_languages():
         return
     paths = _select_scope_interactive("选择要翻译的文件")
@@ -2202,7 +2434,7 @@ def cmd_translate():
 
 
 def cmd_retranslate_report():
-    """菜单 2：重翻检查报告"""
+    """菜单 3：重翻检查报告"""
     if not _ask_languages():
         return
     paths = _select_scope_interactive("选择要重翻的文件")
@@ -2212,7 +2444,7 @@ def cmd_retranslate_report():
 
 
 def cmd_retranslate_terms():
-    """菜单 3：术语更新后重翻"""
+    """菜单 4：术语更新后重翻"""
     if not _ask_languages():
         return
     paths = _select_scope_interactive("选择要重翻的文件")
@@ -2222,7 +2454,7 @@ def cmd_retranslate_terms():
 
 
 def cmd_review_prefix_dict():
-    """菜单 4：前缀字典（查看 / 编辑）"""
+    """菜单 5：前缀字典（查看 / 编辑）"""
     import prefix_dict as PFD
 
     PFD.reload_dict()
@@ -2254,7 +2486,7 @@ def cmd_review_prefix_dict():
 
 
 def cmd_polish():
-    """菜单 5：中文润色重翻"""
+    """菜单 6：中文润色重翻"""
     paths = _select_scope_interactive("选择要润色的文件")
     if not paths:
         return
@@ -2287,7 +2519,7 @@ def _ask_reflow_params():
 
 
 def cmd_reflow():
-    """菜单 6：换行重排"""
+    """菜单 7：换行重排"""
     emit("\n[换行重排] 当前配置")
     emit("-" * 55)
     emit(f"  [map*] 换行  ：{config.WRAP_CHARS_MIN}~{config.WRAP_CHARS_MAX} 字，"
@@ -2307,7 +2539,7 @@ def cmd_reflow():
 
 
 def cmd_build_terms():
-    """菜单 7：Excel 转术语表"""
+    """菜单 8：Excel 转术语表"""
     import filepicker
     import build_terms as BT
 
@@ -2416,7 +2648,7 @@ def _choose_language(prompt, default_key, exclude=None):
 
 
 def cmd_provider():
-    """菜单 9：本地模型服务（切换提供商 / 模型 / 部署）"""
+    """菜单 10：本地模型服务（切换提供商 / 模型 / 部署）"""
     import providers as PV
 
     while True:
@@ -2509,7 +2741,7 @@ def cmd_provider():
 
 
 def cmd_show_logs():
-    """菜单 10：日志 / 环境检查"""
+    """菜单 11：日志 / 环境检查"""
     import env_check
 
     log_dir = os.path.join(config.BASE_DIR, "logs")

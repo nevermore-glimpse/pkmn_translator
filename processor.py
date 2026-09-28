@@ -363,7 +363,85 @@ def protect(text, drop_newline=True):
                   + replacement
                   + result[region["end"]:])
 
+    # ⑦ 连续占位符合并（@0@@1@ → @K@，中间可夹空白）
+    result, maps = _merge_placeholder_runs(result, maps, counter)
+
     return result, maps
+
+
+# 匹配占位符 token 与「连续 token 串」
+_RUN_TOKEN_RE = re.compile(r'@\d+@|⟦\d+⟧')
+_RUN_RE = re.compile(r'(?:@\d+@|⟦\d+⟧)(?:\s*(?:@\d+@|⟦\d+⟧))+')
+
+
+def _merge_placeholder_runs(text, maps, counter):
+    """
+    把送模型文本里连续出现的占位符（@0@@1@、@0@ @1@ ⟦2⟧ 等）
+    合并成一个新占位符 @K@：
+
+      · 连续占位符对模型来说很容易被拆散 / 弄丢，合成一个更稳；
+      · maps 里插入 merged 项（original = 原来的连续串），
+        被合并的成员项打上 consumed 标记；
+      · restore() 按 maps 顺序执行：先还原 merged 项 → 文本里重新出现
+        连续占位符 → 再轮到成员项把各自还原成控制码（两段式还原）；
+      · verify() / 占位符兜底会跳过 consumed 成员（它们由 merged 项代表）。
+    """
+    if not maps or not text:
+        return text, maps
+
+    idx_of = {}
+    for idx, item in enumerate(maps):
+        idx_of.setdefault(item["token"], idx)
+
+    ops = []          # [start, end, run, [成员 map 下标], 合并 token]
+    for m in _RUN_RE.finditer(text):
+        toks = _RUN_TOKEN_RE.findall(m.group(0))
+        if len(toks) < 2:
+            continue
+        if any(t not in idx_of for t in toks):
+            continue   # 有 token 不在 maps 里（异常情况），不合并
+        idxs = [idx_of[t] for t in toks]
+        left = "⟦" if toks[0].startswith("⟦") else "@"
+        right = "⟧" if left == "⟦" else "@"
+        tok = f"{left}{counter[0]}{right}"
+        counter[0] += 1
+        ops.append([m.start(), m.end(), m.group(0), idxs, tok])
+
+    if not ops:
+        return text, maps
+
+    # merged 项插在第一个成员之前（restore 按顺序执行）
+    merged_before = {}     # 成员下标 → merged item
+    consumed = set()
+    for s, e, run, idxs, tok in ops:
+        prev_ch = text[s - 1] if s > 0 else ""
+        next_ch = text[e] if e < len(text) else ""
+        merged_before.setdefault(min(idxs), {
+            "token":       tok,
+            "original":    run,
+            "added_left":  bool(prev_ch) and not prev_ch.isspace(),
+            "added_right": bool(next_ch) and not next_ch.isspace(),
+            "merged":      True,
+        })
+        consumed.update(idxs)
+
+    out_maps = []
+    for idx, item in enumerate(maps):
+        if idx in merged_before:
+            out_maps.append(merged_before[idx])
+        if idx in consumed:
+            item["consumed"] = True
+        out_maps.append(item)
+
+    result = text
+    for s, e, run, idxs, tok in reversed(ops):
+        prev_ch = text[s - 1] if s > 0 else ""
+        next_ch = text[e] if e < len(text) else ""
+        lpad = " " if (prev_ch and not prev_ch.isspace()) else ""
+        rpad = " " if (next_ch and not next_ch.isspace()) else ""
+        result = result[:s] + lpad + tok + rpad + result[e:]
+
+    return result, out_maps
 
 
 # ================================================================
@@ -578,6 +656,9 @@ def verify(text, maps):
     missing, pos = [], 0
 
     for idx, item in enumerate(maps):
+        # ★ 被合并进连续占位符的成员：由 merged 项代表，模型输出里不会有
+        if item.get("consumed"):
+            continue
         token = item["token"]
         i = text.find(token, pos)
         if i != -1:
@@ -788,13 +869,8 @@ def find_terms(text):
     return result
 
 
-def apply_terms(text):
-    """
-    术语兜底替换：把 text 里命中的术语原文替换为术语表译文。
-
-    ★ 多词术语优先：先用占位标记锁住多词结果，再跑单词替换，最后回填，
-      避免 "Profesor Oak" 被拆成 "教授 Oak"。
-    """
+def _apply_terms_plain(text):
+    """对一段「纯文本」做术语替换（多词优先，见 apply_terms）。"""
     if not text or (not _TERM_SINGLE and not _MULTI_RE):
         return text
 
@@ -836,6 +912,54 @@ def apply_terms(text):
             out = out.replace(k, v)
 
     return out
+
+
+def apply_terms(text):
+    """
+    术语兜底替换：把 text 里命中的术语原文替换为术语表译文。
+
+    ★ 多词术语优先：先用占位标记锁住多词结果，再跑单词替换，最后回填，
+      避免 "Profesor Oak" 被拆成 "教授 Oak"。
+
+    ★ 只对「正文」替换：控制码（\\v[50]、<<n>>、<tag>、&quot; 等）内部的
+      内容一律不动，否则 \\se[ItemGet] 这类资源名会被翻坏；
+      唯一例外是说话人标签 \\tg[...] —— 里面是给玩家看的角色名，照常替换。
+    """
+    if not text or (not _TERM_SINGLE and not _MULTI_RE):
+        return text
+
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        # 说话人标签：整段拿捏，只替换 \tg[ 与 ] 之间的名字
+        m_tg = SPEAKER_TAG_RE.match(text, i)
+        if m_tg:
+            out.append("\\tg[" + _apply_terms_plain(m_tg.group(1)) + "]")
+            i = m_tg.end()
+            continue
+
+        # 其它控制码 / 标签 / 实体 / [方括号] / {花括号}：原样保留
+        m = ALL_CTRL_RE.match(text, i)
+        if not m:
+            m = TAG_RE.match(text, i) or BRACE_RE.match(text, i)
+        if m:
+            out.append(m.group(0))
+            i = m.end()
+            continue
+
+        # 连续正文：吃到下一个控制码或 \tg 为止
+        j = i
+        while j < n:
+            if (SPEAKER_TAG_RE.match(text, j)
+                    or ALL_CTRL_RE.match(text, j)
+                    or TAG_RE.match(text, j)
+                    or BRACE_RE.match(text, j)):
+                break
+            j += 1
+        out.append(_apply_terms_plain(text[i:j]))
+        i = j
+
+    return "".join(out)
 
 
 # ================================================================
@@ -1129,7 +1253,7 @@ def finalize(text, maps, breaks=None, mode="newline"):
     还原占位符 → 按原文换行位置补换行符。
 
     ★ 翻译（以及润色、术语重翻）之后**不再自动做「按字数重排」**：
-      字数重排已独立成菜单 6「换行重排」，需要时手动执行。
+      字数重排已独立成菜单 7「换行重排」，需要时手动执行。
       这样翻译输出只保留「原文标点处记录下来的换行」，不会被动改动原文节奏。
 
     mode="newline" → 补 \\n
