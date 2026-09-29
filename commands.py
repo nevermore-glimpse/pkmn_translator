@@ -2395,7 +2395,7 @@ def cmd_intl():
     import game_scripts as GS
     import intl_text as IT
 
-    emit("\n[文本提取与编译]")
+    emit("\n[文本提取与编译(Beta)]")
     emit("  适用于 Pokémon Essentials（mkxp / RMXP）游戏：")
     emit("  ① 提取文本 —— 同游戏 debug 的 Extract Text；")
     emit("  ② 编译文本 —— 同游戏 debug 的 Compile Text；")
