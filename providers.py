@@ -400,10 +400,6 @@ def current():
     return normalize(getattr(config, "PROVIDER", "ollama"))
 
 
-def current_provider():
-    return get(current())
-
-
 def label_of(key):
     return get(key)["label"]
 
@@ -1070,10 +1066,6 @@ def llamacpp_args(model_path=None, exe=None):
         "-a", alias,
     ]
     return argv, "将启动 llama-server（自动加载该模型并关闭推理模式）"
-
-
-def llamacpp_command(model_path=None):
-    return llamacpp_args(model_path)
 
 
 def _find_lmstudio_app():

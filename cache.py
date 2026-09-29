@@ -35,6 +35,27 @@ def atomic_replace(tmp, path, retries=6, delay=0.12):
     raise last
 
 
+def edited_path():
+    """手工编辑记录：与缓存文件放在一起（<缓存名>_edited.json）。"""
+    base, _ext = os.path.splitext(
+        getattr(config.Runtime, "cache_file", "") or config.CACHE_FILE)
+    return base + "_edited.json"
+
+
+def load_edits():
+    """读手工编辑记录 → {原文: 译文}（读不到返回 {}）。"""
+    p = edited_path()
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning("读取手工编辑记录失败（忽略）：%s", e)
+        return {}
+
+
 class Cache:
     def __init__(self, path, save_every=None):
         self.path = path
@@ -81,6 +102,30 @@ class Cache:
         if n:
             self._dirty = True
         return n
+
+    def save_edit(self, src, dst):
+        """
+        报告里手工改一句译文：写进缓存 + 记进编辑记录。
+
+        ★ 编辑记录是给「刷新报告」用的：下次检查时这一句会归入「已编辑」
+          类型（默认不勾选、不参与重翻），不会因为改好了就从报告里消失。
+        """
+        src_key = (src or "").strip()
+        if not src_key:
+            raise ValueError("原文是空的，没法定位缓存条目")
+        self.put(src_key, dst)
+        self.save(force=True)
+
+        edits = load_edits()
+        edits[src_key] = dst
+        p = edited_path()
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(edits, f, ensure_ascii=False, indent=2)
+        atomic_replace(tmp, p)
+        log.info("手工编辑译文：%d 字 → 已写入缓存与编辑记录", len(dst or ""))
+        return {"cache": self.path, "edited": p}
 
     def keys(self):
         return list(self.data.keys())

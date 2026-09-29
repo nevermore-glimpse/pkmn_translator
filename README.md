@@ -14,8 +14,9 @@ Supports terminology lists, placeholder protection, resume from cache, and autom
 - ✅ **Auto-check** — Automatically reports untranslated lines / symbol mismatches / special lines after translation
 - 🔄 **Auto re-translate** — Re-translates untranslated / suspected-untranslated sentences with one click
 - 🔀 **Line rewrapping** — Dedicated step (menu 7): by character count for `[map*]` (`\n`) and other blocks (spaces). Not applied automatically after translation.
-- 🐞 **Enable debug mode (Beta)** — Extracts game scripts to .rb files with a loader (loading them in the original order via `!load_order.txt`), then injects via one of four methods: add `000_OpenDebug.rb`, strip `$DEBUG` conditions, trigger from the 100-step Repel, or an F9 hotkey script. **None of them calls the model**; writes a change report and offers a one-click restore (menu 1).
-- 🈶 **Chinese text plugin** — Injects a per-character Chinese rendering patch into the game. Pick any TTF/OTF you like (otherwise the bundled Lolita font is used); the injection is a pure file operation that never calls the model, only adds/overwrites the two plugin scripts plus the font, and can be reverted with one click (menu 1).
+- 📤 **Extract / compile game text** — Same as *Extract Text* / *Compile Text* in the game's debug menu, but without launching the game. **Picks the right scheme for the game's Essentials version**: older builds use one `messages.dat` ↔ one `intl.txt`; v21+ splits text into `messages_core.dat` / `messages_game.dat` ↔ `Text_<lang>_core/` and `Text_<lang>_game/` folders (one file per section). Can also add the language to `Settings::LANGUAGES` for you, with a Chinese version of the comment block. Verified byte-for-byte against real games' own output (menu 1).
+- ✏️ **Edit translations by hand** — Double-click any row in the check report to edit it: source text on top (read-only, for reference), translation below. Saved into the cache and filed under a new "已编辑" (edited) kind that is never overwritten by re-translation (menu 3).
+- 🈶 **Chinese text plugin** — Installs the plugin into the game's `Plugins/` folder with your chosen font, then **compiles every plugin (including the game's own) straight into `Data/PluginScripts.rxdata`** — no debug mode, no launching the game. On older Essentials versions (19/20) it adds a compatibility shim that falls back to the engine's own implementation if the plugin's own code raises, so the game won't crash on startup (menu 1).
 - 🧠 **Terminology re-translation** — Detects newly added terms and re-translates only the affected sentences
 - ⚙️ **In-app settings** — Edit all configuration values from the menu, no manual file editing
 - 📋 **One-click copy** — Right-click any report / term / prefix list to copy it as
@@ -80,9 +81,9 @@ launch it for you (Ollama Desktop App is preferred, with `ollama serve` as fallb
 GUI pages:
 
 ```
-1. Enable debug mode (Beta)   7. Line rewrap
+1. Extract / compile text     7. Line rewrap
 2. Translate                  8. Excel to terminology
-3. Re-translate report        9. Settings
+3. Re-translate report        9. Settings   (double-click a row to edit)
 4. Re-translate terms        10. Local model server
 5. Prefix dictionary         11. Log
 6. Chinese polish (resumable)
@@ -90,13 +91,13 @@ GUI pages:
 
 Pages 2–7 have a file checklist sidebar on the right; add files via
 "Single file" or "Whole folder". Page 1 uses a game-folder picker
-instead (it also hosts the Chinese text plugin). Page 10 has an
+instead (it must contain a `Data` folder and an `.exe`). Page 10 has an
 "Adaptation" sidebar listing what changed after switching provider.
 
 Command-line menu:
 
 ```
-1. Enable debug mode (Beta) (extract scripts / inject / report / restore)
+1. Extract / compile text (extract text / compile text / Chinese plugin)
 2. Translate
 3. Re-translate check report
 4. Re-translate after terminology update

@@ -61,13 +61,37 @@ NEVER_RETRANSLATE_KINDS = {
     "译文残留控制码", "特殊行", "控制码回退",
 }
 
+# ★ 手工编辑产生的类型：报告里**默认不勾选**（所以不参与重翻），
+#   但可以勾上查看 —— 用户改过的句子都归在这里，方便回头核对。
+MANUAL_KINDS = {"已编辑"}
+
 # 报告里可能出现的问题类型（展示 / 排序用）
 REPORT_KIND_ORDER = [
     "翻译失败", "占位符兜底", "术语冲突", "控制码回退",
     "疑似未翻译", "疑似异常句",
     "译文残留占位符", "译文残留控制码",
-    "符号不匹配", "特殊行",
+    "符号不匹配", "特殊行", "已编辑",
 ]
+
+
+# ================================================================
+# 报告里手工编辑的译文
+#   存储与读写都在 cache.py（checker 也要读，放这里会循环 import）
+# ================================================================
+def save_report_edit(src, dst):
+    """
+    在报告里手工改一句译文：
+      ① 写进翻译缓存（原样覆盖，重翻时不会把它当成未翻）；
+      ② 记进 <缓存>_edited.json，下次「刷新报告」时这一句归入「已编辑」类型。
+
+    返回 {"cache": 缓存路径, "edited": 记录路径}。
+    """
+    cache_file = getattr(config.Runtime, "cache_file", "") or config.CACHE_FILE
+    if not os.path.isfile(cache_file):
+        raise FileNotFoundError(f"找不到翻译缓存：{cache_file}\n"
+                                f"（先跑一次翻译才会生成）")
+    cache = Cache(cache_file)
+    return cache.save_edit(src, dst)
 
 
 # ================================================================
@@ -1162,20 +1186,22 @@ def retranslate_report_paths(paths, src_lang=None, tgt_lang=None, model=None,
     扫描输出文件，找出问题句，删缓存后重翻。
 
     kinds: 只重翻这些问题类型（None = 用默认的 RETRANSLATE_KINDS）。
-           ★「译文残留控制码」等 NEVER_RETRANSLATE_KINDS 里的类型
-             无论怎么传都不会参与重翻。
+           ★「译文残留控制码」等 NEVER_RETRANSLATE_KINDS 里的类型、
+             以及手工编辑产生的 MANUAL_KINDS（「已编辑」）都不会参与重翻 ——
+             手工改过的句子一旦被重翻就白改了。
     """
     _apply_lang_model(src_lang, tgt_lang, model)
 
     active = set(RETRANSLATE_KINDS) if kinds is None else set(kinds)
     active -= NEVER_RETRANSLATE_KINDS
+    active -= MANUAL_KINDS
     active = {k for k in active if k}          # 去掉空类型
 
     log.info("=" * 50)
     log.info("重翻检查报告内容  共 %d 个文件  类型=%s",
              len(paths), "、".join(sorted(active)) or "（空）")
     emit(f"  重翻类型：{'、'.join(sorted(active)) if active else '（未选择）'}")
-    emit(f"  跳过类型：{'、'.join(sorted(NEVER_RETRANSLATE_KINDS))}")
+    emit(f"  跳过类型：{'、'.join(sorted(NEVER_RETRANSLATE_KINDS | MANUAL_KINDS))}")
 
     if not active:
         emit("  没有勾选任何可重翻的类型，已取消")
@@ -2206,91 +2232,156 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None):
 
 
 # ================================================================
-# 核心 6b：开启调试（Beta） / 植入中文文本处理插件
-#   纯本地 + 可选模型分析，全部走 game_tools。
+# 核心 1：文本提取与编译（菜单 1）
+#   纯本地：读游戏编译好的文本表 / 写回语言 .dat / 编译插件。
 # ================================================================
-def debug_extract_paths(game_dirs, force=False):
-    """提取脚本为 rb 文件（无交互）。返回 {"files": n}。"""
-    import game_tools as GT
-    files_total = 0
-    for gd in game_dirs or []:
-        if bridge.cancelled():
-            break
-        emit("\n" + "=" * 55)
-        emit(f"  提取脚本：{gd}")
-        emit("=" * 55)
-        try:
-            n, sdir, already = GT.dump_scripts(gd, emit=emit, force=force)
-            files_total += n
-            if already:
-                emit("  （已经解包过，跳过；如需重新解包请先还原）")
-        except Exception as e:
-            log.error("提取脚本失败：%s\n%s", e, traceback.format_exc())
-            emit(f"  ✘ 提取失败：{e}")
-    return {"files": files_total}
-
-
-def debug_enable_paths(game_dirs, mode="startfile"):
+def intl_extract_paths(game_dirs, out_path=None):
     """
-    开启调试：按注入方式（startfile/unlock/repel/f9）注入。
-    ★ 四种方式全部纯规则 / 纯文件写入，不调用模型、不联网。
+    提取文本：读游戏 Data 下的原文表（messages.dat / english.dat），
+    按游戏自己的格式写出 intl.txt —— 等同于在游戏 debug 菜单里点
+    「Extract Text」。返回 [{"game":…, "out":…, "sections":…, …}]。
     """
-    import game_tools as GT
+    import intl_text as IT
     out = []
     for gd in game_dirs or []:
         if bridge.cancelled():
             break
         emit("\n" + "=" * 55)
-        emit(f"  开启调试：{gd}")
+        emit(f"  提取文本：{gd}")
         emit("=" * 55)
         try:
-            mods, report = GT.enable_debug(gd, mode=mode, emit=emit)
-            out.append({"game": gd, "mods": mods, "report": report})
+            rep = IT.extract_text(gd, out_path=out_path, emit=emit)
+            out.append({"game": gd, **rep})
         except Exception as e:
-            log.error("开启调试失败：%s\n%s", e, traceback.format_exc())
-            emit(f"  ✘ 失败：{e}")
+            log.error("提取文本失败：%s\n%s", e, traceback.format_exc())
+            emit(f"  ✘ 提取失败：{e}")
+            out.append({"game": gd, "ok": False, "error": str(e)})
     return out
+
+
+def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True,
+                       use_model=True):
+    """
+    编译文本：把 intl 格式的文本（单个文件、多个文件、或整个文件夹里的
+    全部 .txt）编译成游戏语言文件 —— 等同于在游戏 debug 菜单里点
+    「Compile Text」。返回报告 dict。
+
+    out_path 留空时按游戏版本自动定：
+      旧版 → Settings::LANGUAGES 里那条（一般是 Data/Chinese.dat）
+      新版 → Data/messages_<语言>_core.dat 与 …_game.dat
+    apply_language：编译完顺手把这条语言写进 Settings::LANGUAGES
+                    （并补一份中文注释），省得自己改脚本。
+    """
+    import intl_text as IT
+    emit("\n" + "=" * 55)
+    emit(f"  编译文本：{game_dir}")
+    emit("=" * 55)
+    try:
+        rep = IT.compile_text(game_dir, sources, out_path=out_path,
+                              emit=emit)
+    except Exception as e:
+        log.error("编译文本失败：%s\n%s", e, traceback.format_exc())
+        emit(f"  ✘ 编译失败：{e}")
+        return {"ok": False, "error": str(e)}
+    if apply_language:
+        try:
+            rep["language"] = intl_apply_language(game_dir, use_model=use_model,
+                                                  emit=emit)
+        except Exception as e:
+            log.error("写入语言表失败：%s\n%s", e, traceback.format_exc())
+            emit(f"  ⚠ 语言表没写成：{e}")
+    return rep
+
+
+def model_translate_comment(lines, src_lang=None, tgt_lang=None, emit=None):
+    """
+    把 LANGUAGES 上方那段英文注释翻成中文（可调模型就调，调不动返回 None，
+    调用方会用内置的中文本兜底）。
+    """
+    if not lines:
+        return None
+    src_lang = src_lang or config.SOURCE_LANG
+    tgt_lang = tgt_lang or config.TARGET_LANG
+    try:
+        client = OllamaClient()
+        batch = [(i, ln) for i, ln in enumerate(lines)]
+        res = translate_with_retry(client, batch) or {}
+    except Exception as e:
+        log.warning("模型翻译注释失败（用内置中文说明兜底）：%s", e)
+        if emit:
+            emit("[语言] 模型没接上，注释用内置中文说明")
+        return None
+    out = []
+    for i, ln in enumerate(lines):
+        got = (res.get(i) or "").strip()
+        out.append(got or ln)
+    if not any(o and o != ln for (o, ln) in zip(out, lines)):
+        return None
+    return out
+
+
+def intl_apply_language(game_dir, display="简体中文", fragment=None,
+                        use_model=True, emit=None):
+    """
+    编译完文本后调用：把这条语言写进游戏 Settings 的 LANGUAGES，
+    并把上方的英文注释补一份中文说明。返回 GS.apply_languages_entry 的结果。
+    """
+    import game_scripts as GS
+
+    def say(msg):
+        if emit:
+            emit(msg)
+
+    zh = None
+    if use_model:
+        en = GS.languages_comment(game_dir)
+        if en:
+            say(f"[语言] 正在把 LANGUAGES 上方的说明翻成中文（{len(en)} 行）…")
+            zh = model_translate_comment(en, emit=emit)
+            if zh is None:
+                say("[语言] 模型没返回译文，改用内置中文说明")
+    return GS.apply_languages_entry(game_dir, display=display,
+                                    fragment=fragment, comment_zh=zh,
+                                    emit=emit)
 
 
 def plugin_inject_paths(game_dirs, font_file=None):
     """
-    植入中文文本处理插件（无交互）。
-    ★ 纯文件写入，不调用模型：只新增/覆盖插件脚本与字体文件。
-    font_file：用户自选的 TTF/OTF；留空 = 内置萝莉体。
+    加载中文文本处理插件：复制进 <游戏>/Plugins/、写字体名，并把**全部**
+    插件（含游戏原有的）编译进 Data/PluginScripts.rxdata。
+    ★ 纯文件写入，不调用模型、不联网。
     """
-    import game_tools as GT
+    import plugin_tools as PT
     out = []
     for gd in game_dirs or []:
         if bridge.cancelled():
             break
         emit("\n" + "=" * 55)
-        emit(f"  植入中文文本处理插件：{gd}")
+        emit(f"  加载中文文本处理插件：{gd}")
         emit("=" * 55)
         try:
-            written, family = GT.inject_cn_plugin(gd, emit=emit,
-                                                  font_file=font_file)
-            out.append({"game": gd, "files": written, "font": family})
+            rep = PT.install_plugin(gd, font_file=font_file, emit=emit)
+            out.append({"game": gd, **rep})
         except Exception as e:
             log.error("插件植入失败：%s\n%s", e, traceback.format_exc())
             emit(f"  ✘ 失败：{e}")
+            out.append({"game": gd, "ok": False, "error": str(e)})
     return out
 
 
 def plugin_restore_paths(game_dirs):
     """
-    还原「植入中文文本处理插件」：删掉两个插件脚本，
+    还原「加载中文文本处理插件」：删掉 Plugins/ 下本工具植入的那个目录，
     以及当初复制进游戏 Fonts 的那份字体（游戏自带字体不动）。
     """
-    import game_tools as GT
+    import plugin_tools as PT
     out = []
     for gd in game_dirs or []:
-        if bridge.cancelled():
-            break
         emit("\n" + "=" * 55)
         emit(f"  还原插件植入：{gd}")
         emit("=" * 55)
         try:
-            out.append({**GT.restore_plugin(gd, emit=emit), "game": gd})
+            out.append({**PT.restore_plugin(gd, emit=emit), "game": gd})
         except Exception as e:
             log.error("插件还原失败：%s\n%s", e, traceback.format_exc())
             emit(f"  ✘ 失败：{e}")
@@ -2298,73 +2389,42 @@ def plugin_restore_paths(game_dirs):
     return out
 
 
-def debug_restore_paths(game_dirs, what="injection"):
-    """
-    what="injection"  → 还原注入操作（脚本恢复成解包时状态）
-    what="extraction" → 还原提取脚本（回到未解包状态）
-    """
-    import game_tools as GT
-    out = []
-    for gd in game_dirs or []:
-        emit("\n" + "=" * 55)
-        emit(f"  还原{'注入操作' if what == 'injection' else '提取脚本'}：{gd}")
-        emit("=" * 55)
-        try:
-            res = (GT.restore_injection(gd, emit=emit) if what == "injection"
-                   else GT.restore_extraction(gd, emit=emit))
-            out.append({"game": gd, **res})
-        except Exception as e:
-            log.error("还原失败：%s\n%s", e, traceback.format_exc())
-            emit(f"  ✘ 失败：{e}")
-            out.append({"game": gd, "ok": False})
-    return out
-
-
-def cmd_debug():
-    """菜单 1：开启调试(Beta)"""
+def cmd_intl():
+    """菜单 1：文本提取与编译"""
     import filepicker
-    import game_tools as GT
+    import game_scripts as GS
+    import intl_text as IT
 
-    emit("\n[开启调试(Beta)]")
+    emit("\n[文本提取与编译]")
     emit("  适用于 Pokémon Essentials（mkxp / RMXP）游戏：")
-    emit("  ① 提取脚本为 rb 文件并安装加载器（原文件自动备份）；")
-    emit("  ② 按你选的注入方式开启调试；")
-    emit("  ③ 输出「调试修改报告.txt」说明改了哪里、怎么修改。")
+    emit("  ① 提取文本 —— 同游戏 debug 的 Extract Text；")
+    emit("  ② 编译文本 —— 同游戏 debug 的 Compile Text；")
+    emit("  ③ 加载中文文本处理插件（并编译进 PluginScripts.rxdata）。")
 
     folder = filepicker.pick_dir(
         initial_dir=config.Runtime.last_dir or config.BASE_DIR,
-        title="选择游戏根目录（含 Data/Scripts.rxdata）")
+        title="选择游戏根目录（里面有 Game.exe 和 Data）")
     if not folder:
         emit("已取消")
         return
-    if not os.path.exists(os.path.join(folder, "Data", "Scripts.rxdata")):
-        emit(f"✘ 该目录下没有 Data/Scripts.rxdata：{folder}")
+    ok, why = GS.check_game_root(folder)
+    if not ok:
+        emit(f"✘ {why}：{folder}")
         return
     config.Runtime.set_dir(folder)
 
-    if not GT.is_dumped(folder):
-        debug_extract_paths([folder])
-    else:
-        emit("脚本已解包过，跳过提取")
-
-    raw = input("\n1=注入调试 / 2=还原注入操作 / 3=还原提取脚本 [1]: ").strip()
+    raw = input("\n1=提取 / 2=编译 / 3=加载插件 / 4=还原插件 [1]: ").strip()
     if raw == "2":
-        debug_restore_paths([folder], "injection")
+        src = input("要编译的文本（文件或文件夹）[intl.txt]: ").strip()
+        intl_compile_paths(folder, src or IT.extract_target(folder))
         return
     if raw == "3":
-        debug_restore_paths([folder], "extraction")
+        plugin_inject_paths([folder])
         return
-
-    emit("\n请选择调试注入方式：")
-    for i, m in enumerate(GT.DEBUG_MODES, 1):
-        emit(f"  {i}. {m['label']}")
-        emit(f"     {m['desc']}")
-    raw = input("请输入序号 [1]: ").strip()
-    idx = int(raw) - 1 if raw.isdigit() else 0
-    mode = (GT.DEBUG_MODES[idx]["key"]
-            if 0 <= idx < len(GT.DEBUG_MODES) else "startfile")
-    debug_enable_paths([folder], mode=mode)
-    emit("\n✔ 完成，详见游戏目录里的「调试修改报告.txt」")
+    if raw == "4":
+        plugin_restore_paths([folder])
+        return
+    intl_extract_paths([folder])
 
 
 # ================================================================

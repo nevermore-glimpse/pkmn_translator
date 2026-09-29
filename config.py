@@ -43,7 +43,7 @@ def resource_path(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.3.5"
+VERSION     = "1.4.0"
 APP_NAME    = "宝可梦同人游戏翻译工具"
 APP_TITLE   = f"{APP_NAME}v{VERSION}"
 
@@ -167,7 +167,7 @@ API_BASE_URL   = "http://127.0.0.1:8080/v1"
 # ★ 不要把密钥写在这里（config.py 会提交到仓库）！
 #   请在「设置」里填写，它会写入 user_config.json（已在 .gitignore 中）。
 API_KEY        = ""
-API_MODEL      = "qwen3.5:4b"
+API_MODEL      = "Qwen3.5-4B-Q4_K_M"
 API_TIMEOUT    = 600.0
 
 # ---------- 本地服务提供商（菜单 10 用） ----------

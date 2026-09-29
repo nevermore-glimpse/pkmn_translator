@@ -266,6 +266,52 @@ def _find_abnormal_at(text):
 # ================================================================
 # 主检查
 # ================================================================
+def _apply_manual_edits(hits, src_to_line):
+    """
+    把「用户在报告里手工改过」的句子并进报告，类型统一叫「已编辑」：
+
+      · 原来就有问题的句子 → 类型改成「已编辑」，说明里留着原问题类型；
+      · 改好之后本来不会再报的句子 → 也补一条「已编辑」，
+        这样用户能在报告里找到自己改过的所有句子。
+
+    「已编辑」默认不勾选、不参与重翻（见 commands.MANUAL_KINDS）。
+    """
+    from cache import load_edits
+    edits = load_edits()
+    if not edits:
+        return hits
+
+    changed = []
+    seen = set()
+    for h in hits:
+        key = (h.get('src') or '').strip()
+        if key in edits:
+            seen.add(key)
+            h = dict(h)
+            h['dst'] = edits[key]
+            old = h.get('kind') or ''
+            h['kind'] = '已编辑'
+            h['detail'] = ("已手工编辑"
+                           + (f"（原问题类型：{old}）" if old
+                              and old != '已编辑' else ""))
+            h['edited'] = True
+        changed.append(h)
+
+    # 改过、但已经不再被判为问题的句子也要列出来
+    for key, val in edits.items():
+        if key in seen:
+            continue
+        changed.append({
+            'line_no': src_to_line.get(key, -1),
+            'kind': '已编辑',
+            'src': key,
+            'dst': val,
+            'detail': '已手工编辑（该句已无其它问题）',
+            'edited': True,
+        })
+    return changed
+
+
 def check(src_lines, out_lines, entries, special, report_path,
           extra_hits=None):
     """返回 hits 列表并写入报告。"""
@@ -406,6 +452,9 @@ def check(src_lines, out_lines, entries, special, report_path,
                 if k not in hit:
                     hit[k] = v
             hits.append(hit)
+
+    # ---------- 手工编辑过的句子 → 归入「已编辑」 ----------
+    hits = _apply_manual_edits(hits, src_to_line)
 
     # ---------- 写报告 ----------
     os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)

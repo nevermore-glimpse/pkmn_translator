@@ -30,7 +30,7 @@ BANNER = """\
   输入文件：{input}
   输出文件：{output}
 --------------------------------------------------------------------
-  1. 开启调试(Beta)（提取脚本 / AI 修改 / 报告）
+  1. 文本提取与编译（提取文本 / 编译文本 / 中文插件）
   2. 翻译
   3. 重翻检查报告内容
   4. 术语更新后重翻
@@ -160,7 +160,7 @@ def run_cli():
 
         try:
             if choice == "1":
-                commands.cmd_debug()
+                commands.cmd_intl()
             elif choice == "2":
                 commands.cmd_translate()
             elif choice == "3":
@@ -222,8 +222,10 @@ def main(argv=None):
 
     if not want_cli:
         try:
-            import tkinter  # noqa: F401
-            has_tk = True
+            import tkinter
+            # ★ 只有真的 import 成功才算可用（_tkinter 缺失时这里就会抛异常，
+            #   比 find_spec 可靠），顺带用一下名字避免「导入未使用」告警。
+            has_tk = hasattr(tkinter, "Tk")
         except Exception:
             has_tk = False
 

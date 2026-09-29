@@ -96,7 +96,7 @@ BTN_PAD_X = 22
 BTN_PAD_Y = 16
 
 MENU_ITEMS = [
-    ("1", "开启调试(Beta)"),
+    ("1", "文本提取与编译"),
     ("2", "翻译"),
     ("3", "重翻检查报告"),
     ("4", "术语更新后重翻"),
@@ -110,7 +110,7 @@ MENU_ITEMS = [
 ]
 
 MENU_KEYS = {
-    "1": "debug", "2": "translate", "3": "report", "4": "terms",
+    "1": "intl", "2": "translate", "3": "report", "4": "terms",
     "5": "prefix", "6": "polish", "7": "reflow", "8": "excel",
     "9": "settings", "10": "provider", "11": "log",
 }
@@ -119,6 +119,19 @@ MENU_KEYS = {
 # ================================================================
 # 小工具
 # ================================================================
+def _intl_outs(report):
+    """把提取/编译报告里的输出位置拼成一句话（新版是两个文件夹、多份 dat）。"""
+    if not report:
+        return ""
+    outs = report.get("outs")
+    if outs:
+        return "、".join(os.path.basename(o["out"]) for o in outs)
+    dirs = report.get("dirs") or {}
+    if dirs:
+        return "、".join(os.path.basename(p) for p in dirs.values())
+    return report.get("out") or ""
+
+
 def round_rect(canvas, x1, y1, x2, y2, r=14, **kw):
     """圆角矩形（spline 近似）。"""
     r = max(0, min(r, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
@@ -1604,7 +1617,7 @@ class App:
                      lambda e, c=bgc: paint_bg(c, e.width, e.height))
             self.pages[key] = page
 
-        self._page_debug()
+        self._page_intl()
         self._page_translate()
         self._page_report()
         self._page_terms()
@@ -1889,13 +1902,40 @@ class App:
                     self._fill_report(payload)
                 elif kind == "term_conflict_done":
                     self._after_conflicts(payload)
-                elif kind == "debug_done":
-                    self._fill_debug_mods(payload)
-                elif kind == "debug_extract_done":
+                elif kind == "intl_extract_done":
+                    r = (payload or [{}])[0] if isinstance(payload, list) else {}
+                    if r.get("ok") is False:
+                        self.intl_extract_lbl.config(
+                            text=f"✘ {r.get('error', '失败')}")
+                    else:
+                        self.intl_extract_stat.config(
+                            text=f"{r.get('sections', r.get('files', 0))} 段 / "
+                                 f"{r.get('entries', 0)} 条")
+                        outs = _intl_outs(r)
+                        self.intl_extract_lbl.config(
+                            text="✔ 已写出：" + outs)
+                        self.intl_last_out = outs
+                elif kind == "intl_compile_done":
                     r = payload or {}
-                    n = r.get("files", 0)
-                    self.debug_extract_stat.config(
-                        text=f"{n} 个脚本" if n else "已解包过")
+                    if r.get("ok") is False:
+                        self.intl_compile_lbl.config(
+                            text=f"✘ {r.get('error', '失败')}")
+                    else:
+                        self.intl_compile_stat.config(
+                            text=f"{r.get('sections', r.get('files', 0))} 段 / "
+                                 f"{r.get('entries', 0)} 条")
+                        txt = "✔ 已写出：" + _intl_outs(r)
+                        lang = r.get("language") or {}
+                        if lang.get("changed"):
+                            txt += (f"\n语言表：已把"
+                                    f" [\"{lang.get('display')}\", "
+                                    f"\"{lang.get('fragment')}\"] "
+                                    f"写进 Settings"
+                                    + ("（并补了中文注释）"
+                                       if lang.get("comment") else ""))
+                        elif lang:
+                            txt += f"\n语言表：{lang.get('reason') or '没有改动'}"
+                        self.intl_compile_lbl.config(text=txt)
                 elif kind == "plugin_done":
                     r = (payload or [{}])[0] if isinstance(payload, list) else {}
                     fam = r.get("font", "")
@@ -2070,291 +2110,363 @@ class App:
             self.status_var.set(f"{label} 未连接：{msg}（翻译功能不可用）")
 
     # ================================================================
-    # 页面 1：开启调试（Beta）
+    # 页面 1：文本提取与编译
     # ================================================================
-    def _page_debug(self):
-        page = self.pages["debug"]
+    def _page_intl(self):
+        self.intl_srcs = []          # 待编译的文本（文件 / 文件夹）
+        self.intl_last_out = None
+        page = self.pages["intl"]
         page.grid_columnconfigure(0, weight=1)
-        page.grid_rowconfigure(1, weight=1)
+        page.grid_rowconfigure(0, weight=1)
 
         left = tk.Frame(page, bg=BG_BASE)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        left.grid_rowconfigure(1, weight=1)
-        left.grid_columnconfigure(0, weight=1)
+        # ★ 三层卡片加起来比窗口高，放进滚动区 —— 窗口小也不会被裁掉
+        outer, inner = make_scroll_area(left, bg=BG_BASE)
+        outer.pack(fill="both", expand=True)
 
-        # ---- 上层：提取脚本为 rb 文件 ----
-        c1 = RoundCard(left, radius=16, pad=18, auto_height=True)
-        c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        # ---- 上层：提取文本 ----
+        c1 = RoundCard(inner, radius=16, pad=16, auto_height=True)
+        c1.pack(fill="x", pady=(0, 10))
         head1 = tk.Frame(c1.body, bg=CARD)
         head1.pack(fill="x")
-        tk.Label(head1, text="提取脚本为 rb 文件", bg=CARD, fg=C_TITLE,
+        tk.Label(head1, text="提取文本", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(side="left")
-        self.debug_extract_stat = tk.Label(head1, text="", bg=CARD,
-                                           fg=C_KEY, font=FONT_BIG)
-        self.debug_extract_stat.pack(side="right")
-        attach_label_copy(self.debug_extract_stat, self, "提取统计")
-        tk.Label(c1.body,
-                 text="把游戏的 Data/Scripts.rxdata 解包成 rb 脚本并装上「加载器」"
-                      "（原文件自动备份为 ScriptsBackup.rxdata），"
-                      "此后改动 rb 文件即时生效，无需重新编译。",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
-                 justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
-        GlassButton(c1.body, "提取脚本", width=160, height=46, primary=True,
-                    bg=CARD,
-                    command=self._do_debug_extract).pack(anchor="w",
-                                                         pady=(8, 0))
-
-        # ---- 中层：修改列表 ----
-        c2 = RoundCard(left, radius=16, pad=14)
-        c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
-        head2 = tk.Frame(c2.body, bg=CARD)
-        head2.pack(fill="x")
-        tk.Label(head2, text="修改列表", bg=CARD, fg=C_TITLE,
-                 font=FONT_TITLE).pack(side="left")
-        tk.Label(head2, text="尚未执行", bg=CARD, fg=C_HINT,
-                 font=FONT_SMALL).pack(side="right")
-        wrap = tk.Frame(c2.body, bg=CARD)
-        wrap.pack(fill="both", expand=True, pady=(6, 0))
-        cols = ("file", "how", "change")
-        tree = ttk.Treeview(wrap, columns=cols, show="headings", height=3)
-        for c, w, t in (("file", 170, "文件"), ("how", 80, "方式"),
-                        ("change", 300, "修改内容")):
-            tree.heading(c, text=t)
-            tree.column(c, width=w, anchor="w")
-        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=sb.set)
-        tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        bind_tree_wheel(tree)
-        attach_tree_copy(tree, self)
-        self.debug_tree = tree
-        self.debug_stat = head2.winfo_children()[-1]
-
-        # ---- 下层：选择调试注入方式 ----
-        c3 = RoundCard(left, radius=16, pad=18, auto_height=True)
-        c3.grid(row=2, column=0, sticky="ew")
-        tk.Label(c3.body, text="选择调试注入方式", bg=CARD, fg=C_TITLE,
-                 font=FONT_TITLE).pack(anchor="w")
-
-        from game_tools import DEBUG_MODES as _DM
-        self.debug_modes = list(_DM)
-        row = tk.Frame(c3.body, bg=CARD)
-        row.pack(fill="x", pady=(8, 0))
-        self.debug_mode_var = tk.StringVar(
-            value=self.debug_modes[0]["label"])
-        cb = ttk.Combobox(row, textvariable=self.debug_mode_var,
-                          values=[m["label"] for m in self.debug_modes],
-                          width=40, state="readonly", font=FONT)
-        cb.pack(side="left")
-        cb.bind("<<ComboboxSelected>>",
-                lambda _e: self._update_debug_mode_desc())
-        GlassButton(row, "开始注入", width=140, height=46, primary=True,
-                    bg=CARD,
-                    command=self._do_debug_enable).pack(side="right")
-        self.debug_mode_desc = tk.Label(c3.body, text="", bg=CARD,
-                                        fg=C_HINT, font=FONT_SMALL,
-                                        justify="left", wraplength=560)
-        self.debug_mode_desc.pack(anchor="w", pady=(6, 0))
-        self._update_debug_mode_desc()
-        self.debug_report_lbl = tk.Label(c3.body, text="", bg=CARD,
+        self.intl_extract_stat = tk.Label(head1, text="", bg=CARD,
+                                          fg=C_KEY, font=FONT_BIG)
+        self.intl_extract_stat.pack(side="right")
+        attach_label_copy(self.intl_extract_stat, self, "提取统计")
+        row1 = tk.Frame(c1.body, bg=CARD)
+        row1.pack(fill="x", pady=(8, 0))
+        GlassButton(row1, "提取文本", width=140, height=46, primary=True,
+                    bg=CARD, command=self._do_intl_extract).pack(side="left")
+        self.intl_extract_lbl = tk.Label(c1.body, text="", bg=CARD,
                                          fg=C_KEY, font=FONT_SMALL,
                                          justify="left", wraplength=560)
-        self.debug_report_lbl.pack(anchor="w", pady=(4, 0))
-        attach_label_copy(self.debug_report_lbl, self, "报告路径")
+        self.intl_extract_lbl.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.intl_extract_lbl, self, "提取结果")
+        self.intl_extract_hint = tk.Label(
+            c1.body,
+            text="等同于在游戏 debug 菜单里执行 Extract Text：读游戏 "
+                 "Data 下已编译的原文表，按游戏自己的格式写出 "
+                 "intl.txt（放在游戏根目录）。已存在时先自动备份。",
+            bg=CARD, fg=C_HINT, font=FONT_SMALL,
+            justify="left", wraplength=560)
+        self.intl_extract_hint.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.intl_extract_hint, self, "提取说明")
 
-        # ---- 还原按钮（在开始注入下面） ----
-        row_restore = tk.Frame(c3.body, bg=CARD)
-        row_restore.pack(fill="x", pady=(10, 0))
-        GlassButton(row_restore, "还原", width=120, height=44, bg=CARD,
-                    command=self._do_debug_restore).pack(side="left")
-        tk.Label(row_restore,
-                 text="还原注入操作（清除注入、脚本回到解包状态）／"
-                      "还原提取脚本（删掉解包目录、装回原始 rxdata）",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
-                 justify="left", wraplength=430).pack(side="left", padx=10)
+        # ---- 中层：编译文本 ----
+        c2 = RoundCard(inner, radius=16, pad=16, auto_height=True)
+        c2.pack(fill="x", pady=(0, 10))
+        head2 = tk.Frame(c2.body, bg=CARD)
+        head2.pack(fill="x")
+        tk.Label(head2, text="编译文本", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        self.intl_compile_stat = tk.Label(head2, text="", bg=CARD,
+                                          fg=C_KEY, font=FONT_BIG)
+        self.intl_compile_stat.pack(side="right")
+        attach_label_copy(self.intl_compile_stat, self, "编译统计")
 
-        # ---- 下层②：植入中文文本处理插件（独立一块，原在菜单 7） ----
-        c4 = RoundCard(left, radius=16, pad=18, auto_height=True)
-        c4.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        head3 = tk.Frame(c4.body, bg=CARD)
+        row2 = tk.Frame(c2.body, bg=CARD)
+        row2.pack(fill="x", pady=(8, 0))
+        GlassButton(row2, "选择文本文件", width=120, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._intl_pick_texts).pack(side="left")
+        GlassButton(row2, "选择文件夹", width=110, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._intl_pick_text_dir).pack(side="left",
+                                                           padx=6)
+        GlassButton(row2, "清空", width=72, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._intl_clear_srcs).pack(side="left")
+        self.intl_src_lbl = tk.Label(c2.body, text="未选择（默认用提取出来的 "
+                                                   "intl.txt）",
+                                     bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                                     justify="left", wraplength=560)
+        self.intl_src_lbl.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.intl_src_lbl, self, "待编译文本")
+
+        row3 = tk.Frame(c2.body, bg=CARD)
+        row3.pack(fill="x", pady=(10, 0))
+        GlassButton(row3, "编译文本", width=140, height=46, primary=True,
+                    bg=CARD, command=self._do_intl_compile).pack(side="left")
+        self.intl_lang_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            row3, text="编译后把中文加进游戏语言表",
+            variable=self.intl_lang_var, bg=CARD, fg=TEXT,
+            activebackground=CARD, activeforeground=TEXT,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            cursor="hand2").pack(side="left", padx=12)
+        self.intl_compile_lbl = tk.Label(c2.body, text="", bg=CARD,
+                                         fg=C_KEY, font=FONT_SMALL,
+                                         justify="left", wraplength=560)
+        self.intl_compile_lbl.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.intl_compile_lbl, self, "编译结果")
+        self.intl_compile_hint = tk.Label(
+            c2.body,
+            text="等同于在游戏 debug 菜单里执行 Compile Text。",
+            bg=CARD, fg=C_HINT, font=FONT_SMALL,
+            justify="left", wraplength=560)
+        self.intl_compile_hint.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.intl_compile_hint, self, "编译说明")
+
+        # ---- 下层：加载中文文本处理插件 ----
+        c3 = RoundCard(inner, radius=16, pad=16, auto_height=True)
+        c3.pack(fill="x")
+        head3 = tk.Frame(c3.body, bg=CARD)
         head3.pack(fill="x")
-        tk.Label(head3, text="植入中文文本处理插件", bg=CARD, fg=C_TITLE,
+        tk.Label(head3, text="加载中文文本处理插件", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(side="left")
         self.plugin_stat = tk.Label(head3, text="", bg=CARD, fg=C_KEY,
                                     font=FONT_SMALL)
         self.plugin_stat.pack(side="left", padx=10)
         attach_label_copy(self.plugin_stat, self, "插件统计")
 
-        row_font = tk.Frame(c4.body, bg=CARD)
+        row_font = tk.Frame(c3.body, bg=CARD)
         row_font.pack(fill="x", pady=(8, 0))
-        GlassButton(row_font, "选择字体", width=120, height=36, bg=CARD,
+        GlassButton(row_font, "选择字体", width=110, height=36, bg=CARD,
                     font=FONT_SMALL,
                     command=self._pick_plugin_font).pack(side="left")
         self.plugin_font_lbl = tk.Label(row_font, text="", bg=CARD,
                                         fg=C_HINT, font=FONT_SMALL,
-                                        justify="left", wraplength=430)
+                                        justify="left", wraplength=330)
         self.plugin_font_lbl.pack(side="left", padx=10)
         attach_label_copy(self.plugin_font_lbl, self, "字体信息")
-        GlassButton(row_font, "开始植入", width=140, height=46,
+        GlassButton(row_font, "加载插件并编译", width=150, height=40,
                     primary=True, bg=CARD,
                     command=self._do_plugin_inject).pack(side="right")
-        tk.Label(c4.body,
-                 text="自动解包脚本并安装加载器，写入中文逐字渲染补丁"
-                      "（Chinese text manager）；字体可自选，会复制到游戏 "
-                      "目录下的 Fonts 文件夹。"
-                      "只新增／覆盖这两个插件脚本与字体文件。"
-                      "原文里的 \\n 换行与空格重排都不影响插件排版。",
+        tk.Label(c3.body,
+                 text="把「中文文本处理」插件放进游戏的 Plugins 目录、把选定字体"
+                      "写进插件设置（字体文件复制到游戏 Fonts），然后把**全部**"
+                      "插件一起编译进 Data/PluginScripts.rxdata —— "
+                      "不用进游戏、也不用开调试模式。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
 
-        # ---- 插件：还原（与上层「还原」同一排版） ----
-        row_restore2 = tk.Frame(c4.body, bg=CARD)
-        row_restore2.pack(fill="x", pady=(10, 0))
-        GlassButton(row_restore2, "还原", width=120, height=44, bg=CARD,
+        row_restore = tk.Frame(c3.body, bg=CARD)
+        row_restore.pack(fill="x", pady=(10, 0))
+        GlassButton(row_restore, "还原", width=100, height=40, bg=CARD,
+                    font=FONT_SMALL,
                     command=self._do_plugin_restore).pack(side="left")
-        tk.Label(row_restore2,
-                 text="还原插件植入（删掉两个插件脚本，"
-                      "以及当初复制进 Fonts 的字体；游戏自带字体不动）",
+        tk.Label(row_restore,
+                 text="删掉本工具植入的插件目录与当初复制进 Fonts 的字体"
+                      "（游戏自带字体与其它插件不动）",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
-                 justify="left", wraplength=430).pack(side="left", padx=10)
-        self.plugin_restore_lbl = tk.Label(c4.body, text="", bg=CARD,
+                 justify="left", wraplength=420).pack(side="left", padx=10)
+        self.plugin_restore_lbl = tk.Label(c3.body, text="", bg=CARD,
                                            fg=C_KEY, font=FONT_SMALL,
                                            justify="left", wraplength=560)
         self.plugin_restore_lbl.pack(anchor="w", pady=(4, 0))
         attach_label_copy(self.plugin_restore_lbl, self, "插件还原结果")
         self._refresh_plugin_font()
 
-        # ---- 右侧：游戏文件夹 ----
+        # ---- 右侧：游戏文件夹 + 提示 ----
         fp_holder = RoundCard(page, radius=16, pad=8, width=272)
-        fp_holder.grid(row=0, column=1, rowspan=3, sticky="nsew")
+        fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         body = fp_holder.body
         tk.Label(body, text="游戏文件夹", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 4))
         GlassButton(body, "选择游戏根目录", width=132, height=36, bg=CARD,
                     font=FONT_SMALL,
-                    command=self._pick_debug_folder).pack(anchor="w",
-                                                          padx=10)
-        self.debug_folder_lbl = tk.Label(body, text="未选择", bg=CARD,
-                                         fg=C_KEY, font=FONT_SMALL,
-                                         wraplength=200, justify="left")
-        self.debug_folder_lbl.pack(anchor="w", padx=10, pady=(6, 0))
-        attach_copy(self.debug_folder_lbl, [
-            ("复制路径", lambda: getattr(self, "debug_folder", "")),
+                    command=self._intl_pick_folder).pack(anchor="w", padx=10)
+        self.intl_folder_lbl = tk.Label(body, text="未选择", bg=CARD,
+                                        fg=C_KEY, font=FONT_SMALL,
+                                        wraplength=200, justify="left")
+        self.intl_folder_lbl.pack(anchor="w", padx=10, pady=(6, 0))
+        attach_copy(self.intl_folder_lbl, [
+            ("复制路径", lambda: getattr(self, "intl_folder", "")),
         ], app=self, hotkey=False)
-        tk.Label(body,
-                 text="提示：\n"
-                      "· 要选游戏根目录（里面有 Data/Scripts.rxdata）\n"
-                      "· 适用于 Pokémon Essentials / mkxp / RMXP 游戏\n"
-                      "· 提取前自动备份，可随时用备份还原\n"
-                      "· 开启调试后：F9 调试菜单 · Ctrl 穿墙 · "
-                      "Ctrl 快进对话",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
-                 justify="left", wraplength=200).pack(anchor="w", padx=10,
-                                                      pady=(10, 0))
+        self.intl_info_lbl = tk.Label(body, text="", bg=CARD, fg=C_KEY,
+                                      font=FONT_SMALL, wraplength=200,
+                                      justify="left")
+        self.intl_info_lbl.pack(anchor="w", padx=10, pady=(4, 0))
+        attach_label_copy(self.intl_info_lbl, self, "游戏信息")
+        self.intl_hint_lbl = tk.Label(
+            body,
+            text="提示：\n"
+                 "· 要选游戏根目录：里面有 Data 文件夹和 .exe 启动程序\n"
+                 "· 适用于 Pokémon Essentials / mkxp / RMXP 游戏\n"
+                 "· 提取出的 intl.txt 在游戏根目录；"
+                 "数组段每 3 行一条（序号/原文/译文），"
+                 "哈希段每 2 行一条（原文/译文）\n"
+                 "· 翻译时**只改每个条目的最后一行**，上一行原文原样留着\n"
+                 "· 编译前会自动备份原来的语言文件\n"
+                 "· 插件只在游戏切到中文语言时生效",
+            bg=CARD, fg=C_HINT, font=FONT_SMALL,
+            justify="left", wraplength=200)
+        self.intl_hint_lbl.pack(anchor="w", padx=10, pady=(10, 0))
+        attach_label_copy(self.intl_hint_lbl, self, "使用提示")
 
-    def _pick_debug_folder(self):
+    # ---------- 菜单 1：小工具 ----------
+    def _intl_pick_folder(self):
         d = filedialog.askdirectory(
-            title="选择游戏根目录（含 Data/Scripts.rxdata）",
+            title="选择游戏根目录（里面有 Data 文件夹和 .exe 启动程序）",
             initialdir=(config.Runtime.last_dir
-                        if os.path.isdir(config.Runtime.last_dir)
+                        if config.Runtime.last_dir
+                        and os.path.isdir(config.Runtime.last_dir)
                         else config.BASE_DIR))
         if not d:
             return
-        if not os.path.exists(os.path.join(d, "Data", "Scripts.rxdata")):
-            messagebox.showwarning(
-                "提示", "该目录下没有 Data/Scripts.rxdata，"
-                        "请选择游戏根目录（Game.exe 所在文件夹）")
-            return
-        self.debug_folder = d
-        self.debug_folder_lbl.config(text=d)
+        import game_scripts as GS
+        ok, why = GS.check_game_root(d)
+        self.intl_folder = d
         config.Runtime.set_dir(d)
+        self.intl_folder_lbl.config(text=d)
+        if not ok:
+            self.intl_info_lbl.config(text=f"⚠ {why}", fg=C_WARN)
+            messagebox.showwarning("这个目录不太对", why)
+            return
+        self._intl_refresh_info()
 
-    def _debug_folder(self):
-        d = getattr(self, "debug_folder", None)
+    def _intl_refresh_info(self):
+        """
+        显示识别到的游戏信息，并按**文本方案**刷新各层的说明：
+          legacy → 一个 intl.txt ↔ 一个语言 .dat
+          split  → Text_<语言>_core/ 与 _game/ ↔ 两份 messages_*.dat
+        """
+        d = getattr(self, "intl_folder", None)
+        if not d:
+            return
+        try:
+            import intl_text as IT
+            info = IT.detect_scheme(d)
+            frag = info.get("fragment") or "chinese"
+            ver = info.get("essentials") or ""
+            split = info["scheme"] == IT.SCHEME_SPLIT
+
+            parts = []
+            if ver:
+                parts.append(f"Essentials {ver}")
+            parts.append("新版拆分方案" if split else "旧版单文件方案")
+            self.intl_info_lbl.config(text="✔ " + " · ".join(parts), fg=C_KEY)
+
+            if split:
+                self.intl_extract_hint.config(
+                    text=f"这个游戏把文本分成 core（引擎）和 game（游戏）两份："
+                         f"会导出成 Text_{frag}_core/ 与 Text_{frag}_game/ "
+                         f"两个文件夹，里面**每个分段一个 txt**"
+                         f"（BOM + 说明行 + [段名] + 条目）。"
+                         f"已翻过的部分会带出来作对照。")
+                self.intl_compile_hint.config(
+                    text="选 Text_<语言>_core / Text_<语言>_game 两个文件夹"
+                         "（或直接选里面的 txt），会分别编出 "
+                         f"Data/messages_{frag}_core.dat 与 "
+                         f"messages_{frag}_game.dat。覆盖前自动备份。")
+                self.intl_src_lbl.config(
+                    text="未选择（默认用提取出来的两个 Text_ 文件夹）")
+            else:
+                self.intl_extract_hint.config(
+                    text="等同于在游戏 debug 菜单里执行 Extract Text：读游戏 "
+                         "Data 下已编译的原文表，按游戏自己的格式写出 "
+                         "intl.txt（放在游戏根目录）。已存在时先自动备份。")
+                self.intl_compile_hint.config(
+                    text="等同于 Compile Text：可以只选一个 txt，也可以选整个"
+                         "文件夹（里面的 .txt 按文件名顺序合并）。输出位置按"
+                         "游戏 Settings::LANGUAGES 自动定，覆盖前自动备份。")
+                self.intl_src_lbl.config(
+                    text="未选择（默认用提取出来的 intl.txt）")
+        except Exception:
+            self.intl_info_lbl.config(text="")
+
+    def _intl_folder(self):
+        """取当前游戏目录；没选或不合格时提示并返回 None。"""
+        d = getattr(self, "intl_folder", None)
         if not d or not os.path.isdir(d):
             messagebox.showwarning("提示", "请先在右侧选择游戏根目录")
             return None
+        import game_scripts as GS
+        ok, why = GS.check_game_root(d)
+        if not ok:
+            messagebox.showwarning("这个目录不太对", why)
+            return None
         return d
 
-    def _do_debug_extract(self):
-        d = self._debug_folder()
+    def _intl_pick_texts(self):
+        paths = filedialog.askopenfilenames(
+            title="选择要编译的文本（intl 格式的 .txt）",
+            initialdir=(config.Runtime.last_dir or config.BASE_DIR),
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
+        if not paths:
+            return
+        paths = [p for p in paths if p.lower().endswith(".txt")]
+        if not paths:
+            messagebox.showinfo("提示", "请选择 .txt 文本文件")
+            return
+        config.Runtime.set_dir(os.path.dirname(paths[0]))
+        for p in paths:
+            if p not in self.intl_srcs:
+                self.intl_srcs.append(p)
+        self._intl_refresh_srcs()
+
+    def _intl_pick_text_dir(self):
+        d = filedialog.askdirectory(
+            title="选择文件夹（里面的 .txt 会全部参与编译）",
+            initialdir=(config.Runtime.last_dir or config.BASE_DIR))
         if not d:
             return
-        force = False
-        try:
-            import game_tools as GT
-            if GT.is_dumped(d):
-                force = messagebox.askyesno(
-                    "已经解包过",
-                    "这个游戏已经解包过。\n\n"
-                    "是否用备份重新提取？\n"
-                    "· 是 → 按 ScriptsBackup.rxdata 重新生成 rb 文件"
-                    "（可修复「加载顺序被打乱」导致的报错）\n"
-                    "· 否 → 跳过，保持现状")
-                if not force:
-                    return
-        except Exception:
-            pass
+        config.Runtime.set_dir(d)
+        if d not in self.intl_srcs:
+            self.intl_srcs.append(d)
+        self._intl_refresh_srcs()
+
+    def _intl_clear_srcs(self):
+        self.intl_srcs = []
+        self._intl_refresh_srcs()
+
+    def _intl_refresh_srcs(self):
+        srcs = getattr(self, "intl_srcs", [])
+        if not srcs:
+            self.intl_src_lbl.config(
+                text="未选择（默认用提取出来的 intl.txt）", fg=C_HINT)
+            return
+        shown = "、".join(os.path.basename(p) for p in srcs[:3])
+        if len(srcs) > 3:
+            shown += f" 等 {len(srcs)} 项"
+        self.intl_src_lbl.config(text=f"已选 {len(srcs)} 项：{shown}",
+                                 fg=C_KEY)
+
+    def _do_intl_extract(self):
+        d = self._intl_folder()
+        if not d:
+            return
         self.show("log")
 
         def work():
-            res = commands.debug_extract_paths([d], force=force)
-            self.q.put(("debug_extract_done", res))
+            res = commands.intl_extract_paths([d])
+            self.q.put(("intl_extract_done", res))
             return res
 
-        self.run_async(work, label="提取脚本中…", done_label="脚本提取完成")
+        self.run_async(work, label="提取文本中…", done_label="文本提取完成")
 
-    def _debug_mode_key(self):
-        label = getattr(self, "debug_mode_var", None)
-        label = label.get() if label else ""
-        for m in getattr(self, "debug_modes", []):
-            if m["label"] == label:
-                return m["key"]
-        return "startfile"
-
-    def _update_debug_mode_desc(self):
-        key = self._debug_mode_key()
-        for m in self.debug_modes:
-            if m["key"] == key:
-                self.debug_mode_desc.config(text=m["desc"])
-                break
-
-    def _do_debug_enable(self):
-        d = self._debug_folder()
+    def _do_intl_compile(self):
+        d = self._intl_folder()
         if not d:
             return
-        mode = self._debug_mode_key()
-        model = self.model_var.get()
+        import intl_text as IT
+        srcs = list(getattr(self, "intl_srcs", []))
+        if not srcs:
+            guess = IT.extract_target(d)
+            paths = guess if isinstance(guess, (list, tuple)) else [guess]
+            paths = [p for p in paths if os.path.exists(p)]
+            if not paths:
+                messagebox.showwarning(
+                    "提示",
+                    "还没选要编译的文本。\n\n"
+                    "可以点「选择文本文件」/「选择文件夹」，"
+                    "或者先执行「提取文本」再回来编译。")
+                return
+            srcs = paths
+        apply_lang = bool(self.intl_lang_var.get())
+        self.show("log")
 
         def work():
-            res = commands.debug_enable_paths(
-                [d], model=(False if mode == "startfile" else model),
-                mode=mode)
-            self.q.put(("debug_done", res))
+            res = commands.intl_compile_paths(
+                d, srcs, apply_language=apply_lang)
+            self.q.put(("intl_compile_done", res))
             return res
 
-        self.show("log")
-        self.run_async(work, label="注入调试修改中…（可能需要几十秒）",
-                       done_label="调试注入完成")
-
-    def _fill_debug_mods(self, results):
-        tree = self.debug_tree
-        for iid in tree.get_children():
-            tree.delete(iid)
-        total = 0
-        report = ""
-        for r in (results or []):
-            for mod in (r.get("mods") or []):
-                tree.insert("", "end", values=(
-                    mod.get("file", ""), mod.get("how", ""),
-                    mod.get("change", "")[:300]))
-                total += 1
-            if r.get("report"):
-                report = r["report"]
-        self.debug_stat.config(
-            text=f"{total} 处修改" if total else "无需额外修改")
-        self.debug_report_lbl.config(text=f"报告：{report}" if report else "")
+        self.run_async(work, label="编译文本中…", done_label="文本编译完成")
 
     # ================================================================
     # 页面 2：翻译
@@ -2641,17 +2753,20 @@ class App:
         sel = set(self._selected_kinds())
         has_filter = bool(getattr(self, "report_kind_vars", {}))
         shown = 0
+        # ★ 行号 → hit 的映射：双击时要拿回完整原文（列表里是截断显示的）
+        self.report_iid_map = {}
         for _path, h in getattr(self, "report_hits", []):
             kind = h.get("kind", "")
             if has_filter and kind not in sel:
                 continue
             shown += 1
-            tree.insert("", "end", values=(
+            iid = tree.insert("", "end", values=(
                 kind, h.get("line_no", ""),
                 (h.get("src") or "")[:200],
                 (h.get("dst") or "")[:200],
                 (h.get("detail") or "")[:200],
             ))
+            self.report_iid_map[iid] = h
         total = len(getattr(self, "report_hits", []))
         self.report_stat.config(text=f"显示 {shown} / 共 {total} 处问题")
 
@@ -3100,6 +3215,8 @@ class App:
 
     def _on_conflict_dblclick(self, event):
         if getattr(self, "report_mode", "report") != "conflict":
+            # ★ 常规报告模式：双击任意一行 → 打开「原文 / 译文」编辑窗
+            self._on_report_dblclick(event)
             return
         tree = self.report_tree
         iid = tree.identify_row(event.y)
@@ -3108,6 +3225,124 @@ class App:
             self._conflict_cell_entry(iid, col)
         elif iid and col == "#1":
             self._conflict_edit_term(iid)
+
+    def _on_report_dblclick(self, event):
+        """报告列表双击 → 弹窗编辑这一句的译文。"""
+        tree = self.report_tree
+        iid = tree.identify_row(event.y)
+        if not iid:
+            return
+        hit = getattr(self, "report_iid_map", {}).get(iid)
+        if hit is None:
+            return
+        self._open_report_edit(iid, hit)
+
+    def _open_report_edit(self, iid, hit):
+        """
+        编辑单句译文：上方原文（只读，用来对照）、下方译文（可编辑）。
+        保存后写入翻译缓存，并把这句归入「已编辑」类型。
+        """
+        src = hit.get("src") or ""
+        dst = hit.get("dst") or ""
+        if not src.strip():
+            messagebox.showinfo("提示", "这一行没有原文，无法定位缓存条目")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("编辑译文")
+        win.configure(bg=BG_BASE)
+        win.transient(self.root)
+
+        card = RoundCard(win, radius=16, pad=16, width=640, auto_height=True)
+        card.pack(padx=12, pady=12)
+        body = card.body
+
+        tk.Label(body, text="编辑译文", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(body,
+                 text="保存后：写入翻译缓存，并把这一句归入「已编辑」类型"
+                      "（默认不勾选，也不会被重翻覆盖）。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=600).pack(anchor="w", pady=(4, 10))
+
+        def textbox(parent, title, value, readonly, height):
+            tk.Label(parent, text=title, bg=CARD, fg=TEXT_DIM,
+                     font=FONT_SMALL).pack(anchor="w")
+            box = tk.Text(parent, height=height, wrap="word", font=FONT,
+                          bg="#F5F7FA" if readonly else "#FFFFFF",
+                          fg=TEXT_DIM if readonly else TEXT,
+                          relief="solid", bd=1, highlightthickness=1,
+                          highlightbackground=CARD_BORDER,
+                          padx=6, pady=6, undo=True)
+            box.insert("1.0", value)
+            if readonly:
+                box.configure(state="disabled")
+            box.pack(fill="x", pady=(4, 10))
+            return box
+
+        textbox(body, f"原文（{self.src_var.get() or '源语言'}） · 只读，用于对照",
+                src, True, 5)
+        dst_box = textbox(body, f"译文（{self.tgt_var.get() or '目标语言'}）"
+                                f" · 可编辑",
+                          dst, False, 7)
+        dst_box.focus_set()
+        dst_box.tag_configure("sel", background="#CFE3FF")
+
+        def commit():
+            new = dst_box.get("1.0", "end-1c")
+            if new == dst:
+                win.destroy()
+                return
+            if not new.strip():
+                if not messagebox.askyesno(
+                        "译文是空的",
+                        "保存空译文会让这一句在游戏里显示为空。\n确定吗？"):
+                    return
+            try:
+                res = commands.save_report_edit(src, new)
+            except Exception as e:
+                messagebox.showerror("保存失败", str(e))
+                return
+            win.destroy()
+            # ★ 就地改成「已编辑」，并刷新类型栏与列表
+            hit["dst"] = new
+            hit["kind"] = "已编辑"
+            hit["detail"] = "已手工编辑"
+            self.report_counts = Counter(
+                h.get("kind", "") for _p, h in
+                getattr(self, "report_hits", []))
+            self._render_kind_bar()
+            # 勾上「已编辑」，让用户马上看到改过的句子
+            var = self.report_kind_vars.get("已编辑")
+            if var is not None:
+                var.set(True)
+            self._render_report_rows()
+            self.status_var.set("已保存：译文写入缓存，该句归入「已编辑」")
+            self._append_log(f"[编辑] 已写入缓存：{os.path.basename(res['cache'])}"
+                             f"（{len(new)} 字）\n")
+
+        def cancel():
+            win.destroy()
+
+        bar = tk.Frame(body, bg=CARD)
+        bar.pack(fill="x")
+        GlassButton(bar, "取消", width=92, height=40, bg=CARD,
+                    font=FONT_SMALL, command=cancel).pack(side="right")
+        GlassButton(bar, "保存", width=120, height=40, primary=True,
+                    bg=CARD, font=FONT_SMALL,
+                    command=commit).pack(side="right", padx=8)
+
+        win.bind("<Escape>", lambda _e: cancel())
+        win.protocol("WM_DELETE_WINDOW", cancel)
+        try:
+            win.update_idletasks()
+            x = self.root.winfo_rootx() + (
+                self.root.winfo_width() - win.winfo_width()) // 2
+            y = self.root.winfo_rooty() + 90
+            win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+        win.grab_set()
 
     def _apply_conflicts(self):
         choices = [dict(v) for v in
@@ -3812,8 +4047,8 @@ class App:
         ★ 当前只替换 \\tg[...] 里的内容（角色名），控制码参数保持不动。
         """
         try:
-            PFD.reload_dict()
-            changes, stats = PFD.scan_terms_for_tg()
+            # ★ 统一走 commands 的命令层：内部已含 PFD.reload_dict()
+            changes, stats = commands.scan_prefix_terms()
         except Exception as e:
             messagebox.showerror("应用术语", f"扫描前缀字典失败：{e}")
             return
@@ -4095,8 +4330,8 @@ class App:
         else:
             family = ""
             try:
-                import game_tools as GT
-                family = GT.font_family_name(path) or (config.FONT_NAME or "")
+                import plugin_tools as PT
+                family = PT.ttf_family_name(path) or (config.FONT_NAME or "")
             except Exception:
                 family = config.FONT_NAME or ""
             family = family or config.FONT_NAME or "Lolita"
@@ -4127,7 +4362,8 @@ class App:
         self._refresh_plugin_font()
 
     def _do_plugin_inject(self):
-        d = self._debug_folder()
+        """加载中文文本处理插件并编译进 Data/PluginScripts.rxdata。"""
+        d = self._intl_folder()
         if not d:
             return
         font_file = self._current_plugin_font() or None
@@ -4138,19 +4374,19 @@ class App:
             return res
 
         self.show("log")
-        self.run_async(work, label="植入中文文本处理插件中…",
-                       done_label="插件植入完成")
+        self.run_async(work, label="加载插件并编译中…",
+                       done_label="插件加载完成")
 
     def _do_plugin_restore(self):
-        """还原插件植入（删插件脚本 + 当初复制进 Fonts 的字体）。"""
-        d = self._debug_folder()
+        """还原插件植入（删插件目录 + 当初复制进 Fonts 的字体）。"""
+        d = self._intl_folder()
         if not d:
             return
+        import plugin_tools as PT
         if not messagebox.askyesno(
                 "还原插件植入",
                 f"将删除该游戏里的：\n"
-                f"· Data/Scripts/{'~zz_ChineseTextSettings.rb'}\n"
-                f"· Data/Scripts/~zz_ChineseTextRenderer.rb\n"
+                f"· Plugins/{PT.PLUGIN_DIR_NAME}/（本工具植入的那个）\n"
                 f"· Fonts 里当初复制进去的字体（游戏自带字体不动）\n\n"
                 f"游戏：{d}\n\n确定还原吗？"):
             return
@@ -4163,77 +4399,6 @@ class App:
         self.show("log")
         self.run_async(work, label="还原插件植入中…",
                        done_label="插件还原完成")
-
-    def _do_debug_restore(self):
-        """还原：让用户选「还原注入操作」或「还原提取脚本」。"""
-        d = getattr(self, "debug_folder", None)
-        if not d or not os.path.isdir(d):
-            messagebox.showwarning("提示", "请先在右侧选择游戏根目录")
-            return
-
-        win = tk.Toplevel(self.root)
-        win.title("还原")
-        win.configure(bg=CARD)
-        win.transient(self.root)
-        win.resizable(False, False)
-
-        card = RoundCard(win, radius=16, pad=16, width=520, auto_height=True)
-        card.pack(padx=12, pady=12)
-        body = card.body
-
-        tk.Label(body, text="选择还原方式", bg=CARD, fg=C_TITLE,
-                 font=FONT_TITLE).pack(anchor="w")
-        tk.Label(body, text=f"游戏：{d}", bg=CARD, fg=C_HINT,
-                 font=FONT_SMALL, justify="left",
-                 wraplength=460).pack(anchor="w", pady=(4, 10))
-
-        def desc(title, text):
-            tk.Label(body, text=title, bg=CARD, fg=TEXT,
-                     font=FONT_B).pack(anchor="w", pady=(6, 0))
-            tk.Label(body, text=text, bg=CARD, fg=C_HINT,
-                     font=FONT_SMALL, justify="left",
-                     wraplength=460).pack(anchor="w")
-
-        def run(which):
-            win.destroy()
-            self.show("log")
-            self.run_async(
-                lambda: commands.debug_restore_paths([d], which),
-                label="还原中…", done_label="还原完成")
-
-        b1 = tk.Frame(body, bg=CARD)
-        b1.pack(fill="x", pady=(10, 0))
-        GlassButton(b1, "还原注入操作", width=150, height=44, primary=True,
-                    bg=CARD, font=FONT_SMALL,
-                    command=lambda: run("injection")).pack(side="left")
-        b2 = tk.Frame(body, bg=CARD)
-        b2.pack(fill="x", pady=(10, 0))
-        GlassButton(b2, "还原提取脚本", width=150, height=44, bg=CARD,
-                    font=FONT_SMALL,
-                    command=lambda: run("extraction")).pack(side="left")
-
-        desc("· 还原注入操作",
-             "把工具注入 / 改写过的脚本恢复成解包时的状态"
-             "（按 ScriptsBackup.rxdata 重新生成 rb 文件），提取仍然保留。")
-        desc("· 还原提取脚本",
-             "删除 Data/Scripts 目录，把备份改回 Scripts.rxdata，"
-             "游戏回到完全未解包的状态。")
-
-        bar = tk.Frame(body, bg=CARD)
-        bar.pack(fill="x", pady=(14, 0))
-        GlassButton(bar, "取消", width=80, height=34, bg=CARD,
-                    font=FONT_SMALL, command=win.destroy).pack(side="right")
-
-        try:
-            win.update_idletasks()
-            x = self.root.winfo_rootx() + (
-                self.root.winfo_width() - win.winfo_width()) // 2
-            y = self.root.winfo_rooty() + 120
-            win.geometry(f"+{max(0, x)}+{max(0, y)}")
-        except Exception:
-            pass
-        win.grab_set()
-        win.focus_force()
 
     def _load_reflow_blocks(self):
         """扫描已选文件，按当前模式（[map*] / 其它区块）填入列表。"""
@@ -5920,9 +6085,9 @@ def main():
     enable_dpi_awareness()         # ★ 必须早于 tk.Tk()，否则 1500x1000 会被缩放
     root = tk.Tk()
     resolve_font_family(root)      # ★ 必须在 App 构建前定好字体
-    app = App(root)
+    app = App(root)               # ★ 必须持有引用：App 靠它存活（回调里持 self）
     apply_window_effects(root)
-    root.mainloop()
+    app.root.mainloop()
 
 
 if __name__ == "__main__":
