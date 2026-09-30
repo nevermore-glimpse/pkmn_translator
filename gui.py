@@ -1028,12 +1028,14 @@ class FilePanel(tk.Frame):
     右侧「待操作文件」侧边栏：单个文件 / 整个文件夹 + 勾选列表。
 
     mode:
-      "source" —— 菜单 2/4/5/6/7：不限格式，只跳过 *_translated.txt
-                  与 *_translated_report.txt
-      "report" —— 菜单 3：只识别 *_translated_report.txt
+      "source"     —— 菜单 2：源文件，不限格式，只跳过译文与检查报告
+      "report"     —— 菜单 3：只识别 *_translated_report.txt
+      "cache"      —— 菜单 4/6：只识别翻译缓存 *_cache.json
+      "translated" —— 菜单 7：只识别译文 *_translated.txt
+      "dict"       —— 菜单 5：固定用工具目录下的 prefix_dict.json，不给选
     """
 
-    # 菜单 2/4/5/6/7 需要跳过的后缀
+    # 菜单 2 需要跳过的后缀
     SKIP_SUFFIX = ("_translated.txt", "_translated_report.txt")
 
     def __init__(self, master, bg=CARD, width=272, mode="source",
@@ -1054,20 +1056,26 @@ class FilePanel(tk.Frame):
         tk.Label(self, text="待操作文件", bg=bg, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 4))
 
-        row = tk.Frame(self, bg=bg)
-        row.pack(fill="x", padx=10)
-        GlassButton(row, "单个文件", width=88, height=34, bg=bg,
-                    font=FONT_SMALL, command=self.pick_file).pack(side="left")
-        GlassButton(row, "整个文件夹", width=88, height=34, bg=bg,
-                    font=FONT_SMALL, command=self.pick_dir).pack(
-            side="left", padx=6)
+        # ★ "dict" 模式（菜单 5）：字典文件固定，不用给选择按钮
+        if self.mode != "dict":
+            row = tk.Frame(self, bg=bg)
+            row.pack(fill="x", padx=10)
+            GlassButton(row, "单个文件", width=88, height=34, bg=bg,
+                        font=FONT_SMALL,
+                        command=self.pick_file).pack(side="left")
+            GlassButton(row, "整个文件夹", width=88, height=34, bg=bg,
+                        font=FONT_SMALL, command=self.pick_dir).pack(
+                side="left", padx=6)
 
         row2 = tk.Frame(self, bg=bg)
         row2.pack(fill="x", padx=10, pady=(6, 2))
-        GlassButton(row2, "全选", width=64, height=32, bg=bg,
-                    font=FONT_SMALL, command=self.select_all).pack(side="left")
-        GlassButton(row2, "清空", width=64, height=32, bg=bg,
-                    font=FONT_SMALL, command=self.clear).pack(side="left", padx=6)
+        if self.mode != "dict":
+            GlassButton(row2, "全选", width=64, height=32, bg=bg,
+                        font=FONT_SMALL,
+                        command=self.select_all).pack(side="left")
+            GlassButton(row2, "清空", width=64, height=32, bg=bg,
+                        font=FONT_SMALL,
+                        command=self.clear).pack(side="left", padx=6)
         self.count_lbl = tk.Label(row2, text="已选 0", bg=bg, fg=C_KEY,
                                   font=FONT_BIG)
         self.count_lbl.pack(side="right")
@@ -1099,6 +1107,15 @@ class FilePanel(tk.Frame):
                               wraplength=max(120, self.panel_w - 62))
         self._hint.pack(anchor="w", padx=6, pady=10)
 
+        # ★ 菜单 5：字典文件固定写在工具目录下，直接列出来
+        if self.mode == "dict":
+            try:
+                import prefix_dict as PFD
+                dict_file = PFD.DICT_FILE
+            except Exception:
+                dict_file = os.path.join(config.BASE_DIR, "prefix_dict.json")
+            self.add_files([dict_file], silent=True)
+
     # ---------- 复制 ----------
     def _paths_text(self):
         """已勾选文件的完整路径（每行一个）。"""
@@ -1109,6 +1126,14 @@ class FilePanel(tk.Frame):
     def _hint_text(self):
         if self.mode == "report":
             return "点击上方按钮选择检查报告\n（只识别 *_translated_report.txt）"
+        if self.mode == "cache":
+            return ("点击上方按钮选择翻译缓存\n"
+                    "（只识别 *_cache.json，也就是翻译时生成的那个缓存）")
+        if self.mode == "translated":
+            return ("点击上方按钮选择译文文件\n"
+                    "（只识别 *_translated.txt）")
+        if self.mode == "dict":
+            return "前缀字典固定放在工具目录下，不用选"
         text = "点击上方按钮选择文件\n（不限格式，自动跳过译文与检查报告）"
         if getattr(self, "allow_game_root", False):
             text += "\n也可点「游戏根目录」自动扫描里面的 txt 文件"
@@ -1118,6 +1143,12 @@ class FilePanel(tk.Frame):
         low = name.lower()
         if self.mode == "report":
             return low.endswith("_translated_report.txt")
+        if self.mode == "cache":
+            return low.endswith("_cache.json")
+        if self.mode == "translated":
+            return low.endswith("_translated.txt")
+        if self.mode == "dict":
+            return low == "prefix_dict.json"
         return not low.endswith(self.SKIP_SUFFIX)
 
     def _filter(self, paths):
@@ -1134,6 +1165,14 @@ class FilePanel(tk.Frame):
             title = "选择检查报告（*_translated_report.txt）"
             types = [("检查报告", "*_translated_report.txt"),
                      ("所有文件", "*.*")]
+        elif self.mode == "cache":
+            title = "选择翻译缓存（*_cache.json）"
+            types = [("翻译缓存", "*_cache.json"), ("所有文件", "*.*")]
+        elif self.mode == "translated":
+            title = "选择译文文件（*_translated.txt）"
+            types = [("译文文件", "*_translated.txt"), ("所有文件", "*.*")]
+        elif self.mode == "dict":
+            return
         else:
             title = "选择要处理的文件"
             types = [("所有文件", "*.*")]
@@ -1145,6 +1184,8 @@ class FilePanel(tk.Frame):
             self.add_files(paths)
 
     def pick_dir(self):
+        if self.mode == "dict":
+            return
         folder = filedialog.askdirectory(
             title="选择文件夹", initialdir=self._initial())
         if not folder:
@@ -1261,13 +1302,19 @@ class FilePanel(tk.Frame):
         return [p for p, v in self.vars.items() if v.get()]
 
     def ensure(self):
-        """没选文件时尝试用当前默认文件；仍为空返回 []。"""
+        """没选文件时尝试用当前默认文件（按本页认的格式换算）；仍为空返回 []。"""
         sel = self.selected()
         if sel:
             return sel
         cur = config.Runtime.input_file
         if self.mode == "report":
             cur = commands.report_path_for(cur)
+        elif self.mode == "cache":
+            cur = commands.cache_path_for(cur)
+        elif self.mode == "translated":
+            cur = commands.translated_path_for(cur)
+        elif self.mode == "dict":
+            return self.selected()
         if cur and os.path.exists(cur):
             self.add_files([cur])
             return self.selected()
@@ -1692,20 +1739,35 @@ class App:
 
     def _sync_file_panels(self, paths):
         """
-        菜单 2（翻译）选中文件后，自动同步到菜单 3~6。
-        菜单 3 只认检查报告，所以这里做一次「源文件 → 报告」的换算。
+        菜单 2（翻译）选中文件后，自动同步到其它菜单。
+
+        ★ 各菜单认的文件不一样，这里统一做一次换算：
+            菜单 3 → 检查报告 *_translated_report.txt
+            菜单 4/6 → 翻译缓存 *_cache.json
+            菜单 7 → 译文 *_translated.txt
+            菜单 5 → 字典文件固定，不同步
+          源文件的换算走 commands.source_of()，所以把缓存 / 译文直接拖进来也能认。
         """
         paths = list(paths or [])
+        # ★ 先统一换回源文件：菜单 4/6 里勾的是缓存、菜单 7 里勾的是译文，
+        #   直接同步过去会把这些文件塞进菜单 2，翻译时会当成文本去读。
+        base = [commands.source_of(p) for p in paths]
         for fp in self.file_panels:
             if fp is None or not fp.winfo_exists():
                 continue
             if fp.mode == "report":
-                target = [commands.report_path_for(p) for p in paths]
-                target = [t for t in target if t and os.path.exists(t)]
-                if not target:
-                    continue
+                target = [commands.report_path_for(p) for p in base]
+            elif fp.mode == "cache":
+                target = [commands.cache_path_for(p) for p in base]
+            elif fp.mode == "translated":
+                target = [commands.translated_path_for(p) for p in base]
+            elif fp.mode == "dict":
+                continue                      # 固定字典文件，别动它
             else:
-                target = paths
+                target = base
+            target = [t for t in target if t and os.path.exists(t)]
+            if not target:
+                continue
             fp.set_files(target)
 
     def _on_cancel(self):
@@ -3610,7 +3672,7 @@ class App:
         fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
-        fp = self._make_file_panel(fp_holder, "source")
+        fp = self._make_file_panel(fp_holder, "cache")
         self.fp_terms = fp
 
     def _load_term_rows(self):
@@ -4035,7 +4097,7 @@ class App:
         fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
-        fp = self._make_file_panel(fp_holder, "source")
+        fp = self._make_file_panel(fp_holder, "cache")
         self.fp_prefix = fp
 
     def _load_prefix_rows(self):
@@ -4082,7 +4144,7 @@ class App:
     def _do_apply_prefix(self):
         paths = self.fp_prefix.ensure()
         if not paths:
-            messagebox.showwarning("提示", "请先选择要应用的文件")
+            messagebox.showwarning("提示", "请先选择翻译缓存（*_cache.json）")
             return
         edits = dict(self.prefix_edits)
 
@@ -4129,6 +4191,7 @@ class App:
                 + "\n\n只替换 \\tg[...] 里的内容，确定应用？"):
             return
 
+        # 勾选了缓存就顺带把前缀重新拼回译文，没有就只更新字典
         paths = self.fp_prefix.ensure() or []
 
         def work():
@@ -4192,7 +4255,7 @@ class App:
         fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
-        fp = self._make_file_panel(fp_holder, "source")
+        fp = self._make_file_panel(fp_holder, "cache")
         self.fp_polish = fp
 
     def _do_polish(self):
@@ -4240,7 +4303,8 @@ class App:
         fp_holder = RoundCard(page, radius=16, pad=8, width=272)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
-        self.fp_reflow = self._make_file_panel(fp_holder, "source")
+        self.fp_reflow = self._make_file_panel(fp_holder, "translated",
+                                               allow_game_root=True)
 
     def _build_reflow_panel(self, body):
         self.reflow_cfgs = {}

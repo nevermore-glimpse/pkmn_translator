@@ -371,14 +371,59 @@ def drop_term_conflicts(terms):
 # 生成物后缀（选文件时要跳过 / 报告模式下要识别）
 TRANSLATED_SUFFIX = "_translated.txt"
 REPORT_SUFFIX     = "_translated_report.txt"
+CACHE_SUFFIX      = "_cache.json"
+
+# 「缓存 / 译文 / 报告」→ 源文件，按长到短匹配（_translated_report.txt 先于
+# _translated.txt，否则会被切错）
+_GENERATED_SUFFIXES = (REPORT_SUFFIX, TRANSLATED_SUFFIX, CACHE_SUFFIX)
+
+
+def source_of(path):
+    """
+    把「缓存文件 / 译文文件 / 检查报告」换回它对应的**源文件**路径；
+    本来就是源文件的原样返回。
+
+    ★ 菜单 4（术语重翻）/ 6（中文润色）只允许选 `*_cache.json`、
+      菜单 7（换行重排）只允许选 `*_translated.txt`，而后面的流程都是按
+      **源文件**推导缓存与译文路径的（Runtime.set_input），所以要先换算一步，
+      否则会拼出 `xxx_cache_cache.json` 这种鬼东西。
+    """
+    if not path:
+        return path
+    low = str(path).lower()
+    for suf in _GENERATED_SUFFIXES:
+        if low.endswith(suf):
+            return path[: -len(suf)] + ".txt"
+    return path
+
+
+def cache_path_for(path):
+    """源文件 / 译文 / 缓存 → 对应的翻译缓存路径（*_cache.json）。"""
+    if not path:
+        return None
+    src = source_of(path)
+    stem = os.path.splitext(os.path.basename(src))[0]
+    return os.path.join(os.path.dirname(os.path.abspath(src)),
+                        f"{stem}{CACHE_SUFFIX}")
+
+
+def translated_path_for(path):
+    """源文件 / 译文 / 缓存 → 对应的译文文件路径（*_translated.txt）。"""
+    if not path:
+        return None
+    src = source_of(path)
+    stem = os.path.splitext(os.path.basename(src))[0]
+    return os.path.join(os.path.dirname(os.path.abspath(src)),
+                        f"{stem}{TRANSLATED_SUFFIX}")
 
 
 def report_path_for(src_path):
     """源文件 → 对应检查报告路径。"""
     if not src_path:
         return None
-    stem = os.path.splitext(os.path.basename(src_path))[0]
-    parent = os.path.dirname(os.path.abspath(src_path))
+    src = source_of(src_path)
+    stem = os.path.splitext(os.path.basename(src))[0]
+    parent = os.path.dirname(os.path.abspath(src))
     return os.path.join(parent, f"{stem}{REPORT_SUFFIX}")
 
 
@@ -1485,8 +1530,15 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
             emit(f"[跳过] 文件不存在：{path}")
             continue
 
-        config.Runtime.set_input(path)
-        bridge.progress(i - 1, len(paths), os.path.basename(path))
+        # ★ 本菜单只允许选缓存文件（*_cache.json），先换回源文件再交给
+        #   Runtime.set_input 推导缓存 / 译文路径
+        src_path = source_of(path)
+        if not os.path.exists(src_path):
+            emit(f"  找不到对应的源文件：{src_path}")
+            continue
+
+        config.Runtime.set_input(src_path)
+        bridge.progress(i - 1, len(paths), os.path.basename(src_path))
 
         if not os.path.exists(config.Runtime.cache_file):
             emit(f"  缺少缓存：{config.Runtime.cache_file}（先跑一次翻译）")
@@ -1495,10 +1547,10 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
         cache = Cache(config.Runtime.cache_file)
         hits = TS.find_affected_cache(cache.data, affected)
         if not hits:
-            emit(f"  [{os.path.basename(path)}] 没有句子命中这些术语")
+            emit(f"  [{os.path.basename(src_path)}] 没有句子命中这些术语")
             continue
 
-        emit(f"  [{os.path.basename(path)}] 命中缓存 {len(hits)} 条")
+        emit(f"  [{os.path.basename(src_path)}] 命中缓存 {len(hits)} 条")
         by_term = Counter(term for _, term in hits)
         for term, n in by_term.most_common(8):
             emit(f"      {term}: {n} 条")
@@ -1508,8 +1560,8 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
         total_removed += removed_n
         emit(f"  ✔ 已删除 {removed_n} 条缓存")
 
-        lines, newline = P.read_file(path, config.INPUT_ENCODING)
-        _translate_core(path, lines, newline, show_header=False)
+        lines, newline = P.read_file(src_path, config.INPUT_ENCODING)
+        _translate_core(src_path, lines, newline, show_header=False)
         files_done += 1
 
     TS.save_snapshot(current)
@@ -1690,15 +1742,21 @@ def apply_prefix_dict_paths(paths, entries_map=None):
             emit(f"[跳过] 文件不存在：{path}")
             continue
 
-        config.Runtime.set_input(path)
-        bridge.progress(i - 1, len(paths), os.path.basename(path))
+        # ★ 菜单 5 现在只选缓存文件（*_cache.json），先换回源文件
+        src_path = source_of(path)
+        if not os.path.exists(src_path):
+            emit(f"  找不到对应的源文件：{src_path}")
+            continue
+
+        config.Runtime.set_input(src_path)
+        bridge.progress(i - 1, len(paths), os.path.basename(src_path))
 
         if not os.path.exists(config.Runtime.cache_file):
             emit(f"  缺少缓存：{config.Runtime.cache_file}（先跑一次翻译）")
             continue
 
         try:
-            lines, newline = P.read_file(path, config.INPUT_ENCODING)
+            lines, newline = P.read_file(src_path, config.INPUT_ENCODING)
         except Exception as e:
             emit(f"  读取失败：{e}")
             continue
@@ -1741,7 +1799,7 @@ def apply_prefix_dict_paths(paths, entries_map=None):
             lines, entries, translations,
             config.Runtime.output_file, newline, config.OUTPUT_ENCODING,
         )
-        emit(f"  [{os.path.basename(path)}] 替换 {replaced}/{len(entries)} 条"
+        emit(f"  [{os.path.basename(src_path)}] 替换 {replaced}/{len(entries)} 条"
              f"  前缀生效 {hit_prefix}  未译 {miss_prefix}  无前缀 {no_prefix}")
         done += 1
 
@@ -2149,24 +2207,30 @@ def polish_paths(paths, model=None, reset=False):
             emit(f"[跳过] 文件不存在：{path}")
             continue
 
-        config.Runtime.set_input(path)
-        bridge.progress(i - 1, len(paths), os.path.basename(path))
+        # ★ 本菜单只允许选缓存文件（*_cache.json），先换回源文件
+        src_path = source_of(path)
+        if not os.path.exists(src_path):
+            emit(f"  找不到对应的源文件：{src_path}")
+            continue
+
+        config.Runtime.set_input(src_path)
+        bridge.progress(i - 1, len(paths), os.path.basename(src_path))
 
         if not os.path.exists(config.Runtime.cache_file):
             emit(f"  缺少缓存：{config.Runtime.cache_file}（先跑一次翻译）")
             continue
 
         try:
-            lines, newline = P.read_file(path, config.INPUT_ENCODING)
+            lines, newline = P.read_file(src_path, config.INPUT_ENCODING)
         except Exception as e:
             emit(f"  读取失败：{e}")
             continue
 
         if len(paths) > 1:
-            emit(f"\n[{i}/{len(paths)}] {os.path.basename(path)}")
+            emit(f"\n[{i}/{len(paths)}] {os.path.basename(src_path)}")
 
         try:
-            r = _polish_core(path, lines, newline,
+            r = _polish_core(src_path, lines, newline,
                              show_header=(len(paths) == 1), reset=reset)
             total_changed += r.get("changed", 0)
             total_skipped += r.get("skipped", 0)
@@ -2255,15 +2319,21 @@ def scan_reflow_blocks(paths, preview=8):
     for path in paths:
         if not os.path.exists(path):
             continue
+        # ★ 菜单 7 只列译文文件，先换回源文件再读（译文与源文件行数一致，
+        #   但缓存 / 块名都挂在源文件上）
+        src_path = source_of(path)
+        if not os.path.exists(src_path):
+            log.warning("重排扫描：找不到对应的源文件 %s", src_path)
+            continue
         try:
-            lines, _nl = P.read_file(path, config.INPUT_ENCODING)
+            lines, _nl = P.read_file(src_path, config.INPUT_ENCODING)
         except Exception as e:
-            log.warning("重排扫描读取失败：%s（%s）", path, e)
+            log.warning("重排扫描读取失败：%s（%s）", src_path, e)
             continue
 
-        config.Runtime.set_input(path)
+        config.Runtime.set_input(src_path)
         cache = Cache(config.Runtime.cache_file)
-        out_lines = _output_lines_of(path, lines, cache)
+        out_lines = _output_lines_of(src_path, lines, cache)
 
         modes = P.get_block_modes(lines)
         entries, _ = P.extract_entries(lines)
@@ -2275,12 +2345,14 @@ def scan_reflow_blocks(paths, preview=8):
         def _flush():
             if cur_pairs:
                 blocks.append({
-                    "file":  os.path.basename(path),
-                    "path":  path,
+                    # ★ 用源文件：区块 id 在扫描与执行两边必须一致，
+                    #   否则「只重排选中的区块」会一个都命中不了
+                    "file":  os.path.basename(src_path),
+                    "path":  src_path,
                     "block": cur_name,
                     "mode":  cur_mode,
                     "line":  cur_line,
-                    "id":    reflow_block_id(path, cur_name, cur_line),
+                    "id":    reflow_block_id(src_path, cur_name, cur_line),
                     "total": len(cur_pairs),
                     "pairs": cur_pairs[:preview],
                 })
@@ -2342,12 +2414,18 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None, blocks=None):
             emit(f"[跳过] 文件不存在：{path}")
             continue
 
-        config.Runtime.set_input(path)
+        # ★ 本菜单只允许选译文文件（*_translated.txt），先换回源文件
+        src_path = source_of(path)
+        if not os.path.exists(src_path):
+            emit(f"  找不到对应的源文件：{src_path}")
+            continue
+
+        config.Runtime.set_input(src_path)
         out_path = config.Runtime.output_file
-        bridge.progress(i - 1, len(paths), os.path.basename(path))
+        bridge.progress(i - 1, len(paths), os.path.basename(src_path))
 
         try:
-            lines, _ = P.read_file(path, config.INPUT_ENCODING)
+            lines, _ = P.read_file(src_path, config.INPUT_ENCODING)
         except Exception as e:
             emit(f"  读取失败：{e}")
             continue
@@ -2371,11 +2449,11 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None, blocks=None):
         modes = P.get_block_modes(lines)
         entries, _ = P.extract_entries(lines)
         # ★ 每个条目属于哪个区块（用于「只重排选中区块」）
-        block_of = _line_block_ids(lines, path) if sel_ids is not None else None
+        block_of = _line_block_ids(lines, src_path) if sel_ids is not None else None
         sel_hit = 0                       # 本文件里命中「选中区块」的条目数
 
         n_changed = 0
-        for idx, src in entries:
+        for idx, src_text in entries:
             if block_of is not None:
                 bid = block_of[idx] if idx < len(block_of) else None
                 if bid not in sel_ids:
@@ -2385,12 +2463,12 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None, blocks=None):
             m = re.match(r'^([ \t]*)', dst)
             indent = m.group(1) if m else ""
             body = dst.strip()
-            if not body or body == src.strip():
+            if not body or body == src_text.strip():
                 continue
 
             mode = modes[idx] if idx < len(modes) else "newline"
             mn, mx, gap = (sp if mode == "space" else nl)
-            new_body = PR.reflow(src.strip(), body, mode=mode,
+            new_body = PR.reflow(src_text.strip(), body, mode=mode,
                                  min_chars=mn, max_chars=mx, min_gap=gap)
             if not new_body or new_body == body:
                 continue

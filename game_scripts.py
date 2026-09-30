@@ -282,6 +282,32 @@ def _indent_of(text, line_start):
     return text[bol:line_start]
 
 
+def _zh_fragment(frag, first_display=""):
+    """
+    第一条语言的文件名片段 → 中文那条该用的片段（照第一条的写法适配）。
+
+      "english.dat" → "Chinese.dat"
+      "english"     → "Chinese"
+      "English.dat" → "Chinese.dat"
+      "deutsch.dat" → "Chinese.dat"（第一条不是英文时按「主干+后缀」套）
+    """
+    frag = frag or ""
+    # ① 片段里含 english（不分大小写）→ 整词换成 Chinese，前后缀原样保留
+    m = re.search(r"english", frag, re.I)
+    if m:
+        return frag[:m.start()] + "Chinese" + frag[m.end():]
+    # ② 含第一条的显示名（例如 Deutsch / deutsch.dat）→ 同样换掉
+    if first_display:
+        m2 = re.search(re.escape(first_display), frag, re.I)
+        if m2:
+            return frag[:m2.start()] + "Chinese" + frag[m2.end():]
+    # ③ 都没有：主干换成 Chinese，后缀（.dat 之类）保留
+    stem, dot, ext = frag.rpartition(".")
+    if dot and stem:
+        return "Chinese" + dot + ext
+    return "Chinese"
+
+
 def _patch_languages(text, display=None, fragment=None):
     """
     在 LANGUAGES 数组里加一条中文语言。做法（按需求定的三步）：
@@ -289,7 +315,10 @@ def _patch_languages(text, display=None, fragment=None):
       ① 数组里第一条语言如果被注释掉了（`#  ["English","english.dat"]`），
          先把 `#` 去掉；
       ② 把这一行**复制一份**插到它下面；
-      ③ 复制出来的那一行里 `English` → `Chinese`。
+      ③ 复制出来的那一行里：
+           · 第一个引号 → 语言显示名（默认「简体中文」）
+           · 第二个引号 → 文件名片段，**照第一条的写法适配**
+             （english.dat → Chinese.dat、english → Chinese）
 
     于是
         LANGUAGES = [
@@ -298,7 +327,17 @@ def _patch_languages(text, display=None, fragment=None):
     变成
         LANGUAGES = [
           ["English","english.dat"],
-          ["Chinese","english.dat"]
+          ["简体中文","Chinese.dat"]
+        ]
+
+    而
+        LANGUAGES = [
+          ["English","english"]
+        ]
+    变成
+        LANGUAGES = [
+          ["English","english"],
+          ["简体中文","Chinese"]
         ]
 
     ★ 数组里已经有中文条目（中文 / Chinese / 简中…）就直接跳过，不会重复加。
@@ -311,8 +350,8 @@ def _patch_languages(text, display=None, fragment=None):
     if rb < 0:
         raise ValueError("LANGUAGES 数组没有闭合的 `]`")
 
-    info = {"display": "Chinese", "fragment": fragment, "added": False,
-            "uncommented": False}
+    info = {"display": display or "简体中文", "fragment": fragment,
+            "added": False, "uncommented": False}
     lines = text.split("\n")
     start_line = text.count("\n", 0, lb)          # "LANGUAGES = [" 所在行
     end_line = text.count("\n", 0, rb)            # "]" 所在行
@@ -345,13 +384,24 @@ def _patch_languages(text, display=None, fragment=None):
     if not body.endswith(","):
         body += ","
 
-    # ③ 复制一行，English → Chinese
-    dup = body.replace("English", "Chinese")
-    if dup == body:
-        # 第一条不叫 English（例如 Deutsch）就改第一个引号里的显示名
-        dup = re.sub(r"([\"'])[^\"']*\1", r"\1Chinese\1", body, count=1)
+    # ③ 复制一行：第一个引号 → 显示名，第二个引号 → 照第一条适配的文件名
+    disp = display or "简体中文"
+    frag_new = fragment or _zh_fragment(em0.group("frag"),
+                                        em0.group("display"))
+    em = _ENTRY_LINE_RE.match(body)
+    if em:
+        # 保留第一条的写法：缩进、引号种类、逗号后的空格、行尾逗号都照抄
+        dup = (body[:em.start("display")] + disp
+               + body[em.end("display"):em.start("frag")] + frag_new
+               + body[em.end("frag"):])
+    else:                                    # 理论上不会走到，兜底沿用旧做法
+        dup = body.replace("English", "Chinese")
+        if dup == body:
+            dup = re.sub(r"([\"'])[^\"']*\1", r"\1%s\1" % disp, body, count=1)
 
     info["added"] = True
+    info["display"] = disp
+    info["fragment"] = frag_new
     info["template"] = body.strip()
     info["entry"] = dup.strip()
     new_lines = lines[:k0] + [body + cr, dup + cr] + lines[k0 + 1:]
@@ -380,7 +430,7 @@ def apply_languages_entry(game_dir, display="简体中文", fragment=None,
     except ValueError as e:
         return {"ok": False, "reason": str(e)}
     out = {"ok": True, "mode": src["mode"], "where": str(src["key"]),
-           "display": "Chinese", "fragment": frag, **info}
+           "display": info.get("display") or display, "fragment": frag, **info}
     if not info.get("added"):
         say(f"[语言] Settings 的 LANGUAGES 里已经有「"
             f"{info.get('exists') or '中文'}」，不用再改")
