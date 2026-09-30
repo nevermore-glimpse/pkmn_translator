@@ -2284,7 +2284,8 @@ class App:
                       "★ 有 Plugins 目录的游戏：插件放进 Plugins/，并把全部插件"
                       "一起编译进 Data/PluginScripts.rxdata；\n"
                       "★ 没有 Plugins 目录（或没有插件系统、跑 Ruby 1.8 的老游戏）："
-                      "把插件作为**最后一个脚本**写进 Scripts.rxdata。",
+                      "把插件拼成一个脚本，插到 Data/Scripts.rxdata 里 Main 的前面"
+                      "（RGSS 读到 Main 就进游戏主循环，挂在 Main 后面的脚本不执行）。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
 
@@ -4465,7 +4466,8 @@ class App:
                 "还原插件植入",
                 f"将删除该游戏里的：\n"
                 f"· Plugins/{PT.PLUGIN_DIR_NAME}/（本工具植入的那个）\n"
-                f"· Scripts.rxdata 里本工具追加的那个脚本（如果是塞脚本的方式）\n"
+                f"· Scripts.rxdata 里本工具插进去的那条脚本（如果是塞脚本的方式，"
+                f"它在 Main 前面）\n"
                 f"· Fonts 里当初复制进去的字体（游戏自带字体不动）\n\n"
                 f"游戏：{d}\n\n确定还原吗？"):
             return

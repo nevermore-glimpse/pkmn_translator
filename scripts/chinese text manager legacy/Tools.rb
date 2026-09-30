@@ -10,10 +10,15 @@
 #       照抄目标引擎源码后再打补丁（用的都是本引擎自己的助手函数
 #       rgbToColor、Rgb16ToColor），不会调用新版专有 API；
 #     · 顶部有 Ruby 1.8 兼容补丁（补 String#ord / String#each_char）；
+#     · 所有「把字符串切成一个个字符」的地方都改走 _pkmn_chars()：
+#       String#scan 配 /./m 是按 $KCODE 切的，RGSS / Ruby 1.8 默认不是 'U'，
+#       汉字会被切成 3 个字节，ischinese? 永远判不出汉字 → 中文换行等于没生效；
 #     · ischinese? 与 _MAPINTL 做了 1.8 适配（见下面各函数上的注释）。
 #
-#   ★ 这份脚本没有 Plugins 目录可用，是**直接插进 Scripts.rxdata 的最后一个**
-#     （或者解包成 Data/Scripts/ 时放一个排最后的 .rb）。
+#   ★ 这份脚本没有 Plugins 目录可用，是**直接插进 Scripts.rxdata、排在 Main 前面**
+#     （或者解包成 Data/Scripts/ 时放一个排在 Main 前面的 .rb）。
+#     —— 必须在 Main 之前：RGSS 从上往下执行脚本、读到 Main 就进游戏主循环，
+#        挂在 Main 后面的脚本永远不会执行。
 #
 #   ★ 禁止手改本文件 —— 要改插件设置请改同目录的 Settings.rb。
 # ==============================================================================
@@ -33,13 +38,53 @@ if RUBY_VERSION.to_f < 1.9
       self.unpack("U")[0] || 0
     end
 
+    # ★ each_char 不能用 String#scan 配 /./m 那种写法：它按 $KCODE 决定
+    #   怎么切，而 RGSS / Ruby 1.8 默认 $KCODE 不是 'U'（按字节切）——
+    #   "中" 会被切成 3 个字节，后面 ischinese? 永远判不出汉字，
+    #   中文换行就等于没生效。
+    #   这里照着 UTF-8 的字节头自己走一遍，跟 $KCODE 无关，切出来的
+    #   一定是完整的字符。
     def each_char
-      chars = self.scan(/./m)
-      return chars if !block_given?
-      chars.each { |c| yield c }
+      bytes = self.unpack("C*")
+      i = 0
+      out = []
+      while i < bytes.size
+        b = bytes[i]
+        len = b < 0x80 ? 1 : (b < 0xE0 ? 2 : (b < 0xF0 ? 3 : 4))
+        len = bytes.size - i if i + len > bytes.size
+        out << bytes[i, len].pack("C*")
+        i += len
+      end
+      return out if !block_given?
+      out.each { |c| yield c }
       self
     end
   end
+end
+
+# ------------------------------------------------------------------------------
+# [pkmn] 把字符串切成「一个个字符」的数组
+#   插件的换行逻辑全部建立在「一个汉字 = 一个字符」上，而 String#scan 配
+#   /./m 那种写法是按 $KCODE 决定怎么切的：RGSS / Ruby 1.8 默认 $KCODE
+#   不是 'U'（按字节切），
+#   "中" 会被切成 3 段，后面 ischinese? 永远判不出汉字 —— 中文换行就等于没生效。
+#   所以这里自己按 UTF-8 的字节头走一遍，跟 $KCODE 无关。
+# ------------------------------------------------------------------------------
+def _pkmn_chars(text)
+  return text if text.is_a?(Array)     # 有的调用点传进来的已经是数组
+  text = text.to_s
+  return text.split(//) if RUBY_VERSION.to_f >= 1.9    # 1.9 起本来就是按字符切
+  bytes = text.unpack("C*")
+  out = []
+  i = 0
+  while i < bytes.size
+    b = bytes[i]
+    len = b < 0x80 ? 1 : (b < 0xE0 ? 2 : (b < 0xF0 ? 3 : 4))
+    len = bytes.size - i if i + len > bytes.size
+    out << bytes[i, len].pack("C*")
+    i += len
+  end
+  return out
 end
 
 def getLineBrokenChunks(bitmap, value, width, dims, plain = false)
@@ -87,7 +132,7 @@ def getLineBrokenText(bitmap, value, width, dims)
   textmsg = value.delete(" ").clone
   ret.push(["", 0, 0, 0, bitmap.text_size("中").height, 0, 0, 0, 0])
   textmsg.each_line do |line|
-    length = line.scan(/./m).length
+    length = _pkmn_chars(line).length
     line.each_char do |char|
       textSize = bitmap.text_size(char)
       textwidth = textSize.width
@@ -193,11 +238,11 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
   end
   textlen=0
   for i in 0...controls.length
-    textlen+=textchunks[i].scan(/./m).length
+    textlen+=_pkmn_chars(textchunks[i]).length
     controls[i][2]=textlen
   end
   text=textchunks.join("")
-  textchars=text.scan(/./m)
+  textchars=_pkmn_chars(text)
   colorstack=[]
   boldcount=0
   italiccount=0
@@ -626,7 +671,7 @@ def getFormattedTextFast(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight,
   charsonline=0
   textchunks.push(text)
   text=textchunks.join("")
-  textchars=text.scan(/./m)
+  textchars=_pkmn_chars(text)
   lastword=[0,0] # position of last word
   hadspace=false
   hadnonspace=false

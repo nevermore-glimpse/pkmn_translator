@@ -53,10 +53,15 @@ PLUGIN_INJECT_MARK = "[pkmn] injected by the Pokemon translation tool"
 
 PLUGIN_SCRIPTS_NAME = "PluginScripts.rxdata"
 
-# ---- 没有插件目录时：插件会被拼成一个脚本，追加到 Scripts.rxdata 的最后 ----
+# ---- 没有插件目录时：插件会被拼成一个脚本，插到 Main **之前** ----
+# ★ 必须排在 Main 之前：RGSS 是「从上往下依次执行脚本，读到 Main 就开始跑游戏」，
+#   所以写在 Main 后面的脚本永远不会执行（这就是最早「塞进脚本却没生效」的原因）。
 SCRIPT_TITLE = "[pkmn] chinese text manager"
-SCRIPT_FILE_NAME = "zzz_pkmn_chinese_text.rb"     # 解包成 Data/Scripts/ 时用
+SCRIPT_FILE_STEM = "pkmn_chinese_text"          # 解包游戏：<Main 的编号-1>_pkmn_chinese_text.rb
+SCRIPT_FILE_NAME = "zzz_pkmn_chinese_text.rb"   # 旧版本用过的名字，还原时一并清掉
 SCRIPT_HEAD_MARK = "[pkmn] 中文文本处理"
+# 脚本标题/文件名里像 Main 的：Main / main / 999_Main / [Main] …
+_MAIN_TITLE_RE = re.compile(r"^\s*\[?\s*\d*\s*_?\s*main\s*\]?\s*$", re.I)
 
 
 # ================================================================
@@ -639,7 +644,7 @@ def check_compat(game_dir):
         why = ("这个游戏没有插件系统（Essentials v19 之前 / Ruby 1.8）"
                if not pm else "这个游戏没有 Plugins 目录")
         advice = (f"{why}：改用 Essentials {variant} 版插件，"
-                  f"并把它作为**最后一个脚本**写进 Scripts.rxdata")
+                  f"并把它插到脚本里 Main 的前面")
     elif missing:
         advice = ("脚本里找不到 " + "、".join(missing) +
                   f"，用 Essentials {variant} 版插件并加兼容层兜底")
@@ -741,7 +746,7 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
     if mode == "scripts":
         rep = inject_script_plugin(game_dir, src, font_file, family, copied,
                                    emit=emit)
-        say("[插件] 完成：插件已作为最后一个脚本写进游戏脚本，"
+        say("[插件] 完成：插件已插到游戏脚本里（Main 之前），"
             "**不需要**再进游戏编译一次")
         return {"font": family, "font_file": font_file, "copied": copied,
                 "variant": variant, "mode": mode, "files": [],
@@ -929,8 +934,10 @@ def build_script_body(src_dir, font_file, family, copied):
                  encoding="utf-8", errors="replace") as f:
         tools = f.read()
     head = (f"# {SCRIPT_HEAD_MARK}\n"
-            f"# 由「宝可梦同人游戏翻译工具」自动追加为本游戏的最后一个脚本，\n"
-            f"# 想撤掉请用工具里的「还原」，不要手删。\n")
+            f"# 由「宝可梦同人游戏翻译工具」自动插到本游戏 Main 之前，\n"
+            f"# 想撤掉请用工具里的「还原」，不要手删。\n"
+            f"# (RGSS 从上往下执行脚本、读到 Main 就进游戏主循环，\n"
+            f"#  所以本脚本必须待在 Main 上面才有用。)\n")
     body = head + settings.rstrip("\n") + "\n\n" + tools.lstrip("\n")
     if not body.endswith("\n"):
         body += "\n"
@@ -956,16 +963,108 @@ def _is_our_script(entry):
         return False
 
 
+def _title_text(entry):
+    """脚本条目的标题 → str（RubyString / bytes 都能吃）。"""
+    try:
+        return _title_bytes(entry[1]).decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _main_index(entries):
+    """
+    找「Main」那条脚本的下标（有多条就取最后一条；找不到返回 None）。
+
+    ★ RGSS 读到 Main 就开始跑游戏，所以插件必须插在它**前面**。
+    """
+    found = None
+    for i, e in enumerate(entries):
+        if _MAIN_TITLE_RE.match(_title_text(e).strip()):
+            found = i
+    return found
+
+
+def _next_script_id(entries):
+    """
+    给新脚本挑一个没被占用的正整数 id。
+
+    ★ id 只是编辑器里的编号（这些游戏里的 id 本来就是随机大数），RGSS 按数组
+      顺序加载；用小正整数可以躲开 Ruby 1.8 Marshal 写 4 字节整数时的坑。
+    """
+    used = set()
+    for e in entries:
+        try:
+            v = e[0]
+        except Exception:
+            continue
+        if isinstance(v, int) and 0 < v < 2 ** 30:
+            used.add(v)
+    n = 1
+    while n in used:
+        n += 1
+    return n
+
+
+def _script_file_name(scripts_dir):
+    """
+    解包游戏（Data/Scripts/ 目录）里给注入的脚本挑文件名 →
+    (文件名, 是否保证排在 Main 之前)。
+
+    加载顺序按文件名排序，所以要挑一个「排在最靠后的普通脚本之后、Main 之前」
+    的名字：拿 Main 的编号前缀减一，例如 999_Main.rb → 998_pkmn_chinese_text.rb。
+    """
+    try:
+        names = sorted(os.listdir(scripts_dir))
+    except OSError:
+        names = []
+    mains = sorted(
+        n for n in names
+        if _MAIN_TITLE_RE.match(os.path.splitext(n)[0].strip() or n))
+    for m_name in mains:
+        m = re.match(r"^(\d+)", m_name)
+        if m:
+            n = max(0, int(m.group(1)) - 1)
+            return (f"{n:0{len(m.group(1))}d}_{SCRIPT_FILE_STEM}.rb", True)
+    return (SCRIPT_FILE_NAME, False)
+
+
+def _our_files(scripts_dir):
+    """目录里本工具写过的脚本文件（按正文里的标记认，只认名字不保险）。"""
+    out = []
+    try:
+        names = sorted(os.listdir(scripts_dir))
+    except OSError:
+        return out
+    for n in names:
+        if not str(n).endswith(".rb"):
+            continue
+        p = os.path.join(scripts_dir, n)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with io.open(p, "r", encoding="utf-8", errors="replace") as f:
+                head = f.read(600)
+        except OSError:
+            continue
+        if PLUGIN_INJECT_MARK in head or SCRIPT_HEAD_MARK in head:
+            out.append(p)
+    return out
+
+
 def inject_script_plugin(game_dir, src_dir, font_file, family, copied,
                          emit=None):
     """
-    把插件作为**最后一个脚本**写进游戏的脚本里。
+    把插件拼成一个脚本写进游戏脚本里。
 
-      · 没解包 → 追加一条到 Scripts.rxdata 末尾（先备份；已经注入过的先移除，
-        所以反复执行不会堆好几份）；
-      · 解包成 Data/Scripts/ → 写一个排在最后的 .rb 文件。
+      · 没解包 → 插一条到 Scripts.rxdata 里 **Main 之前**（先备份；已经注入
+        过的先移除，所以反复执行不会堆好几份）；
+      · 解包成 Data/Scripts/ → 写一个「排在最靠后的普通脚本之后、Main 之前」
+        的 .rb 文件。
 
-    返回 {"mode", "where", "backup", "scripts", "bytes"}。
+    ★ 为什么一定要在 Main 之前：RGSS 从上往下依次执行脚本，读到 Main 就进
+      游戏主循环 —— 挂在 Main 后面的脚本永远不会被执行。
+
+    返回 {"mode", "where", "backup", "scripts", "bytes", "ordered"}。
     """
     def say(msg):
         if emit:
@@ -979,17 +1078,29 @@ def inject_script_plugin(game_dir, src_dir, font_file, family, copied,
             "—— 找不到可以写脚本的地方")
 
     if mode == "file":
-        p = os.path.join(path, SCRIPT_FILE_NAME)
-        if os.path.isfile(p):
-            os.remove(p)                 # 幂等：先删旧的
+        for old in _our_files(path):        # 幂等：先删上次注入的（含旧名字）
+            try:
+                os.remove(old)
+                say(f"[插件] 先删掉上次注入的"
+                    f" Data/Scripts/{os.path.basename(old)}")
+            except OSError as e:
+                say(f"[插件] 删不掉 {os.path.basename(old)}：{e}")
+        name, ordered = _script_file_name(path)
+        p = os.path.join(path, name)
         with io.open(p, "w", encoding="utf-8", newline="") as f:
             f.write(body)
-        say(f"[插件] 已写出脚本 Data/Scripts/{SCRIPT_FILE_NAME}"
-            f"（{len(body.encode('utf-8')):,} 字节）"
-            f"—— 文件名用 zzz_ 开头，保证排在最后加载"
-            f"（后加载的会覆盖引擎原本的实现）")
+        if ordered:
+            say(f"[插件] 已写出脚本 Data/Scripts/{name}"
+                f"（{len(body.encode('utf-8')):,} 字节）"
+                f"—— 名字排在 Main 之前，会被执行")
+        else:
+            say(f"[插件] ⚠ 已写出 Data/Scripts/{name}，但这个游戏的脚本名没有"
+                f"编号前缀，**没法保证它排在 Main 之前**。RGSS 读到 Main 就开始"
+                f"跑游戏，Main 后面的脚本不执行；万一没生效，请把它改名到 "
+                f"Main 之前。")
         return {"mode": "file", "where": p, "backup": None,
-                "scripts": 0, "bytes": len(body.encode("utf-8"))}
+                "ordered": ordered, "scripts": 0,
+                "bytes": len(body.encode("utf-8"))}
 
     with open(path, "rb") as f:
         obj = _rb_load(f)
@@ -1000,8 +1111,19 @@ def inject_script_plugin(game_dir, src_dir, font_file, family, copied,
     dropped = len(obj) - len(kept)
     if dropped:
         say(f"[插件] 先移除了之前注入的 {dropped} 个脚本（重复注入不会堆积）")
-    kept.append([int(time.time()), _to_bytes(SCRIPT_TITLE),
-                 zlib.compress(body.encode("utf-8"))])
+
+    entry = [_next_script_id(kept), _to_bytes(SCRIPT_TITLE),
+             zlib.compress(body.encode("utf-8"))]
+    at = _main_index(kept)
+    has_main = at is not None
+    if not has_main:
+        at = len(kept)
+        say("[插件] ⚠ 脚本列表里没找到 Main，只能放在最后 —— 万一游戏没生效，"
+            "请手动把这条 [pkmn] 脚本移到 Main 上面")
+    else:
+        say(f"[插件] 插件脚本插在 Main 之前（第 {at + 1} 条 / 共 "
+            f"{len(kept) + 1} 条）")
+    kept.insert(at, entry)
 
     bak = f"{path}.{time.strftime('%Y%m%d-%H%M%S')}.bak"
     shutil.copyfile(path, bak)
@@ -1009,12 +1131,14 @@ def inject_script_plugin(game_dir, src_dir, font_file, family, copied,
     with open(tmp, "wb") as f:
         _rb_write(f, kept)
     os.replace(tmp, path)
-    say(f"[插件] 已把插件作为**最后一个脚本**写进 "
-        f"{os.path.basename(path)}（共 {len(kept)} 个脚本，"
+    say(f"[插件] 已写进 {os.path.basename(path)}（共 {len(kept)} 个脚本，"
         f"原文件已备份：{os.path.basename(bak)}）")
-    log.info("脚本方式植入插件：%s → %s（%d 个脚本）", game_dir, path, len(kept))
+    log.info("脚本方式植入插件：%s → %s（%d 个脚本，本插件在第 %d 条，"
+             "Main 在第 %s 条）", game_dir, path, len(kept), at,
+             _main_index(kept))
     return {"mode": "rxdata", "where": path, "backup": bak,
             "scripts": len(kept), "dropped": dropped,
+            "ordered": has_main, "index": at,
             "bytes": len(body.encode("utf-8"))}
 
 
@@ -1022,14 +1146,21 @@ def _script_bodies(game_dir):
     """读出本工具注入的那些脚本正文（还原时用来找 `# Copied font:` 标记）。"""
     mode, path = scripts_container(game_dir)
     if mode == "file":
-        p = os.path.join(path, SCRIPT_FILE_NAME)
-        if os.path.isfile(p):
+        out = []
+        for p in _our_files(path):
             try:
-                return [io.open(p, "r", encoding="utf-8",
-                                errors="replace").read()]
+                out.append(io.open(p, "r", encoding="utf-8",
+                                   errors="replace").read())
             except OSError:
-                return []
-        return []
+                pass
+        old = os.path.join(path, SCRIPT_FILE_NAME)   # 万一标记被改过
+        if os.path.isfile(old):
+            try:
+                out.append(io.open(old, "r", encoding="utf-8",
+                                   errors="replace").read())
+            except OSError:
+                pass
+        return out
     if mode != "rxdata":
         return []
     try:
@@ -1061,14 +1192,17 @@ def remove_script_plugin(game_dir, emit=None):
     if mode is None:
         return {"removed": removed}
     if mode == "file":
-        p = os.path.join(path, SCRIPT_FILE_NAME)
-        if os.path.isfile(p):
+        targets = list(_our_files(path))
+        old = os.path.join(path, SCRIPT_FILE_NAME)
+        if os.path.isfile(old) and old not in targets:
+            targets.append(old)
+        for p in targets:
             try:
                 os.remove(p)
-                removed.append(f"Data/Scripts/{SCRIPT_FILE_NAME}")
-                say(f"[还原] 已删除 Data/Scripts/{SCRIPT_FILE_NAME}")
+                removed.append(f"Data/Scripts/{os.path.basename(p)}")
+                say(f"[还原] 已删除 Data/Scripts/{os.path.basename(p)}")
             except OSError as e:
-                say(f"[还原] 删除 {SCRIPT_FILE_NAME} 失败：{e}")
+                say(f"[还原] 删除 {os.path.basename(p)} 失败：{e}")
         return {"removed": removed}
 
     try:
