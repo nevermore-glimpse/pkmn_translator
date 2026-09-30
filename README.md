@@ -13,10 +13,12 @@ Supports terminology lists, placeholder protection, resume from cache, and autom
 - 💾 **Resume from cache** — Cache is saved after each batch; you can Ctrl+C and continue anytime
 - ✅ **Auto-check** — Automatically reports untranslated lines / symbol mismatches / special lines after translation
 - 🔄 **Auto re-translate** — Re-translates untranslated / suspected-untranslated sentences with one click
-- 🔀 **Line rewrapping** — Dedicated step (menu 7): by character count for `[map*]` (`\n`) and other blocks (spaces). Not applied automatically after translation.
-- 📤 **Extract / compile game text** — Same as *Extract Text* / *Compile Text* in the game's debug menu, but without launching the game. **Picks the right scheme for the game's Essentials version**: older builds use one `messages.dat` ↔ one `intl.txt`; v21+ splits text into `messages_core.dat` / `messages_game.dat` ↔ `Text_<lang>_core/` and `Text_<lang>_game/` folders (one file per section). Can also add the language to `Settings::LANGUAGES` for you, with a Chinese version of the comment block. Verified byte-for-byte against real games' own output (menu 1).
-- ✏️ **Edit translations by hand** — Double-click any row in the check report to edit it: source text on top (read-only, for reference), translation below. Saved into the cache and filed under a new "已编辑" (edited) kind that is never overwritten by re-translation (menu 3).
-- 🈶 **Chinese text plugin** — Installs the plugin into the game's `Plugins/` folder with your chosen font, then **compiles every plugin (including the game's own) straight into `Data/PluginScripts.rxdata`** — no debug mode, no launching the game. On older Essentials versions (19/20) it adds a compatibility shim that falls back to the engine's own implementation if the plugin's own code raises, so the game won't crash on startup (menu 1).
+- 🔀 **Line rewrapping** — Dedicated step (menu 7): by character count for `[map*]` (`\n`) and other blocks (spaces). **Blocks can be multi-selected, and only the selected blocks are rewrapped.** Not applied automatically after translation.
+- 📤 **Extract / compile game text** — Same as *Extract Text* / *Compile Text* in the game's debug menu, but without launching the game. Text is always split into **one txt per section** (older builds go to `Text_<lang>/`, v21+ to `Text_<lang>_core/` and `Text_<lang>_game/`), which makes translating far easier. **Splitting never changes the compiled result** — the compiler rebuilds the table by section/map id, so a single file and 20 files produce a **byte-identical** `.dat` (verified on real games; regression `work/t_lang_split.py`). Can also add the language to `Settings::LANGUAGES` for you (uncomment the first entry → copy the line → `English`→`Chinese`; no model call, no comment translation). Verified byte-for-byte against real games' own output (menu 1).
+- ✏️ **Edit translations by hand + apply them** — Double-click any row in the check report to edit it: source text on top (read-only, for reference), translation below. Saved into the cache and filed under a new "已编辑" (edited) kind that is never overwritten by re-translation. Then hit **"应用已编辑"** to push every hand-edited line into the translation cache *and* into the generated `*_translated.txt` — untouched lines stay byte-identical (menu 3).
+- 🈶 **Chinese text plugin** — **Four plugin bodies ship with the tool (21.1 / 20.1 / 19.1 / legacy) and the right one is picked automatically from the game's `Essentials::VERSION`** (plus whether the game has a plugin system at all).
+  - Games **with** a `Plugins/` folder: the plugin is dropped in there and every plugin (including the game's own) is **compiled straight into `Data/PluginScripts.rxdata`** — no debug mode, no launching the game. A compatibility shim is added when the version can't be read, falling back to the engine's own implementation if the plugin raises.
+  - Games **without** a `Plugins/` folder, or without a plugin system at all (pre-v19, **Ruby 1.8.1**): the plugin is concatenated into a single script and **appended as the last script in `Scripts.rxdata`** (or written as `Data/Scripts/zzz_pkmn_chinese_text.rb` for unpacked games). The legacy body patches `String#ord` (via `unpack("U")` — `self[0]` only returns the first *byte* in 1.8 and would never detect Chinese) and `String#each_char`, and builds the `\p{Han}` regex at runtime so old Oniguruma won't choke. Re-injecting never stacks duplicates, and "restore" removes exactly that one entry. Verified: `Scripts.rxdata` round-trips byte-for-byte on six real games, so only the appended entry changes (menu 1).
 - 🧠 **Terminology re-translation** — Detects newly added terms and re-translates only the affected sentences
 - ⚙️ **In-app settings** — Edit all configuration values from the menu, no manual file editing
 - 📋 **One-click copy** — Right-click any report / term / prefix list to copy it as
@@ -134,6 +136,36 @@ Runs a fresh check on the output file, then:
   (symbol mismatches usually mean the model dropped a control code; retrying rarely helps)
 
 Only the affected cache entries are deleted, so re-translation is fast.
+
+#### Editing a translation by hand
+
+Double-click any row in the report list: the top box shows the **source** (read-only,
+for reference) and the bottom box the **translation** (editable). Saving writes the
+line into the translation cache and files it under the "已编辑" (edited) kind, which
+is **never** overwritten by re-translation.
+
+That alone does **not** touch the already-generated `*_translated.txt`. To push your
+edits into the output file, click **"应用已编辑" (Apply edits)** next to "Copy list":
+
+- every entry of `<cache>_edited.json` is written back into the translation cache;
+- the translation file is rewritten **in place** — only the edited lines change,
+  every other line stays byte-identical (line endings included);
+- lines whose source text no longer matches (e.g. after manual rewrapping) are
+  skipped and reported in the log; a missing translation file only updates the cache.
+
+So the order is: **edit lines → "Apply edits" → (optionally) "Refresh report"**.
+
+#### Line rewrapping (Menu 7)
+
+Pick the translation `.txt` files on the right, hit **Refresh list**, then select the
+blocks to rewrap in the left list (Ctrl / Shift for multi-select, or `[全选]`). With
+**"仅重排选中的区块" (only selected blocks)** checked — the default — blocks you did
+not select are left untouched, byte for byte. Use the two parameter sets (lower/upper
+char count + minimum gap) for `[map*]` blocks (`\n`) and for all other blocks
+(spaces). With nothing selected, the tool asks before falling back to "all blocks".
+
+Rewrapping only rearranges line breaks and spaces: it never changes the translated
+text and never calls the model, and running it twice with the same settings is a no-op.
 
 ### Terminology List
 

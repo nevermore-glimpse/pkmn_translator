@@ -43,7 +43,7 @@ def resource_path(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.3.7"
+VERSION     = "1.4.1"
 APP_NAME    = "宝可梦同人游戏翻译工具"
 APP_TITLE   = f"{APP_NAME}v{VERSION}"
 
@@ -194,8 +194,8 @@ MODEL       = "qwen3.5:4b"
 TIMEOUT     = 600.0
 NUM_CTX     = 8192
 NUM_PREDICT = 2048
-TEMPERATURE = 0.25
-TOP_P       = 0.9
+TEMPERATURE = 0.4
+TOP_P       = 0.8
 KEEP_ALIVE  = "30m"
 THINK       = False
 # ★ OpenAI 兼容端（llama.cpp / LM Studio / 自定义）怎么关推理模式：
@@ -235,7 +235,7 @@ WRAP_SPACE_MIN_GAP = 5   # ★ 空格重排：插空格后至少 N 字才能再�
 # 特殊行配对：两行的「相同部分占整句的百分比」达到该值即视为同一组
 # （差异出现在句子哪个位置都算），按"保留第一行、替换第二行"处理。
 # 例：只差一个 <<r>> 控制码的两行、或模板句里只改了中间一项的两行。
-PAIR_SIMILARITY_MIN = 0.80
+PAIR_SIMILARITY_MIN = 0.70
 
 # ---------- 术语 ----------
 APPLY_TERMS        = True
@@ -256,7 +256,7 @@ API_MAX_TOKENS = 8192
 # ---------- 中文润色重翻 ----------
 POLISH_ENABLE      = True    # 启用「中文润色重翻」
 POLISH_BATCH_SIZE  = 8
-POLISH_TEMPERATURE = 0.4     # 比翻译略高，给润色一点自由度
+POLISH_TEMPERATURE = 0.8     # 比翻译略高，给润色一点自由度
 POLISH_MIN_LEN     = 4       # 短于该长度的译文不润色（多为控制码/拟声词）
 # ---------- Excel ----------
 EXCEL_SOURCE_LANG = "西班牙文"

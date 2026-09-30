@@ -23,6 +23,7 @@ import time
 import zlib
 
 from rubymarshal.writer import write as _rb_write
+from rubymarshal.reader import load as _rb_load
 from rubymarshal.classes import Symbol
 
 import config
@@ -31,15 +32,31 @@ from logger import get_logger
 
 log = get_logger("plugin_tools")
 
-# 插件本体（工作区里的）
+# 插件本体（工作区里的）。★ 游戏里的目录名固定是 PLUGIN_DIR_NAME（还原靠它），
+# 但工作区里按 Essentials 版本备了三份：21.1 / 20.1 / 19.1。
+# 版本不同，引擎的 DrawText 实现与可用助手函数不同（v20.1/19.1 没有
+# Color.new_from_rgb，v21.1 没有 rgbToColor / Rgb16ToColor），所以必须分版本。
 PLUGIN_DIR_NAME = "chinese text manager"
-PLUGIN_SRC_DIR = os.path.join("scripts", PLUGIN_DIR_NAME)
+PLUGIN_SRC_DIRS = (
+    ("21.1", os.path.join("scripts", "chinese text manager")),
+    ("20.1", os.path.join("scripts", "chinese text manager 20.1")),
+    ("19.1", os.path.join("scripts", "chinese text manager 19.1")),
+    # ★ 旧版（19.1 之前 / Ruby 1.8 / 没有插件系统）：塞进脚本的最后一个
+    ("legacy", os.path.join("scripts", "chinese text manager legacy")),
+)
+PLUGIN_SRC_DIR = PLUGIN_SRC_DIRS[0][1]        # 默认（21.1），兼容旧调用
 PLUGIN_META_FILE = "meta.txt"
 PLUGIN_SETTINGS_FILE = "Settings.rb"
+PLUGIN_TOOLS_FILE = "Tools.rb"
 PLUGIN_FONT_ATTR = "GLOBAL_FONT_NAME"
 PLUGIN_INJECT_MARK = "[pkmn] injected by the Pokemon translation tool"
 
 PLUGIN_SCRIPTS_NAME = "PluginScripts.rxdata"
+
+# ---- 没有插件目录时：插件会被拼成一个脚本，追加到 Scripts.rxdata 的最后 ----
+SCRIPT_TITLE = "[pkmn] chinese text manager"
+SCRIPT_FILE_NAME = "zzz_pkmn_chinese_text.rb"     # 解包成 Data/Scripts/ 时用
+SCRIPT_HEAD_MARK = "[pkmn] 中文文本处理"
 
 
 # ================================================================
@@ -54,9 +71,55 @@ def plugin_dir(game_dir):
     return os.path.join(plugins_dir(game_dir), PLUGIN_DIR_NAME)
 
 
-def plugin_src_dir():
-    """工作区里的插件本体：scripts/chinese text manager/"""
-    return config.resource_path(PLUGIN_SRC_DIR)
+def plugin_src_dir(ver=None):
+    """工作区里的插件本体：scripts/chinese text manager[- 版本]/"""
+    key = ver or "21.1"
+    for k, rel in PLUGIN_SRC_DIRS:
+        if k == key:
+            return config.resource_path(rel)
+    log.warning("未知的插件变体「%s」，按 21.1 处理", key)
+    return config.resource_path(PLUGIN_SRC_DIRS[0][1])
+
+
+def pick_plugin_version(game_dir):
+    """
+    按游戏的 Essentials 版本挑插件变体 → (变体, 游戏里读到的版本字符串)。
+
+      主版本 ≥ 21 → 21.1 ；== 20 → 20.1 ；== 19 → 19.1 ；
+      其余（18.x 及更早、纯 RMXP 游戏）→ legacy（Ruby 1.8 兼容版）
+    ★ 没有插件系统（没有 PluginManager）的也一律用 legacy ——
+      它不依赖插件系统，是直接塞进脚本里的。
+    """
+    ver = essentials_version(game_dir)
+    tup = _version_tuple(ver)
+    if not has_plugin_manager(game_dir):
+        return "legacy", ver
+    if tup is None:
+        return "21.1", ver                  # 有插件系统但读不出型号：用最新版
+    if tup[0] >= 21:
+        return "21.1", ver
+    if tup[0] == 20:
+        return "20.1", ver
+    if tup[0] == 19:
+        return "19.1", ver
+    return "legacy", ver
+
+
+def install_mode(game_dir):
+    """
+    插件怎么装：
+
+      "plugins" —— 游戏有插件系统、也有 Plugins 目录 → 老办法
+                   （复制到 Plugins/ 并编译进 PluginScripts.rxdata）
+      "scripts" —— 没有插件系统，**或者没有 Plugins 目录** →
+                   把插件拼成一个脚本，追加到 Scripts.rxdata 的最后一个
+                   （解包成 Data/Scripts/ 的游戏就放一个排最后的 .rb）
+    """
+    if not has_plugin_manager(game_dir):
+        return "scripts"
+    if not os.path.isdir(plugins_dir(game_dir)):
+        return "scripts"
+    return "plugins"
 
 
 def plugin_scripts_path(game_dir):
@@ -423,11 +486,17 @@ def _copied_font(game_dir):
         return None
     try:
         with io.open(p, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if line.startswith("# Copied font:"):
-                    return line.split(":", 1)[1].strip() or None
+            return _copied_font_name(f.read())
     except Exception as e:
         log.warning("读取插件 Settings 失败：%s", e)
+    return None
+
+
+def _copied_font_name(text):
+    """从文本里找 `# Copied font: xxx` 标记 → xxx（游戏自带字体写的是 Game font）。"""
+    for line in (text or "").split("\n"):
+        if line.startswith("# Copied font:"):
+            return line.split(":", 1)[1].strip() or None
     return None
 
 
@@ -436,11 +505,12 @@ def essentials_version(game_dir):
 
 
 # ================================================================
-# 旧版适配
+# 兼容层（兜底用）
 # ================================================================
-# 插件（社区 1.3.8）声明只支持 Essentials 21.1，在 19/20 上直接植入会报错。
-# 兜底办法：给插件加一层「兼容外壳」——插件自己的实现一旦抛异常，
-# 就退回引擎原本的实现（19/20 的英文换行逻辑），至少不会一进游戏就崩。
+# 现在 21.1 / 20.1 / 19.1 各有一份插件本体，正常情况下按版本植入即可。
+# 但「型号读不出来」或「引擎里缺插件依赖的 API」时还是可能出错，
+# 所以留一层「兼容外壳」兜底：插件自己的实现一旦抛异常，
+# 就退回引擎原本的实现（原版换行逻辑），至少不会一进游戏就崩。
 COMPAT_METHODS = ("getFormattedText", "getFormattedTextFast",
                   "pbDrawShadowText", "_MAPINTL")
 
@@ -459,7 +529,7 @@ _PLUGIN_APIS = {
 _PLUGIN_API_FILE = os.path.join("scripts", PLUGIN_DIR_NAME, "Tools.rb")
 
 COMPAT_PRE = '''# [pkmn] 兼容层（前）：先把引擎原本的实现存下来
-#   插件声明只支持 Essentials 21.1；在旧版上若它自己的实现抛异常，
+#   型号读不出来 / 引擎缺 API 时用；插件实现一旦抛异常，
 #   就退回这里存下来的原实现（见 zz_CNCompatPost.rb）。
 module CNCompat
   ORIG = {}
@@ -532,15 +602,23 @@ def _version_tuple(text):
 
 def check_compat(game_dir):
     """
-    判断这个游戏能不能直接用 21.1 的中文插件。返回 dict：
+    判断这个游戏该用哪个版本的插件、走哪条植入路径。返回 dict：
 
       version         —— 游戏里的 Essentials::VERSION
-      plugin_manager  —— 有没有插件系统（没有就没法用 Plugins/ 目录）
+      variant         —— 要植入的插件变体（21.1 / 20.1 / 19.1 / legacy）
+      mode            —— "plugins"（Plugins 目录）或 "scripts"（塞进脚本末尾）
+      plugin_manager  —— 有没有插件系统（没有就只能塞脚本）
       missing_apis    —— 插件依赖、但脚本里找不到的引擎 API
-      need_compat     —— 要不要加兼容层
+      need_compat     —— 要不要加兼容层（只在 "plugins" 路径下才有意义）
       advice          —— 给人看的一句话说明
+
+    ★ 版本对得上就用对应版本，不加兼容层；
+      只有「有插件系统但型号读不出来」或「引擎里连插件依赖的 API 都找不到」
+      时才兜底加兼容层。
     """
     ver = essentials_version(game_dir)
+    variant, _v = pick_plugin_version(game_dir)
+    mode = install_mode(game_dir)
     pm = has_plugin_manager(game_dir)
     texts = GS.iter_script_texts(game_dir)
     blob = "\n".join(t for _n, t in texts)
@@ -549,24 +627,31 @@ def check_compat(game_dir):
     missing = ([k for k, pat in _PLUGIN_APIS.items()
                 if not re.search(pat, blob, re.M)] if readable else [])
     tup = _version_tuple(ver)
-    old = (tup is None) or tup < (21, 1)
-    need = bool(old or missing)
-    if not pm:
-        advice = ("这个游戏没有插件系统（Essentials v19 之前没有 PluginManager），"
-                  "Plugins 目录不会被加载")
+    unreadable = tup is None
+    need = bool(missing) or (unreadable and variant != "legacy")
+    if mode == "scripts":
+        need = False            # 塞脚本不需要兼容外壳
+    if not readable:
+        mode_name = "脚本" if mode == "scripts" else "Plugins 目录"
+        advice = (f"读不到游戏脚本，按 Essentials {variant} 版插件"
+                  f"（{mode_name}方式）处理")
+    elif mode == "scripts":
+        why = ("这个游戏没有插件系统（Essentials v19 之前 / Ruby 1.8）"
+               if not pm else "这个游戏没有 Plugins 目录")
+        advice = (f"{why}：改用 Essentials {variant} 版插件，"
+                  f"并把它作为**最后一个脚本**写进 Scripts.rxdata")
     elif missing:
         advice = ("脚本里找不到 " + "、".join(missing) +
-                  "，插件可能用不了，已加兼容层兜底")
-    elif old:
-        advice = (f"游戏是 Essentials {ver or '未知版本'}，"
-                  f"插件官方只支持 21.1，已加兼容层兜底")
+                  f"，用 Essentials {variant} 版插件并加兼容层兜底")
     else:
-        advice = f"Essentials {ver}，与插件声明一致"
+        advice = (f"Essentials {ver} → 用 {variant} 版插件"
+                  f"（Plugins 目录 + PluginScripts.rxdata）")
     if not readable:
         advice += "（脚本读不出来，判断可能不准）"
-    return {"version": ver, "plugin_manager": pm, "missing_apis": missing,
-            "need_compat": need, "old": old, "readable": readable,
-            "advice": advice}
+    return {"version": ver, "variant": variant, "mode": mode,
+            "plugin_manager": pm, "missing_apis": missing,
+            "need_compat": need, "old": unreadable,
+            "readable": readable, "advice": advice}
 
 
 def write_compat_layer(dst_dir, methods=None):
@@ -586,9 +671,10 @@ def write_compat_layer(dst_dir, methods=None):
     return written
 
 
-def plugin_needs_essentials():
-    """读插件 meta.txt 里声明的 Essentials 版本（读不到返回 ""）。"""
-    p = os.path.join(plugin_src_dir(), PLUGIN_META_FILE)
+def plugin_needs_essentials(ver=None):
+    """读插件 meta.txt 里声明的 Essentials 版本（读不到返回 ""）。
+    ver 为空时读默认的 21.1 那份。"""
+    p = os.path.join(plugin_src_dir(ver), PLUGIN_META_FILE)
     if not os.path.isfile(p):
         return ""
     try:
@@ -604,39 +690,65 @@ def plugin_needs_essentials():
 
 def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
     """
-    植入中文文本处理插件并**直接编译好** PluginScripts.rxdata。
+    植入中文文本处理插件。两条路（按游戏自动选，见 install_mode）：
 
-      1. 把工作区 scripts/chinese text manager/ 复制到 <游戏>/Plugins/；
-      2. 选定字体写进插件的 Settings.rb（GLOBAL_FONT_NAME），字体复制到 Fonts/；
-      3. ★ 旧版游戏（< 21.1）额外写一层兼容外壳，出错退回引擎原实现；
-      4. 重新编译 Data/PluginScripts.rxdata（含游戏原有的其它插件）。
+      ★ 「有插件系统 + 有 Plugins 目录」→ 老办法：
+          1. 按 Essentials 版本挑插件本体（21.1 / 20.1 / 19.1），
+             复制到 <游戏>/Plugins/chinese text manager/；
+          2. 选定字体写进 Settings.rb，字体复制到 Fonts/；
+          3. 型号读不出来 / 引擎缺 API 时加一层兼容外壳；
+          4. 重新编译 Data/PluginScripts.rxdata（含游戏原有的其它插件）。
 
-    adaptive=False 时不做第 3 步（只在 21.1 上用原样插件）。
+      ★ 「没有插件系统（v19 之前 / Ruby 1.8）」或「没有 Plugins 目录」→
+         用 legacy / 对应版本的本体，把 Settings.rb + Tools.rb 拼成一个脚本，
+         **追加到 Scripts.rxdata 的最后一个**（解包游戏则写
+         Data/Scripts/zzz_pkmn_chinese_text.rb）。字体一样复制到 Fonts/。
+
+    adaptive=False 时不做兼容层、也不按版本挑（一律用 21.1 那份、走插件系统）。
     返回报告 dict。
     """
     def say(msg):
         if emit:
             emit(msg)
 
-    src = plugin_src_dir()
-    if not os.path.isdir(src):
-        raise FileNotFoundError(f"找不到插件本体：{src}")
-
     compat = check_compat(game_dir) if adaptive else None
-    if compat and not compat["plugin_manager"]:
-        raise RuntimeError(
-            f"{compat['advice']}。\n\n"
-            f"这个游戏（Essentials {compat['version'] or '未知'}）不是 v19 以上，"
-            f"Plugins 目录不会被读取，植入插件也不会生效。\n"
-            f"这种情况只能把插件脚本直接放进游戏脚本里，建议换用 "
-            f"v19 以上的整合版。")
     if compat:
         say(f"[插件] {compat['advice']}")
+        variant = compat["variant"]
+        mode = compat["mode"]
+    else:
+        variant, mode = "21.1", "plugins"
+
+    src = plugin_src_dir(variant)
+    if not os.path.isdir(src):
+        raise FileNotFoundError(
+            f"找不到 Essentials {variant} 版的插件本体：{src}")
+    say(f"[插件] 插件本体：Essentials {variant} 版（{os.path.basename(src)}/）")
 
     font_file, family, notes = resolve_font(font_file)
     for n in notes:
         say(n)
 
+    fonts_dir = os.path.join(game_dir, "Fonts")
+    os.makedirs(fonts_dir, exist_ok=True)
+    font_dst = os.path.join(fonts_dir, os.path.basename(font_file))
+    copied = os.path.abspath(font_dst) != os.path.abspath(font_file)
+    if copied:
+        shutil.copyfile(font_file, font_dst)
+        say(f"[插件] 字体已复制：Fonts/{os.path.basename(font_file)}")
+
+    # ---------- 路线 B：塞进脚本的最后一个 ----------
+    if mode == "scripts":
+        rep = inject_script_plugin(game_dir, src, font_file, family, copied,
+                                   emit=emit)
+        say("[插件] 完成：插件已作为最后一个脚本写进游戏脚本，"
+            "**不需要**再进游戏编译一次")
+        return {"font": family, "font_file": font_file, "copied": copied,
+                "variant": variant, "mode": mode, "files": [],
+                "script": rep, "compat": [], "compat_info": compat,
+                "compile": None}
+
+    # ---------- 路线 A：Plugins/ + PluginScripts.rxdata ----------
     dst = plugin_dir(game_dir)
     os.makedirs(dst, exist_ok=True)
     written = []
@@ -653,27 +765,9 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
         raise FileNotFoundError(f"{src} 里没有任何文件")
     say(f"[插件] 已复制插件到 Plugins/{PLUGIN_DIR_NAME}/（{len(written)} 个文件）")
 
-    fonts_dir = os.path.join(game_dir, "Fonts")
-    os.makedirs(fonts_dir, exist_ok=True)
-    font_dst = os.path.join(fonts_dir, os.path.basename(font_file))
-    copied = os.path.abspath(font_dst) != os.path.abspath(font_file)
-    if copied:
-        shutil.copyfile(font_file, font_dst)
-        say(f"[插件] 字体已复制：Fonts/{os.path.basename(font_file)}")
-
     settings = os.path.join(dst, PLUGIN_SETTINGS_FILE)
     if os.path.isfile(settings):
-        with io.open(settings, "r", encoding="utf-8",
-                     errors="replace") as f:
-            text = f.read()
-        text = re.sub(r"^# (Copied|Game) font:.*\n", "", text, flags=re.M)
-        mark = (f"# Copied font: {os.path.basename(font_file)}\n" if copied
-                else f"# Game font: {os.path.basename(font_file)}\n")
-        text = "# " + PLUGIN_INJECT_MARK + "\n" + mark + text
-        text, n = re.subn(
-            r"^(\s*" + PLUGIN_FONT_ATTR + r"\s*=\s*)([\"'])([^\"']*)\2",
-            lambda m: f"{m.group(1)}{m.group(2)}{family}{m.group(2)}",
-            text, flags=re.M)
+        text, n = _settings_text(dst, font_file, family, copied)
         with open(settings, "w", encoding="utf-8", newline="") as f:
             f.write(text)
         say(f"[插件] 字体名已写入 Settings.rb：{PLUGIN_FONT_ATTR} = \"{family}\""
@@ -707,7 +801,7 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
         with open(meta, "w", encoding="utf-8", newline="") as f:
             f.write(text)
 
-    need = plugin_needs_essentials()
+    need = plugin_needs_essentials(variant)
     have = essentials_version(game_dir)
     if need and have:
         if need not in have and have not in need:
@@ -721,21 +815,27 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
     say("[插件] 完成：插件已放进 Plugins/ 并已编译进 PluginScripts.rxdata，"
         "**不需要**再进游戏编译一次")
     return {"font": family, "font_file": font_file, "copied": copied,
-            "files": written, "compat": compat_files,
-            "compat_info": compat, "compile": rep}
+            "variant": variant, "mode": "plugins", "files": written,
+            "compat": compat_files, "compat_info": compat, "compile": rep}
 
 
 def restore_plugin(game_dir, emit=None):
     """
-    还原插件植入：只删**确认是本工具植入**的那个插件目录（meta.txt 里有标记）
-    以及当初复制进 Fonts 的那份字体（带 `# Copied font:` 标记）。
+    还原插件植入：
+      · Plugins/ 下**确认是本工具植入**的那个插件目录（meta.txt 里有标记）；
+      · Scripts.rxdata 里本工具追加的那个脚本（或那个 .rb 文件）；
+      · 当初复制进 Fonts 的那份字体（带 `# Copied font:` 标记）。
     """
     def say(msg):
         if emit:
             emit(msg)
 
-    d = plugin_dir(game_dir)
     removed = []
+    font_name = None
+    # ★ 塞进脚本的那份要**先读出来**（里面有字体标记），再删
+    bodies = _script_bodies(game_dir)
+
+    d = plugin_dir(game_dir)
     if os.path.isdir(d):
         meta = os.path.join(d, PLUGIN_META_FILE)
         mine = False
@@ -750,17 +850,246 @@ def restore_plugin(game_dir, emit=None):
             shutil.rmtree(d, ignore_errors=True)
             removed.append(f"Plugins/{PLUGIN_DIR_NAME}/")
             say(f"[还原] 已删除 Plugins/{PLUGIN_DIR_NAME}/")
-            if font_name:
-                fp = os.path.join(game_dir, "Fonts", font_name)
-                if os.path.isfile(fp):
-                    try:
-                        os.remove(fp)
-                        removed.append(f"Fonts/{font_name}")
-                        say(f"[还原] 已删除 Fonts/{font_name}")
-                    except OSError as e:
-                        say(f"[还原] 删除 Fonts/{font_name} 失败：{e}")
     else:
+        say(f"[还原] 没有 Plugins/{PLUGIN_DIR_NAME}/")
+
+    rep = remove_script_plugin(game_dir, emit=emit)
+    removed.extend(rep.get("removed") or [])
+
+    if not font_name:
+        for b in bodies:
+            font_name = _copied_font_name(b)
+            if font_name:
+                break
+    if font_name:
+        fp = os.path.join(game_dir, "Fonts", font_name)
+        if os.path.isfile(fp):
+            try:
+                os.remove(fp)
+                removed.append(f"Fonts/{font_name}")
+                say(f"[还原] 已删除 Fonts/{font_name}")
+            except OSError as e:
+                say(f"[还原] 删除 Fonts/{font_name} 失败：{e}")
+
+    if not removed:
         say("[还原] 没有找到本工具植入的插件")
-    say("[还原] 插件已从 Plugins/ 移除 —— 记得再点一次「植入并编译」或手动"
+    say("[还原] 插件已移除 —— 记得再点一次「加载插件并编译」或手动"
         "重编 PluginScripts.rxdata，否则游戏仍会加载已编译进去的那份")
-    return {"removed": removed}
+    return {"removed": removed, "scripts": rep}
+
+
+# ================================================================
+# 没有插件目录的游戏：把插件拼成一个脚本，追加到脚本的最后
+# ================================================================
+def scripts_container(game_dir):
+    """
+    游戏脚本的落盘位置 → ("file", Data/Scripts 目录) / ("rxdata", 路径) /
+    (None, None)。
+
+    ★ 解包过（Data/Scripts 里有 .rb）就写文件；否则改 Scripts.rxdata；
+      Scripts.rxdata 不在时退回 ScriptsBackup.rxdata。
+    """
+    sdir = GS.scripts_dir(game_dir)
+    if os.path.isdir(sdir):
+        for _dp, _dn, fs in os.walk(sdir):
+            if any(str(f).endswith(".rb") for f in fs):
+                return "file", sdir
+    rx = GS.rxdata_path(game_dir)
+    if os.path.isfile(rx):
+        return "rxdata", rx
+    bak = os.path.join(GS.data_dir(game_dir), GS.BACKUP_NAME)
+    if os.path.isfile(bak):
+        return "rxdata", bak
+    return None, None
+
+
+def _settings_text(src_dir, font_file, family, copied):
+    """读插件 Settings.rb → 写入字体名与植入标记后的文本。"""
+    p = os.path.join(src_dir, PLUGIN_SETTINGS_FILE)
+    with io.open(p, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    text = re.sub(r"^# (Copied|Game) font:.*\n", "", text, flags=re.M)
+    mark = (f"# Copied font: {os.path.basename(font_file)}\n" if copied
+            else f"# Game font: {os.path.basename(font_file)}\n")
+    text = "# " + PLUGIN_INJECT_MARK + "\n" + mark + text
+    text, n = re.subn(
+        r"^(\s*" + PLUGIN_FONT_ATTR + r"\s*=\s*)([\"'])([^\"']*)\2",
+        lambda m: f"{m.group(1)}{m.group(2)}{family}{m.group(2)}",
+        text, flags=re.M)
+    return text, n
+
+
+def build_script_body(src_dir, font_file, family, copied):
+    """
+    把插件的 Settings.rb + Tools.rb 拼成一个可以直接塞进脚本的 .rb。
+    返回 (脚本文本, 字体替换处数)。
+    """
+    settings, n = _settings_text(src_dir, font_file, family, copied)
+    with io.open(os.path.join(src_dir, PLUGIN_TOOLS_FILE), "r",
+                 encoding="utf-8", errors="replace") as f:
+        tools = f.read()
+    head = (f"# {SCRIPT_HEAD_MARK}\n"
+            f"# 由「宝可梦同人游戏翻译工具」自动追加为本游戏的最后一个脚本，\n"
+            f"# 想撤掉请用工具里的「还原」，不要手删。\n")
+    body = head + settings.rstrip("\n") + "\n\n" + tools.lstrip("\n")
+    if not body.endswith("\n"):
+        body += "\n"
+    return body, n
+
+
+def _title_bytes(value):
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    text = getattr(value, "text", None)
+    if text is not None:
+        return str(text).encode("utf-8", "replace")
+    return str(value).encode("utf-8", "replace")
+
+
+def _is_our_script(entry):
+    """Scripts.rxdata 里的这一条是不是本工具塞进去的脚本？"""
+    try:
+        if not isinstance(entry, (list, tuple)) or len(entry) < 3:
+            return False
+        return SCRIPT_TITLE.encode("utf-8") in _title_bytes(entry[1])
+    except Exception:
+        return False
+
+
+def inject_script_plugin(game_dir, src_dir, font_file, family, copied,
+                         emit=None):
+    """
+    把插件作为**最后一个脚本**写进游戏的脚本里。
+
+      · 没解包 → 追加一条到 Scripts.rxdata 末尾（先备份；已经注入过的先移除，
+        所以反复执行不会堆好几份）；
+      · 解包成 Data/Scripts/ → 写一个排在最后的 .rb 文件。
+
+    返回 {"mode", "where", "backup", "scripts", "bytes"}。
+    """
+    def say(msg):
+        if emit:
+            emit(msg)
+
+    body, _n = build_script_body(src_dir, font_file, family, copied)
+    mode, path = scripts_container(game_dir)
+    if mode is None:
+        raise FileNotFoundError(
+            "这个游戏里既没有 Data/Scripts 目录，也没有 Data/Scripts.rxdata "
+            "—— 找不到可以写脚本的地方")
+
+    if mode == "file":
+        p = os.path.join(path, SCRIPT_FILE_NAME)
+        if os.path.isfile(p):
+            os.remove(p)                 # 幂等：先删旧的
+        with io.open(p, "w", encoding="utf-8", newline="") as f:
+            f.write(body)
+        say(f"[插件] 已写出脚本 Data/Scripts/{SCRIPT_FILE_NAME}"
+            f"（{len(body.encode('utf-8')):,} 字节）"
+            f"—— 文件名用 zzz_ 开头，保证排在最后加载"
+            f"（后加载的会覆盖引擎原本的实现）")
+        return {"mode": "file", "where": p, "backup": None,
+                "scripts": 0, "bytes": len(body.encode("utf-8"))}
+
+    with open(path, "rb") as f:
+        obj = _rb_load(f)
+    if not isinstance(obj, list):
+        raise ValueError(f"{path} 不是脚本数组，没法追加脚本")
+
+    kept = [e for e in obj if not _is_our_script(e)]
+    dropped = len(obj) - len(kept)
+    if dropped:
+        say(f"[插件] 先移除了之前注入的 {dropped} 个脚本（重复注入不会堆积）")
+    kept.append([int(time.time()), _to_bytes(SCRIPT_TITLE),
+                 zlib.compress(body.encode("utf-8"))])
+
+    bak = f"{path}.{time.strftime('%Y%m%d-%H%M%S')}.bak"
+    shutil.copyfile(path, bak)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        _rb_write(f, kept)
+    os.replace(tmp, path)
+    say(f"[插件] 已把插件作为**最后一个脚本**写进 "
+        f"{os.path.basename(path)}（共 {len(kept)} 个脚本，"
+        f"原文件已备份：{os.path.basename(bak)}）")
+    log.info("脚本方式植入插件：%s → %s（%d 个脚本）", game_dir, path, len(kept))
+    return {"mode": "rxdata", "where": path, "backup": bak,
+            "scripts": len(kept), "dropped": dropped,
+            "bytes": len(body.encode("utf-8"))}
+
+
+def _script_bodies(game_dir):
+    """读出本工具注入的那些脚本正文（还原时用来找 `# Copied font:` 标记）。"""
+    mode, path = scripts_container(game_dir)
+    if mode == "file":
+        p = os.path.join(path, SCRIPT_FILE_NAME)
+        if os.path.isfile(p):
+            try:
+                return [io.open(p, "r", encoding="utf-8",
+                                errors="replace").read()]
+            except OSError:
+                return []
+        return []
+    if mode != "rxdata":
+        return []
+    try:
+        with open(path, "rb") as f:
+            obj = _rb_load(f)
+    except Exception:
+        return []
+    out = []
+    if isinstance(obj, list):
+        for e in obj:
+            if not _is_our_script(e):
+                continue
+            try:
+                out.append(zlib.decompress(bytes(e[2])).decode("utf-8",
+                                                               "replace"))
+            except Exception:
+                pass
+    return out
+
+
+def remove_script_plugin(game_dir, emit=None):
+    """删掉本工具塞进脚本里的那份（rxdata 条目或那个 .rb 文件）。"""
+    def say(msg):
+        if emit:
+            emit(msg)
+
+    mode, path = scripts_container(game_dir)
+    removed = []
+    if mode is None:
+        return {"removed": removed}
+    if mode == "file":
+        p = os.path.join(path, SCRIPT_FILE_NAME)
+        if os.path.isfile(p):
+            try:
+                os.remove(p)
+                removed.append(f"Data/Scripts/{SCRIPT_FILE_NAME}")
+                say(f"[还原] 已删除 Data/Scripts/{SCRIPT_FILE_NAME}")
+            except OSError as e:
+                say(f"[还原] 删除 {SCRIPT_FILE_NAME} 失败：{e}")
+        return {"removed": removed}
+
+    try:
+        with open(path, "rb") as f:
+            obj = _rb_load(f)
+    except Exception as e:
+        say(f"[还原] 读不了 {os.path.basename(path)}：{e}")
+        return {"removed": removed}
+    if not isinstance(obj, list):
+        return {"removed": removed}
+    kept = [e for e in obj if not _is_our_script(e)]
+    n = len(obj) - len(kept)
+    if not n:
+        return {"removed": removed}
+    bak = f"{path}.{time.strftime('%Y%m%d-%H%M%S')}.bak"
+    shutil.copyfile(path, bak)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        _rb_write(f, kept)
+    os.replace(tmp, path)
+    removed.append(f"{os.path.basename(path)} 里的 {n} 个脚本")
+    say(f"[还原] 已从 {os.path.basename(path)} 里删掉 {n} 个注入的脚本"
+        f"（原文件已备份：{os.path.basename(bak)}）")
+    return {"removed": removed, "dropped": n, "backup": bak}

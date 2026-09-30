@@ -397,17 +397,109 @@ def messages_to_text(messages):
     return "".join(out), sections, entries
 
 
-def extract_target(game_dir, scheme=None):
+def extract_target(game_dir, scheme=None, split=True):
     """
     提取文本的默认输出：
-      legacy → <游戏根目录>/intl.txt（与游戏 debug 的 Extract Text 一致）
+      legacy → <游戏根目录>/Text_<语言>/（拆成多个小文件，每个分段一个 txt）
+               split=False 时才退回单个 <游戏根目录>/intl.txt
       split  → <游戏根目录>/Text_<语言>_core/ 与 …/Text_<语言>_game/
     """
     scheme = scheme or detect_scheme(game_dir)
     if scheme.get("scheme") == SCHEME_SPLIT:
         frag = scheme.get("fragment") or _DEFAULT_FRAGMENT
         return os.path.join(game_dir, f"Text_{frag}_core")
+    if split:
+        return legacy_split_dir(game_dir, scheme.get("fragment"))
     return os.path.join(game_dir, "intl.txt")
+
+
+def legacy_split_dir(game_dir, fragment=None):
+    """
+    旧版方案的拆分输出目录：<游戏根目录>/Text_<语言>/
+
+    ★ 不能叫 Text_xxx_core / Text_xxx_game —— 那会被 compile_text 当成
+      新版方案的文件夹（write 到 messages_xxx_core.dat），旧版游戏读不到。
+    """
+    frag = fragment or GS.language_fragment(game_dir) or _DEFAULT_FRAGMENT
+    return os.path.join(game_dir, f"Text_{frag}")
+
+
+def extract_legacy_split(game_dir, out_dir=None, emit=None):
+    """
+    旧版方案导出（**拆成多个小文件**）：和游戏 debug 的 Extract Text 内容
+    完全一样，只是不再挤在一个 intl.txt 里，而是每个分段一个 txt，
+    放在 <游戏根目录>/Text_<语言>/ 里 —— 写法和新版方案的
+    Text_xxx_core/ 一模一样（BOM + 两行说明 + [分段名] + 条目）。
+
+    ★ 拆份只是「搬运」：编译时按段号 / 地图号重新拼回原来的表，
+      编译结果与单个 intl.txt 逐字节一致（回归：work/t_legacy_split.py）。
+    """
+    def say(msg):
+        if emit:
+            emit(msg)
+
+    src = find_source_messages(game_dir, emit=emit)
+    say(f"[提取] 文本来源：{_shown(src, game_dir)}"
+        f"（{os.path.getsize(src):,} 字节）")
+    messages = read_messages(src)
+
+    out = out_dir or legacy_split_dir(game_dir)
+    os.makedirs(out, exist_ok=True)
+    # ★ 只删这个文件夹里的 .txt（与新版方案一致），其它文件不动
+    for f in sorted(os.listdir(out)):
+        if f.lower().endswith(".txt"):
+            try:
+                os.remove(os.path.join(out, f))
+            except OSError as e:
+                log.warning("删除旧文本失败 %s：%s", f, e)
+
+    files = entries = sections = 0
+
+    def emit_file(name, items):
+        nonlocal files, entries, sections
+        if not items:
+            return
+        path = os.path.join(out, f"{name}.txt")
+        n = _write_section_file(path, items)
+        if n:
+            files += 1
+            entries += n
+            sections += len(items)
+
+    # 第 0 段：各地图 / 公共事件的文本（游戏里叫 Map0、Map1…）→ 一个文件
+    if len(messages) > 0 and messages[0] is not None:
+        items = []
+        for map_id, m in enumerate(messages[0]):
+            if m is None or not len(m):
+                continue
+            items.append((f"Map{map_id:03d}", m, None))
+        emit_file("EVENT_TEXTS", items)
+    # 其余段：第 i 段单独一个文件
+    for sid in range(1, len(messages)):
+        msgs = messages[sid]
+        if msgs is None or not len(msgs):
+            continue
+        emit_file(_section_file_name(sid), [(str(sid), msgs, None)])
+
+    kinds = _section_summary(messages)
+    say(f"[提取] 已拆成 {files} 个文件、{sections} 个分段、{entries} 条 → "
+        f"{_shown(out, game_dir)}/")
+    if files:
+        try:
+            names = sorted(f for f in os.listdir(out)
+                           if f.lower().endswith(".txt"))
+            say("[提取] 文件：" + "、".join(names[:10])
+                + (f" …共 {len(names)} 个" if len(names) > 10 else ""))
+        except OSError:
+            pass
+    say(f"[提取] 分布：{kinds}")
+    say("[提取] 翻译时**只改每个条目的最后一行**（原样留着上一行），"
+        "之后用「编译文本」选这个文件夹（或多个文件）生成语言文件")
+    log.info("提取文本（拆分）：%s → %s（%d 文件 / %d 段 / %d 条）",
+             game_dir, out, files, sections, entries)
+    return {"out": out, "dir": out, "files": files, "sections": sections,
+            "entries": entries, "source": src, "kinds": kinds,
+            "scheme": SCHEME_LEGACY, "split": True}
 
 
 # ================================================================
@@ -543,12 +635,13 @@ def extract_split(game_dir, fragment=None, out_root=None, emit=None,
     return report
 
 
-def extract_text(game_dir, out_path=None, emit=None, backup=True):
+def extract_text(game_dir, out_path=None, emit=None, backup=True, split=True):
     """
     提取文本。返回报告 dict。
 
     ★ 自动按游戏版本选方案：
-        legacy → 单个 intl.txt
+        legacy → <游戏根目录>/Text_<语言>/（每个分段一个 txt，方便翻译）
+                 split=False 时退回单个 intl.txt
         split  → Text_<语言>_core/ 与 Text_<语言>_game/ 两个文件夹
     ★ 已存在时（backup=True）先备份再写 ——
       「要不要覆盖」由调用方（界面/命令行）先问过用户。
@@ -564,13 +657,18 @@ def extract_text(game_dir, out_path=None, emit=None, backup=True):
             f"文本分 core / game 两份，导出成两个文件夹")
         return extract_split(game_dir, out_root=out_path, emit=emit)
 
+    if split:
+        say("[提取] 这个游戏是旧版方案（单份 messages.dat）："
+            "按分段拆成多个 txt，方便分批翻译")
+        return extract_legacy_split(game_dir, out_dir=out_path, emit=emit)
+
     src = find_source_messages(game_dir, emit=emit)
     say(f"[提取] 文本来源：{_shown(src, game_dir)}"
         f"（{os.path.getsize(src):,} 字节）")
     messages = read_messages(src)
     text, sections, entries = messages_to_text(messages)
 
-    out = out_path or extract_target(game_dir)
+    out = out_path or extract_target(game_dir, scheme, split=False)
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     bak = None
     if os.path.isfile(out) and backup:

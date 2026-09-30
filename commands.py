@@ -20,7 +20,7 @@ import config
 import parser as P
 import processor as PR
 import settings
-from cache import Cache, atomic_replace
+from cache import Cache, atomic_replace, load_edits
 from logger import get_logger
 from translator import (OllamaClient, polish_with_retry,
                         translate_with_retry)
@@ -92,6 +92,154 @@ def save_report_edit(src, dst):
                                 f"（先跑一次翻译才会生成）")
     cache = Cache(cache_file)
     return cache.save_edit(src, dst)
+
+
+# ================================================================
+# 「应用已编辑」：把手工改过的译文真正落到缓存 + 译文文件
+# ================================================================
+def _edited_path_for(src_path):
+    """
+    源文件 → 手工编辑记录路径（与 cache.edited_path 的规则一致）：
+        <目录>/<主名>_cache_edited.json
+    ★ 不碰 config.Runtime，纯算路径，GUI 里统计条数时用。
+    """
+    parent = os.path.dirname(os.path.abspath(src_path))
+    stem = os.path.splitext(os.path.basename(src_path))[0]
+    return os.path.join(parent, f"{stem}_cache_edited.json")
+
+
+def count_manual_edits(paths):
+    """统计这些源文件各自的手工编辑条数 → (有编辑的文件数, 总条数)。"""
+    files = total = 0
+    for path in paths or []:
+        if not path:
+            continue
+        try:
+            with open(_edited_path_for(path), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            n = len(data) if isinstance(data, dict) else 0
+        except Exception:
+            n = 0
+        if n:
+            files += 1
+            total += n
+    return files, total
+
+
+def apply_manual_edits(paths):
+    """
+    把报告里手工编辑过的译文（<缓存名>_edited.json）真正应用下去：
+
+      ① 覆盖翻译缓存里的对应条目（以后重翻 / 换行重排拿到的都是手工译文）；
+      ② 就地改写已生成的译文文件（*_translated.txt）：
+         只替换编辑过的那些句子，其余行一个字都不动。
+
+    返回 {"files", "applied", "missing", "no_edit"}。
+    """
+    log.info("=" * 50)
+    log.info("应用手工编辑  共 %d 个文件", len(paths))
+    emit("\n" + "=" * 55)
+    emit("  应用已编辑（把手工改过的句子写进缓存与译文文件）")
+    emit("=" * 55)
+
+    files_done = applied = missing = no_edit = 0
+
+    for i, path in enumerate(paths, 1):
+        if bridge.cancelled():
+            emit("\n[中断] 用户取消")
+            break
+        if not path or not os.path.exists(path):
+            emit(f"[跳过] 文件不存在：{path}")
+            continue
+
+        config.Runtime.set_input(path)
+        name = os.path.basename(path)
+        bridge.progress(i - 1, len(paths), name)
+
+        edits = load_edits()
+        if not edits:
+            emit(f"[{i}/{len(paths)}] {name}：没有手工编辑记录，跳过")
+            no_edit += 1
+            continue
+
+        # ---- ① 写回翻译缓存 ----
+        cpath = config.Runtime.cache_file
+        n_cache = 0
+        try:
+            cache = Cache(cpath)
+            for src, dst in edits.items():
+                if cache.get(src) != dst:
+                    cache.put(src, dst)
+                    n_cache += 1
+            cache.save(force=True)
+        except Exception as e:
+            emit(f"  写缓存失败：{e}")
+            continue
+
+        # ---- ② 写回译文文件 ----
+        out_path = config.Runtime.output_file
+        if not os.path.exists(out_path):
+            emit(f"  ⚠ 找不到译文文件：{os.path.basename(out_path)}"
+                 f"（缓存已更新 {n_cache} 条，译文文件没改；先跑一次翻译）")
+            missing += 1
+            continue
+
+        try:
+            src_lines, _ = P.read_file(path, config.INPUT_ENCODING)
+            out_lines, _ = P.read_file(out_path, config.OUTPUT_ENCODING)
+        except Exception as e:
+            emit(f"  读取失败：{e}")
+            continue
+        # ★ 行尾按译文文件的原始字节定，别让 Windows 文本模式把 LF 变 CRLF
+        out_nl = P.detect_newline(out_path, default=os.linesep)
+
+        entries, _ = P.extract_entries(src_lines)
+        line_of = {}
+        for idx, src in entries:
+            key = (src or "").strip()
+            if key and key not in line_of:
+                line_of[key] = idx
+
+        n_file = 0
+        for src, dst in edits.items():
+            idx = line_of.get((src or "").strip())
+            if idx is None or idx >= len(out_lines):
+                continue
+            m = re.match(r'^([ \t]*)', src_lines[idx])
+            indent = m.group(1) if m else ""
+            new_line = indent + (dst or "")
+            if out_lines[idx] == new_line:
+                continue
+            out_lines[idx] = new_line
+            n_file += 1
+
+        if not n_file:
+            emit(f"[{i}/{len(paths)}] {name}：译文文件已是最新"
+                 f"（缓存更新 {n_cache} 条）")
+            files_done += 1
+            continue
+
+        try:
+            tmp = out_path + ".tmp"
+            with open(tmp, "w", encoding=config.OUTPUT_ENCODING,
+                      newline="") as f:
+                f.write(out_nl.join(out_lines))
+            atomic_replace(tmp, out_path)
+        except Exception as e:
+            emit(f"  写入失败：{e}")
+            continue
+
+        emit(f"[{i}/{len(paths)}] {name}：已应用 {n_file} 句"
+             f"（缓存更新 {n_cache} 条）→ {os.path.basename(out_path)}")
+        applied += n_file
+        files_done += 1
+
+    bridge.progress(len(paths), len(paths), "完成")
+    emit(f"\n✔ 应用已编辑完成：{files_done} 个文件，改写 {applied} 句"
+         + (f"，{missing} 个文件缺少译文文件" if missing else ""))
+    log.info("应用手工编辑完成：%d 个文件 / 改写 %d 句", files_done, applied)
+    return {"files": files_done, "applied": applied,
+            "missing": missing, "no_edit": no_edit}
 
 
 # ================================================================
@@ -2072,12 +2220,35 @@ def _output_lines_of(path, lines, cache):
     return out_lines
 
 
+def reflow_block_id(path, block, line=None):
+    """
+    区块的唯一标识（绝对路径 + 区块名 + 起始行）。
+
+    ★ 换行重排页支持「只重排选中的区块」，扫描（scan_reflow_blocks）
+      与执行（reflow_paths）两边都用这个 id 对齐。
+    """
+    return "{0}\x00{1}\x00{2}".format(os.path.abspath(path), block, line)
+
+
+def _line_block_ids(lines, path):
+    """每行所属区块的 id（规则与 scan_reflow_blocks 完全一致）。"""
+    out = []
+    cur_name, cur_line = "（文件开头）", 0
+    for idx, raw in enumerate(lines):
+        s = raw.strip()
+        if P.is_block(s):
+            cur_name, cur_line = s, idx
+        out.append(reflow_block_id(path, cur_name, cur_line))
+    return out
+
+
 def scan_reflow_blocks(paths, preview=8):
     """
     扫描待重排文件，按「区块」归类，供换行重排页展示。
 
     返回 {"newline": [block, ...], "space": [block, ...]}
-    block = {"file", "path", "block", "mode", "total", "pairs":[(原文,译文),...]}
+    block = {"file", "path", "block", "mode", "line", "id", "total",
+             "pairs":[(原文,译文),...]}
     """
     result = {"newline": [], "space": []}
 
@@ -2109,6 +2280,7 @@ def scan_reflow_blocks(paths, preview=8):
                     "block": cur_name,
                     "mode":  cur_mode,
                     "line":  cur_line,
+                    "id":    reflow_block_id(path, cur_name, cur_line),
                     "total": len(cur_pairs),
                     "pairs": cur_pairs[:preview],
                 })
@@ -2132,22 +2304,29 @@ def scan_reflow_blocks(paths, preview=8):
     return result
 
 
-def reflow_paths(paths, newline_cfg=None, space_cfg=None):
+def reflow_paths(paths, newline_cfg=None, space_cfg=None, blocks=None):
     """
     按区块类型重排译文里的换行 / 空格（纯本地操作，不调用模型）。
 
     newline_cfg / space_cfg: {"min","max","gap"} 或 None（用当前配置）
+    blocks : 只重排这些区块（reflow_block_id 组成的列表 / 集合）；
+             None 或空 = 文件里所有区块都重排。
     """
     log.info("=" * 50)
     log.info("换行重排  共 %d 个文件", len(paths))
 
     nl = _reflow_cfg("newline", newline_cfg)
     sp = _reflow_cfg("space", space_cfg)
+    sel_ids = set(blocks) if blocks else None
     emit("\n" + "=" * 55)
     emit("  换行重排（仅重排列，不改动译文文字）")
     emit("=" * 55)
     emit(f"  [map*] 换行  ：{nl[0]}~{nl[1]} 字，最小间隔 {nl[2]} 字")
     emit(f"  其它区块空格：{sp[0]}~{sp[1]} 字，最小间隔 {sp[2]} 字")
+    if sel_ids is not None:
+        emit(f"  只重排选中的 {len(sel_ids)} 个区块（其余区块原样保留）")
+    else:
+        emit("  重排范围：文件里的所有区块")
 
     if not getattr(config, "REWRAP_ENABLE", True):
         emit("\n⚠ 换行重排已关闭（REWRAP_ENABLE=False），请先到「设置」里打开")
@@ -2168,7 +2347,7 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None):
         bridge.progress(i - 1, len(paths), os.path.basename(path))
 
         try:
-            lines, newline = P.read_file(path, config.INPUT_ENCODING)
+            lines, _ = P.read_file(path, config.INPUT_ENCODING)
         except Exception as e:
             emit(f"  读取失败：{e}")
             continue
@@ -2182,6 +2361,8 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None):
         except Exception as e:
             emit(f"  译文读取失败：{e}")
             continue
+        # ★ 行尾按译文文件的原始字节定（文本模式读会把 CRLF 归一成 LF）
+        out_nl = P.detect_newline(out_path, default=os.linesep)
 
         if len(out_lines) != len(lines):
             emit(f"  行数不一致（原文 {len(lines)} / 译文 {len(out_lines)}），跳过")
@@ -2189,9 +2370,17 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None):
 
         modes = P.get_block_modes(lines)
         entries, _ = P.extract_entries(lines)
+        # ★ 每个条目属于哪个区块（用于「只重排选中区块」）
+        block_of = _line_block_ids(lines, path) if sel_ids is not None else None
+        sel_hit = 0                       # 本文件里命中「选中区块」的条目数
 
         n_changed = 0
         for idx, src in entries:
+            if block_of is not None:
+                bid = block_of[idx] if idx < len(block_of) else None
+                if bid not in sel_ids:
+                    continue
+                sel_hit += 1
             dst = out_lines[idx]
             m = re.match(r'^([ \t]*)', dst)
             indent = m.group(1) if m else ""
@@ -2210,13 +2399,20 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None):
 
         name = os.path.basename(path)
         if not n_changed:
-            emit(f"[{i}/{len(paths)}] {name}：已符合当前配置，无需改动")
+            extra = ("（本文件没有选中区块，已跳过）"
+                     if block_of is not None and not sel_hit else "")
+            emit(f"[{i}/{len(paths)}] {name}：已符合当前配置，无需改动{extra}")
             files_done += 1
             continue
 
         try:
-            with open(out_path, "w", encoding=config.OUTPUT_ENCODING) as f:
-                f.write(newline.join(out_lines))
+            # ★ newline=""：原样写回，别让 Windows 文本模式把 \n 变成 \r\n
+            #   —— 否则「只重排选中区块」时未选中的行也会跟着变行尾。
+            tmp = out_path + ".tmp"
+            with open(tmp, "w", encoding=config.OUTPUT_ENCODING,
+                      newline="") as f:
+                f.write(out_nl.join(out_lines))
+            atomic_replace(tmp, out_path)
         except Exception as e:
             emit(f"  写入失败：{e}")
             continue
@@ -2238,7 +2434,7 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None):
 def intl_extract_paths(game_dirs, out_path=None):
     """
     提取文本：读游戏 Data 下的原文表（messages.dat / english.dat），
-    按游戏自己的格式写出 intl.txt —— 等同于在游戏 debug 菜单里点
+    按分段拆成多个 txt（每个分段一个文件）—— 等同于在游戏 debug 菜单里点
     「Extract Text」。返回 [{"game":…, "out":…, "sections":…, …}]。
     """
     import intl_text as IT
@@ -2259,8 +2455,7 @@ def intl_extract_paths(game_dirs, out_path=None):
     return out
 
 
-def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True,
-                       use_model=True):
+def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True):
     """
     编译文本：把 intl 格式的文本（单个文件、多个文件、或整个文件夹里的
     全部 .txt）编译成游戏语言文件 —— 等同于在游戏 debug 菜单里点
@@ -2270,7 +2465,7 @@ def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True,
       旧版 → Settings::LANGUAGES 里那条（一般是 Data/Chinese.dat）
       新版 → Data/messages_<语言>_core.dat 与 …_game.dat
     apply_language：编译完顺手把这条语言写进 Settings::LANGUAGES
-                    （并补一份中文注释），省得自己改脚本。
+                    （复制第一条语言、把 English 改成 Chinese），省得自己改脚本。
     """
     import intl_text as IT
     emit("\n" + "=" * 55)
@@ -2285,64 +2480,22 @@ def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True,
         return {"ok": False, "error": str(e)}
     if apply_language:
         try:
-            rep["language"] = intl_apply_language(game_dir, use_model=use_model,
-                                                  emit=emit)
+            rep["language"] = intl_apply_language(game_dir, emit=emit)
         except Exception as e:
             log.error("写入语言表失败：%s\n%s", e, traceback.format_exc())
             emit(f"  ⚠ 语言表没写成：{e}")
     return rep
 
 
-def model_translate_comment(lines, src_lang=None, tgt_lang=None, emit=None):
+def intl_apply_language(game_dir, display="简体中文", fragment=None, emit=None):
     """
-    把 LANGUAGES 上方那段英文注释翻成中文（可调模型就调，调不动返回 None，
-    调用方会用内置的中文本兜底）。
-    """
-    if not lines:
-        return None
-    src_lang = src_lang or config.SOURCE_LANG
-    tgt_lang = tgt_lang or config.TARGET_LANG
-    try:
-        client = OllamaClient()
-        batch = [(i, ln) for i, ln in enumerate(lines)]
-        res = translate_with_retry(client, batch) or {}
-    except Exception as e:
-        log.warning("模型翻译注释失败（用内置中文说明兜底）：%s", e)
-        if emit:
-            emit("[语言] 模型没接上，注释用内置中文说明")
-        return None
-    out = []
-    for i, ln in enumerate(lines):
-        got = (res.get(i) or "").strip()
-        out.append(got or ln)
-    if not any(o and o != ln for (o, ln) in zip(out, lines)):
-        return None
-    return out
-
-
-def intl_apply_language(game_dir, display="简体中文", fragment=None,
-                        use_model=True, emit=None):
-    """
-    编译完文本后调用：把这条语言写进游戏 Settings 的 LANGUAGES，
-    并把上方的英文注释补一份中文说明。返回 GS.apply_languages_entry 的结果。
+    编译完文本后调用：把这条语言写进游戏 Settings 的 LANGUAGES ——
+    复制第一条语言条目、把 `English` 改成 `Chinese`（被注释的先取消注释）。
+    不翻译注释、也不添加注释。返回 GS.apply_languages_entry 的结果。
     """
     import game_scripts as GS
-
-    def say(msg):
-        if emit:
-            emit(msg)
-
-    zh = None
-    if use_model:
-        en = GS.languages_comment(game_dir)
-        if en:
-            say(f"[语言] 正在把 LANGUAGES 上方的说明翻成中文（{len(en)} 行）…")
-            zh = model_translate_comment(en, emit=emit)
-            if zh is None:
-                say("[语言] 模型没返回译文，改用内置中文说明")
     return GS.apply_languages_entry(game_dir, display=display,
-                                    fragment=fragment, comment_zh=zh,
-                                    emit=emit)
+                                    fragment=fragment, emit=emit)
 
 
 def plugin_inject_paths(game_dirs, font_file=None):
@@ -2415,7 +2568,7 @@ def cmd_intl():
 
     raw = input("\n1=提取 / 2=编译 / 3=加载插件 / 4=还原插件 [1]: ").strip()
     if raw == "2":
-        src = input("要编译的文本（文件或文件夹）[intl.txt]: ").strip()
+        src = input("要编译的文本（文件或文件夹）[默认用刚提取的 Text_ 文件夹]: ").strip()
         intl_compile_paths(folder, src or IT.extract_target(folder))
         return
     if raw == "3":

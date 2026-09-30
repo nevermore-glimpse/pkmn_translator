@@ -96,7 +96,7 @@ BTN_PAD_X = 22
 BTN_PAD_Y = 16
 
 MENU_ITEMS = [
-    ("1", "文本提取与编译"),
+    ("1", "文本提取与编译(Beta)"),
     ("2", "翻译"),
     ("3", "重翻检查报告"),
     ("4", "术语更新后重翻"),
@@ -1927,20 +1927,23 @@ class App:
                         txt = "✔ 已写出：" + _intl_outs(r)
                         lang = r.get("language") or {}
                         if lang.get("changed"):
-                            txt += (f"\n语言表：已把"
-                                    f" [\"{lang.get('display')}\", "
-                                    f"\"{lang.get('fragment')}\"] "
-                                    f"写进 Settings"
-                                    + ("（并补了中文注释）"
-                                       if lang.get("comment") else ""))
+                            txt += (f"\n语言表：已加入 "
+                                    f"{lang.get('entry') or '[\"Chinese\", …]'}"
+                                    f"（复制第一条语言并改名）"
+                                    + ("；原本被注释的那条已取消注释"
+                                       if lang.get("uncommented") else ""))
                         elif lang:
                             txt += f"\n语言表：{lang.get('reason') or '没有改动'}"
                         self.intl_compile_lbl.config(text=txt)
                 elif kind == "plugin_done":
                     r = (payload or [{}])[0] if isinstance(payload, list) else {}
                     fam = r.get("font", "")
+                    ver = r.get("variant", "")
+                    how = "塞进脚本" if r.get("mode") == "scripts" else "Plugins"
+                    tag = f"{ver} 版/{how}，" if ver else ""
                     self.plugin_stat.config(
-                        text=f"已植入（字体 {fam}）" if fam else "已植入")
+                        text=(f"已植入（{tag}字体 {fam}）" if fam
+                              else f"已植入（{tag}）"))
                     self._refresh_plugin_font()
                 elif kind == "plugin_restore_done":
                     r = (payload or [{}])[0] if isinstance(payload, list) else {}
@@ -2072,6 +2075,42 @@ class App:
         """把报告列表当前显示的内容复制成制表符分隔文本。"""
         self.copy_to_clipboard(tree_text(self.report_tree), "报告列表")
 
+    def _apply_report_edits(self):
+        """
+        应用已编辑：把报告里手工改过的句子写进翻译缓存与译文文件。
+
+        ★ 编辑记录来自双击报告行弹出的编辑窗（<缓存名>_edited.json），
+          这里只是把它真正落到 *_translated.txt 和缓存里。
+        """
+        paths = self._report_sources()
+        if not paths:
+            messagebox.showwarning("提示",
+                                   "请先选择检查报告（*_translated_report.txt）")
+            return
+        try:
+            n_files, n_edit = commands.count_manual_edits(paths)
+        except Exception:
+            n_files, n_edit = 0, 0
+        if not n_edit:
+            messagebox.showinfo(
+                "没有手工编辑",
+                "这些文件还没有手工编辑记录。\n\n"
+                "在报告列表里**双击任意一行**就会弹出编辑窗，改完整句译文后"
+                "保存即可；保存过的句子都会记在 <缓存名>_edited.json 里，"
+                "然后回到这里点「应用已编辑」。")
+            return
+        if not messagebox.askyesno(
+                "应用已编辑",
+                f"将把 {n_files} 个文件里的 {n_edit} 条手工编辑译文写入：\n"
+                f"· 翻译缓存（<主名>_cache.json）\n"
+                f"· 已生成的译文文件（<主名>_translated.txt）\n\n"
+                f"译文文件里**其它行不会被改动**。\n继续吗？"):
+            return
+        self.show("log")
+        self.run_async(
+            lambda: commands.apply_manual_edits(paths),
+            label="应用已编辑…", done_label="已应用手工编辑")
+
     def _copy_log(self):
         """日志页「复制全部」按钮。"""
         self.copy_to_clipboard(self._text_all(self.log_text), "日志")
@@ -2148,8 +2187,9 @@ class App:
         self.intl_extract_hint = tk.Label(
             c1.body,
             text="等同于在游戏 debug 菜单里执行 Extract Text：读游戏 "
-                 "Data 下已编译的原文表，按游戏自己的格式写出 "
-                 "intl.txt（放在游戏根目录）。已存在时先自动备份。",
+                 "Data 下已编译的原文表，按分段拆成多个 txt "
+                 "（新版方案是两个 Text_<语言>_core/_game 文件夹，"
+                 "旧版方案是一个 Text_<语言> 文件夹）。已存在时先自动备份。",
             bg=CARD, fg=C_HINT, font=FONT_SMALL,
             justify="left", wraplength=560)
         self.intl_extract_hint.pack(anchor="w", pady=(6, 0))
@@ -2180,7 +2220,7 @@ class App:
                     font=FONT_SMALL,
                     command=self._intl_clear_srcs).pack(side="left")
         self.intl_src_lbl = tk.Label(c2.body, text="未选择（默认用提取出来的 "
-                                                   "intl.txt）",
+                                                   "Text_ 文件夹）",
                                      bg=CARD, fg=C_HINT, font=FONT_SMALL,
                                      justify="left", wraplength=560)
         self.intl_src_lbl.pack(anchor="w", pady=(6, 0))
@@ -2236,10 +2276,15 @@ class App:
                     primary=True, bg=CARD,
                     command=self._do_plugin_inject).pack(side="right")
         tk.Label(c3.body,
-                 text="把「中文文本处理」插件放进游戏的 Plugins 目录、把选定字体"
-                      "写进插件设置（字体文件复制到游戏 Fonts），然后把**全部**"
-                      "插件一起编译进 Data/PluginScripts.rxdata —— "
-                      "不用进游戏、也不用开调试模式。",
+                 text="把「中文文本处理」插件装进游戏、把选定字体写进插件设置"
+                      "（字体文件复制到游戏 Fonts）—— 不用进游戏、也不用开调试"
+                      "模式。\n"
+                      "★ 会按游戏的 Essentials 版本自动挑插件本体"
+                      "（21.1 / 20.1 / 19.1 / legacy 四份）。\n"
+                      "★ 有 Plugins 目录的游戏：插件放进 Plugins/，并把全部插件"
+                      "一起编译进 Data/PluginScripts.rxdata；\n"
+                      "★ 没有 Plugins 目录（或没有插件系统、跑 Ruby 1.8 的老游戏）："
+                      "把插件作为**最后一个脚本**写进 Scripts.rxdata。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
 
@@ -2287,7 +2332,7 @@ class App:
             text="提示：\n"
                  "· 要选游戏根目录：里面有 Data 文件夹和 .exe 启动程序\n"
                  "· 适用于 Pokémon Essentials / mkxp / RMXP 游戏\n"
-                 "· 提取出的 intl.txt 在游戏根目录；"
+                 "· 提取出的文本在游戏根目录的 Text_ 文件夹里（每个分段一个 txt）；"
                  "数组段每 3 行一条（序号/原文/译文），"
                  "哈希段每 2 行一条（原文/译文）\n"
                  "· 翻译时**只改每个条目的最后一行**，上一行原文原样留着\n"
@@ -2322,7 +2367,7 @@ class App:
     def _intl_refresh_info(self):
         """
         显示识别到的游戏信息，并按**文本方案**刷新各层的说明：
-          legacy → 一个 intl.txt ↔ 一个语言 .dat
+          legacy → Text_<语言>/ 里多个 txt ↔ 一个语言 .dat
           split  → Text_<语言>_core/ 与 _game/ ↔ 两份 messages_*.dat
         """
         d = getattr(self, "intl_folder", None)
@@ -2358,14 +2403,15 @@ class App:
             else:
                 self.intl_extract_hint.config(
                     text="等同于在游戏 debug 菜单里执行 Extract Text：读游戏 "
-                         "Data 下已编译的原文表，按游戏自己的格式写出 "
-                         "intl.txt（放在游戏根目录）。已存在时先自动备份。")
+                         "Data 下已编译的原文表，按分段拆成多个 txt "
+                         "（旧版方案是游戏根目录下的 Text_<语言> 文件夹）。"
+                         "已存在时先自动备份。")
                 self.intl_compile_hint.config(
                     text="等同于 Compile Text：可以只选一个 txt，也可以选整个"
                          "文件夹（里面的 .txt 按文件名顺序合并）。输出位置按"
                          "游戏 Settings::LANGUAGES 自动定，覆盖前自动备份。")
                 self.intl_src_lbl.config(
-                    text="未选择（默认用提取出来的 intl.txt）")
+                    text="未选择（默认用提取出来的 Text_ 文件夹）")
         except Exception:
             self.intl_info_lbl.config(text="")
 
@@ -2418,7 +2464,7 @@ class App:
         srcs = getattr(self, "intl_srcs", [])
         if not srcs:
             self.intl_src_lbl.config(
-                text="未选择（默认用提取出来的 intl.txt）", fg=C_HINT)
+                text="未选择（默认用提取出来的 Text_ 文件夹）", fg=C_HINT)
             return
         shown = "、".join(os.path.basename(p) for p in srcs[:3])
         if len(srcs) > 3:
@@ -2626,22 +2672,28 @@ class App:
         self.c3_normal = tk.Frame(c3.body, bg=CARD)
         btn_row = tk.Frame(self.c3_normal, bg=CARD)
         btn_row.pack(fill="x")
-        GlassButton(btn_row, "开始重翻", width=200, height=52,
+        GlassButton(btn_row, "开始重翻", width=180, height=52,
                     primary=True, bg=CARD,
                     command=self._do_retranslate_report).pack(side="left")
-        self.conflict_btn = GlassButton(btn_row, "解决术语冲突", width=180,
+        self.conflict_btn = GlassButton(btn_row, "解决术语冲突", width=154,
                                         height=52, bg=CARD, font=FONT_BIG,
                                         command=self._toggle_conflict_view)
         self.conflict_btn.pack(side="left", padx=10)
         self.conflict_btn.set_enabled(False)
-        GlassButton(btn_row, "复制列表", width=140, height=52, bg=CARD,
+        GlassButton(btn_row, "复制列表", width=118, height=52, bg=CARD,
                     font=FONT_BIG,
                     command=self._copy_report_list).pack(side="left",
                                                         padx=(10, 0))
+        # ★ 应用已编辑：把报告里手工改过的句子写进缓存与译文文件
+        GlassButton(btn_row, "应用已编辑", width=118, height=52, bg=CARD,
+                    font=FONT_BIG,
+                    command=self._apply_report_edits).pack(side="left",
+                                                           padx=(10, 0))
         self.report_hint = tk.Label(
             self.c3_normal,
             text="删除勾选类型的问题句缓存并重新翻译；"
-                 "「译文残留控制码」等类型不参与重翻",
+                 "「译文残留控制码」等类型不参与重翻；"
+                 "「应用已编辑」把双击改过的译文写进缓存与译文文件",
             bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
             wraplength=560)
         self.report_hint.pack(anchor="w", pady=(8, 0))
@@ -2953,7 +3005,8 @@ class App:
             text=(f"发现 {n_conf} 处术语冲突，可点「解决术语冲突」逐条处理；"
                   "重翻只对勾选的类型生效" if n_conf else
                   "删除勾选类型的问题句缓存并重新翻译；"
-                  "「译文残留控制码」等类型不参与重翻"))
+                  "「译文残留控制码」等类型不参与重翻；"
+                  "「应用已编辑」把双击改过的译文写进缓存与译文文件"))
         self.status_var.set(
             f"检查完成：{len(hits)} 处问题 / {len(result or {})} 个文件")
 
@@ -4193,6 +4246,9 @@ class App:
         self._reflow_cfg_frames = {}
         self._reflow_mode = "newline"
         self._reflow_data = {"newline": [], "space": []}
+        # ★ 选中的区块（存 id，按模式分开）；刷新列表 / 切页签后仍能恢复
+        self._reflow_sel_ids = {"newline": set(), "space": set()}
+        self._reflow_restoring = False
 
         head = tk.Frame(body, bg=CARD)
         head.pack(fill="x")
@@ -4216,10 +4272,31 @@ class App:
         self.reflow_stat = stat
 
         tk.Label(body,
-                 text="只重排换行方式，不改动译文文字；"
-                      "两种重排各用一套参数（会保存到设置）",
+                 text="只重排换行方式，不改动译文文字；两种重排各用一套参数"
+                      "（会保存到设置）；在左边列表里选中区块后，"
+                      "重排只对选中的区块生效",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
-                 justify="left").pack(anchor="w", pady=(4, 0))
+                 justify="left", wraplength=560).pack(anchor="w", pady=(4, 0))
+
+        # ★ 区块选择：勾选「仅重排选中的区块」后，未选中的区块原样保留
+        selrow = tk.Frame(body, bg=CARD)
+        selrow.pack(fill="x", pady=(6, 0))
+        self.reflow_only_sel = tk.BooleanVar(value=True)
+        tk.Checkbutton(selrow, text="仅重排选中的区块",
+                       variable=self.reflow_only_sel, bg=CARD, fg=C_KEY,
+                       activebackground=CARD, activeforeground=TEXT,
+                       selectcolor="#FFFFFF", font=FONT_SMALL,
+                       cursor="hand2",
+                       command=self._update_reflow_sel_label).pack(side="left")
+        for text, val in (("全选", True), ("全不选", False)):
+            lbl = tk.Label(selrow, text=f"[{text}]", bg=CARD, fg=ACCENT,
+                           font=FONT_SMALL, cursor="hand2")
+            lbl.pack(side="left", padx=(10, 0))
+            lbl.bind("<Button-1>",
+                     lambda _e, v=val: self._reflow_select_all(v))
+        self.reflow_sel_lbl = tk.Label(selrow, text="", bg=CARD, fg=C_HINT,
+                                       font=FONT_SMALL)
+        self.reflow_sel_lbl.pack(side="left", padx=10)
 
         cfgrow = tk.Frame(body, bg=CARD)
         cfgrow.pack(fill="x", pady=(8, 8))
@@ -4249,7 +4326,8 @@ class App:
         blockfr = tk.Frame(mid, bg=CARD)
         blockfr.pack(side="left", fill="both")
         tree = ttk.Treeview(blockfr, columns=("block", "count"),
-                            show="headings", height=3)
+                            show="headings", height=3,
+                            selectmode="extended")     # ★ 可多选（Ctrl/Shift）
         tree.heading("block", text="区块")
         tree.heading("count", text="条数")
         tree.column("block", width=160, anchor="w")
@@ -4260,7 +4338,7 @@ class App:
         sb.pack(side="right", fill="y")
         bind_tree_wheel(tree)
         attach_tree_copy(tree, self)      # ★ 右键 / Ctrl+C 复制区块列表
-        tree.bind("<<TreeviewSelect>>", lambda _e: self._render_reflow_block())
+        tree.bind("<<TreeviewSelect>>", self._on_reflow_select)
         self.reflow_tree = tree
 
         right = tk.Frame(mid, bg=CARD)
@@ -4387,6 +4465,7 @@ class App:
                 "还原插件植入",
                 f"将删除该游戏里的：\n"
                 f"· Plugins/{PT.PLUGIN_DIR_NAME}/（本工具植入的那个）\n"
+                f"· Scripts.rxdata 里本工具追加的那个脚本（如果是塞脚本的方式）\n"
                 f"· Fonts 里当初复制进去的字体（游戏自带字体不动）\n\n"
                 f"游戏：{d}\n\n确定还原吗？"):
             return
@@ -4426,16 +4505,101 @@ class App:
         tree = getattr(self, "reflow_tree", None)
         if tree is None or not tree.winfo_exists():
             return
-        for iid in tree.get_children():
-            tree.delete(iid)
-        blocks = self._reflow_data.get(mode, [])
-        total = 0
-        for b in blocks:
-            tree.insert("", "end",
-                        values=(f"{b['file']} · {b['block']}", b["total"]))
-            total += b["total"]
+        self._reflow_restoring = True
+        try:
+            for iid in tree.get_children():
+                tree.delete(iid)
+            blocks = self._reflow_data.get(mode, [])
+            saved = getattr(self, "_reflow_sel_ids", {}).get(mode, set())
+            total = 0
+            sel_ids = []
+            for pos, b in enumerate(blocks):
+                tree.insert("", "end", iid=str(pos),
+                            values=(f"{b['file']} · {b['block']}", b["total"]))
+                total += b["total"]
+                if b.get("id") in saved:
+                    sel_ids.append(str(pos))
+            if sel_ids:
+                tree.selection_set(sel_ids)
+        finally:
+            self._reflow_restoring = False
         self.reflow_stat.config(
             text=f"{len(blocks)} 个区块 / {total} 条译文")
+        self._update_reflow_sel_label()
+
+    # ---------- 区块选择 ----------
+    def _on_reflow_select(self, _e=None):
+        """列表选择变化 → 记下选中的区块 id，并刷新右侧预览。"""
+        if getattr(self, "_reflow_restoring", False):
+            return
+        mode = getattr(self, "_reflow_mode", "newline")
+        tree = getattr(self, "reflow_tree", None)
+        if tree is None or not tree.winfo_exists():
+            return
+        blocks = self._reflow_data.get(mode, [])
+        ids = set()
+        for iid in tree.selection():
+            try:
+                pos = tree.index(iid)
+            except Exception:
+                continue
+            if 0 <= pos < len(blocks):
+                ids.add(blocks[pos]["id"])
+        self._reflow_sel_ids[mode] = ids
+        self._update_reflow_sel_label()
+        self._render_reflow_block()
+
+    def _reflow_select_all(self, value):
+        """全选 / 全不选当前页签里的区块。"""
+        mode = getattr(self, "_reflow_mode", "newline")
+        tree = getattr(self, "reflow_tree", None)
+        if tree is None or not tree.winfo_exists():
+            return
+        kids = tree.get_children()
+        self._reflow_restoring = True
+        try:
+            if value:
+                tree.selection_set(kids)
+            else:
+                tree.selection_remove(kids)
+        finally:
+            self._reflow_restoring = False
+        blocks = self._reflow_data.get(mode, [])
+        self._reflow_sel_ids[mode] = ({b["id"] for b in blocks} if value
+                                     else set())
+        self._update_reflow_sel_label()
+        self._render_reflow_block()
+
+    def _reflow_sel_label_text(self):
+        """选中区块的统计文字（跨两个页签一起算）。"""
+        sel = getattr(self, "_reflow_sel_ids", {}) or {}
+        n_blocks = n_rows = 0
+        for mode in ("newline", "space"):
+            ids = sel.get(mode) or set()
+            if not ids:
+                continue
+            for b in self._reflow_data.get(mode, []):
+                if b.get("id") in ids:
+                    n_blocks += 1
+                    n_rows += b.get("total", 0)
+        return n_blocks, n_rows
+
+    def _update_reflow_sel_label(self):
+        lbl = getattr(self, "reflow_sel_lbl", None)
+        if lbl is None or not lbl.winfo_exists():
+            return
+        try:
+            on = bool(self.reflow_only_sel.get())
+        except Exception:
+            on = True
+        n_blocks, n_rows = self._reflow_sel_label_text()
+        mode = getattr(self, "_reflow_mode", "newline")
+        cur = len((getattr(self, "_reflow_sel_ids", {}) or {}).get(mode) or ())
+        if n_blocks:
+            txt = f"已选 {n_blocks} 个区块 / {n_rows} 条（本页 {cur} 个）"
+        else:
+            txt = "未选区块" if on else "重排全部区块"
+        lbl.config(text=txt, fg=C_KEY if on else C_HINT)
 
     def _render_reflow_block(self):
         """把选中区块的原文 / 译文摘要填到右侧预览框。"""
@@ -4453,6 +4617,8 @@ class App:
                 b = blocks[pos]
                 lines.append(f"{b['file']}   {b['block']}   "
                              f"共 {b['total']} 条（下面显示前 {len(b['pairs'])} 条）")
+                if len(sel) > 1:
+                    lines.append(f"（另外还选中了 {len(sel) - 1} 个区块）")
                 lines.append("")
                 for n, (src, dst) in enumerate(b["pairs"], 1):
                     lines.append(f"{n}. 原文：{src}")
@@ -4469,7 +4635,26 @@ class App:
             messagebox.showwarning("提示", "请先选择要重排的文件")
             return
 
-        # 先把两套参数写回设置（同时校验格式）
+        # ★ 重排范围：勾了「仅重排选中的区块」就只动选中的那些
+        #   （先定范围再写设置：用户中途取消时不该动配置文件）
+        try:
+            only_sel = bool(self.reflow_only_sel.get())
+        except Exception:
+            only_sel = True
+        sel = set()
+        for ids in (getattr(self, "_reflow_sel_ids", {}) or {}).values():
+            sel |= (ids or set())
+        if only_sel and not sel:
+            if not messagebox.askyesno(
+                    "没有选中区块",
+                    "现在勾着「仅重排选中的区块」，但列表里一个区块都没选。\n\n"
+                    "要改成重排**全部区块**吗？\n"
+                    "（想只重排一部分，请先在左边列表里点选区块，"
+                    "按住 Ctrl / Shift 可多选，也可以点 [全选]）"):
+                return
+            only_sel = False
+
+        # 把两套参数写回设置（同时校验格式）
         for mode in ("newline", "space"):
             for key, var in self.reflow_cfgs.get(mode, {}).items():
                 raw = (var.get() or "").strip()
@@ -4486,11 +4671,15 @@ class App:
         space_cfg = {"min": getattr(config, "WRAP_SPACE_MIN", 8),
                      "max": getattr(config, "WRAP_SPACE_MAX", 10),
                      "gap": getattr(config, "WRAP_SPACE_MIN_GAP", 5)}
+        blocks = sorted(sel) if only_sel else None
 
         self.show("log")
         self.run_async(
-            lambda: commands.reflow_paths(paths, newline_cfg, space_cfg),
-            label="换行重排中…", done_label="换行重排完成")
+            lambda: commands.reflow_paths(paths, newline_cfg, space_cfg,
+                                          blocks=blocks),
+            label=(f"换行重排（选中 {len(blocks)} 个区块）…" if blocks
+                   else "换行重排（全部区块）…"),
+            done_label="换行重排完成")
 
     # ================================================================
     # 页面 7：Excel 转术语表

@@ -176,14 +176,24 @@ def language_files(game_dir):
           ["English", "english.dat"],
           ["中文",   "Chinese.dat"],
         ]
+
+    ★ 必须按括号配对取整段：`LANGUAGES = \\[(.*?)\\]` 是非贪婪的，多条时
+      只会吃到第一条的右括号（Void / 蛋白石 / 绿铀 都是好几条），
+      那样算出来的「该写哪个语言文件」会错。
+    ★ 被 `#` 注释掉的条目不算 —— 游戏不会加载它。
     """
     for _name, text in iter_script_texts(game_dir):
         if "LANGUAGES" not in text:
             continue
-        m = _LANG_BLOCK.search(text)
+        m = _LANG_ARRAY_RE.search(text)
         if not m:
             continue
-        items = _LANG_ITEM.findall(m.group(1))
+        lb, rb = _array_block(text, m.end())
+        if rb < 0:
+            continue
+        body = text[lb + 1:rb]
+        clean = "\n".join(ln.split("#", 1)[0] for ln in body.split("\n"))
+        items = _LANG_ITEM.findall(clean)
         if items:
             return items
     return []
@@ -194,13 +204,14 @@ def language_files(game_dir):
 # ================================================================
 _LANG_ARRAY_RE = re.compile(r"^([ \t]*)LANGUAGES\s*=\s*\[", re.M)
 
-# 游戏自带的 LANGUAGES 注释（英）→ 中文。模型没接上时用这份兜底。
-_LANG_COMMENT_ZH = [
-    "# 游戏里可用语言的列表。每一项是一个数组，包含该语言在游戏中显示的名字，",
-    "# 以及这个语言的文件名片段。某个语言会去读取 Data 文件夹下名为",
-    "# messages_片段_core.dat 和 messages_片段_game.dat 的语言数据文件",
-    "#（如果这两个文件存在的话）。",
-]
+# LANGUAGES 数组里的一条语言：["显示名", "文件名"]（允许被 # 注释掉）
+# ★ 末尾的 `\r?` 不能少：老游戏的脚本存在 Scripts.rxdata 里，解出来的源码是
+#   CRLF，按 "\n" 切开后每行都带 "\r"，不认它的话带逗号的行一条都匹配不上。
+_ENTRY_LINE_RE = re.compile(
+    r"^(?P<ind>[ \t]*)(?P<hash>\#\s*)?"
+    r"\[\s*(?P<q>[\"'])(?P<display>[^\"']*)(?P=q)\s*,\s*"
+    r"(?P<q2>[\"'])(?P<frag>[^\"']*)(?P=q2)\s*\]\s*"
+    r"(?P<tail>,?)[ \t]*\r?$")
 
 
 def script_sources(game_dir):
@@ -271,10 +282,27 @@ def _indent_of(text, line_start):
     return text[bol:line_start]
 
 
-def _patch_languages(text, display, fragment, comment_zh=None):
+def _patch_languages(text, display=None, fragment=None):
     """
-    在 LANGUAGES 数组里加一条，并在上方注释后面补一段中文说明。
-    返回 (新文本, info)。已经存在同名的条目就不动。
+    在 LANGUAGES 数组里加一条中文语言。做法（按需求定的三步）：
+
+      ① 数组里第一条语言如果被注释掉了（`#  ["English","english.dat"]`），
+         先把 `#` 去掉；
+      ② 把这一行**复制一份**插到它下面；
+      ③ 复制出来的那一行里 `English` → `Chinese`。
+
+    于是
+        LANGUAGES = [
+          ["English","english.dat"]
+        ]
+    变成
+        LANGUAGES = [
+          ["English","english.dat"],
+          ["Chinese","english.dat"]
+        ]
+
+    ★ 数组里已经有中文条目（中文 / Chinese / 简中…）就直接跳过，不会重复加。
+    返回 (新文本, info)。
     """
     m = _LANG_ARRAY_RE.search(text)
     if not m:
@@ -282,84 +310,58 @@ def _patch_languages(text, display, fragment, comment_zh=None):
     lb, rb = _array_block(text, m.end())
     if rb < 0:
         raise ValueError("LANGUAGES 数组没有闭合的 `]`")
-    body = text[lb + 1:rb]
 
-    info = {"display": display, "fragment": fragment, "added": False,
-            "comment": False}
-    # ① 已经有这个语言片段就不重复加
-    for item in re.finditer(
-            r"\[\s*[\"']([^\"']*)[\"']\s*,\s*[\"']([^\"']*)[\"']\s*\]", body):
-        if item.group(2).strip().lower() == (fragment or "").lower():
-            info["exists"] = item.group(1)
+    info = {"display": "Chinese", "fragment": fragment, "added": False,
+            "uncommented": False}
+    lines = text.split("\n")
+    start_line = text.count("\n", 0, lb)          # "LANGUAGES = [" 所在行
+    end_line = text.count("\n", 0, rb)            # "]" 所在行
+
+    entries = []
+    for k in range(start_line, min(end_line + 1, len(lines))):
+        em = _ENTRY_LINE_RE.match(lines[k])
+        if em:
+            entries.append((k, em))
+
+    # ① 已经有中文条目 → 不动（幂等）
+    for _k, em in entries:
+        if _is_zh(em.group("display")):
+            info["exists"] = em.group("display")
             return text, info
 
-    # ② 上方注释：在原英文注释**后面**补一段中文说明
-    zh = list(comment_zh) if comment_zh else list(_LANG_COMMENT_ZH)
-    lines = text.split("\n")
-    li = text.count("\n", 0, m.start())          # LANGUAGES 所在行号
-    k = li - 1
-    while k >= 0 and lines[k].strip() == "":
-        k -= 1
-    if k >= 0 and lines[k].lstrip().startswith("#"):
-        # 缩进跟英文注释保持一致
-        cind = re.match(r"[ \t]*", lines[k]).group(0)
-        lines[k + 1:k + 1] = ([f"{cind}# [pkmn] 中文说明："] +
-                              [cind + "# " + l.lstrip("# ").rstrip()
-                               for l in zh])
-        info["comment"] = True
-        text = "\n".join(lines)
-        m = _LANG_ARRAY_RE.search(text)
-        lb, rb = _array_block(text, m.end())
-        body = text[lb + 1:rb]
+    if not entries:
+        raise ValueError("LANGUAGES 数组里没有可识别的语言条目")
 
-    # ③ 照现有条目的写法插入（缩进 + 引号风格），并补好上一行的逗号
-    sample = re.search(r"([ \t]*)\[\s*([\"'])", body)
-    quote = sample.group(2) if sample else '"'
-    body_lines = body.split("\n")
-    last_i = max((i for i, l in enumerate(body_lines) if l.strip()),
-                 default=len(body_lines) - 1)
-    ind = re.match(r"[ \t]*", body_lines[last_i]).group(0) or "    "
-    line = f"{ind}[{quote}{display}{quote}, {quote}{fragment}{quote}]"
-    if not body_lines[last_i].rstrip().endswith(","):
-        body_lines[last_i] = body_lines[last_i].rstrip() + ","
-    body_lines.insert(last_i + 1, line)
-    # 收尾：] 单独一行，缩进与 LANGUAGES 那行一致
-    while body_lines and body_lines[-1].strip() == "":
-        body_lines.pop()
-    body_lines.append(re.match(r"[ \t]*", text[m.start():]).group(0))
-    new_body = "\n".join(body_lines)
-    if not new_body.startswith("\n"):
-        new_body = "\n" + new_body
+    k0, em0 = entries[0]
+    line0 = lines[k0]
+    cr = "\r" if line0.endswith("\r") else ""     # 保持原来的行尾风格
+    # ② 取消注释：保留缩进，去掉 `#` 和它后面的空白
+    if em0.group("hash"):
+        body = (em0.group("ind") + line0[em0.end("hash"):]).rstrip()
+        info["uncommented"] = True
+    else:
+        body = line0.rstrip()
+    # 数组里每条后面都要有逗号（Ruby 允许最后一条也带逗号）
+    if not body.endswith(","):
+        body += ","
+
+    # ③ 复制一行，English → Chinese
+    dup = body.replace("English", "Chinese")
+    if dup == body:
+        # 第一条不叫 English（例如 Deutsch）就改第一个引号里的显示名
+        dup = re.sub(r"([\"'])[^\"']*\1", r"\1Chinese\1", body, count=1)
+
     info["added"] = True
-    return text[:lb + 1] + new_body + text[rb:], info
-
-
-def languages_comment(game_dir):
-    """
-    取 LANGUAGES 上方那段英文注释（用来交给模型翻成中文）。
-    找不到返回 []。
-    """
-    src = find_languages_source(game_dir)
-    if not src:
-        return []
-    m = src["match"]
-    lines = src["text"].split("\n")
-    li = src["text"].count("\n", 0, m.start())
-    k = li - 1
-    while k >= 0 and lines[k].strip() == "":
-        k -= 1
-    if k < 0 or not lines[k].lstrip().startswith("#"):
-        return []
-    end = k
-    while end >= 0 and lines[end].lstrip().startswith("#"):
-        end -= 1
-    return [lines[i].strip() for i in range(end + 1, k + 1)]
+    info["template"] = body.strip()
+    info["entry"] = dup.strip()
+    new_lines = lines[:k0] + [body + cr, dup + cr] + lines[k0 + 1:]
+    return "\n".join(new_lines), info
 
 
 def apply_languages_entry(game_dir, display="简体中文", fragment=None,
-                          comment_zh=None, emit=None):
+                          emit=None):
     """
-    把一条语言写进游戏 Settings 的 LANGUAGES，并在上方注释后面补中文说明。
+    把一条语言写进游戏 Settings 的 LANGUAGES。
     返回 {"ok", "changed", "mode", "where", "backup", ...}
 
     ★ 两种脚本形态都能改：已解包的改 .rb 文件；没解包的直接改 Scripts.rxdata
@@ -374,15 +376,14 @@ def apply_languages_entry(game_dir, display="简体中文", fragment=None,
         return {"ok": False, "reason": "在脚本里没找到 LANGUAGES（Settings）"}
     frag = fragment or language_fragment(game_dir)
     try:
-        new_text, info = _patch_languages(src["text"], display, frag,
-                                          comment_zh)
+        new_text, info = _patch_languages(src["text"], display, frag)
     except ValueError as e:
         return {"ok": False, "reason": str(e)}
     out = {"ok": True, "mode": src["mode"], "where": str(src["key"]),
-           "display": display, "fragment": frag, **info}
+           "display": "Chinese", "fragment": frag, **info}
     if not info.get("added"):
-        say(f"[语言] Settings 里已经有「{info.get('exists') or display}」，"
-            f"不用再改")
+        say(f"[语言] Settings 的 LANGUAGES 里已经有「"
+            f"{info.get('exists') or '中文'}」，不用再改")
         out["changed"] = False
         return out
 
@@ -411,8 +412,10 @@ def apply_languages_entry(game_dir, display="简体中文", fragment=None,
             _w(f, obj)
         os.replace(tmp, path)
     out["changed"] = True
-    say(f"[语言] Settings 已加入 [\"{display}\", \"{frag}\"]"
-        + ("，并补了一段中文注释" if info.get("comment") else ""))
+    if info.get("uncommented"):
+        say("[语言] Settings 里那条语言原本被注释掉了，已去掉 `#`")
+    say(f"[语言] Settings 已加入 {info.get('entry') or '[\"Chinese\", …]'}"
+        f"（复制第一条并改名）")
     say(f"[语言] 改动位置：{src['mode']} → {src['key']}"
         f"（原文件已备份：{os.path.basename(bak)}）")
     return out

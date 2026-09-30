@@ -118,6 +118,22 @@ def log_lines_trimmed(path, total, kept):
         pass
 
 
+def detect_newline(path, default="\n"):
+    """
+    按**原始字节**判断文件用的是 CRLF 还是 LF。
+
+    ★ read_file 是用文本模式打开的，Python 的通用换行在读取时就把 "\\r\\n"
+      归一成 "\\n" 了，所以它返回的 newline 永远是 "\\n"。
+      要「原样写回、不改动行尾」的场合（应用已编辑 / 换行重排）用这个函数。
+    """
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(65536)
+    except OSError:
+        return default
+    return "\r\n" if b"\r\n" in chunk else "\n"
+
+
 def extract_entries(lines):
     """
     扫描全文件，返回 (entries, special_cases)。
