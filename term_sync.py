@@ -387,9 +387,13 @@ def _why_invalid(src, dst, min_len):
     return "术语不合格（含控制码或格式问题）"
 
 
-def add_term(src, dst, min_len=None):
+def add_term(src, dst, min_len=None, manual=False):
     """
-    新增一条术语（写入 term_dict.py 的 AUTO 块）。GUI「添加术语」用。
+    新增一条术语，写入 term_dict.py 的 TERM_DICT。
+
+    manual=False（默认）：写进 AUTO 块（自动提取区），菜单 4「添加术语」用。
+    manual=True：写进 TERM_DICT 顶部（AUTO 块之外的手工区），菜单 8
+      「术语字典」的新增用 —— 这样「一键删除自动术语」不会误删手工加的词。
 
     ★ 校验规则直接复用 auto_terms（自动提取那套）：最短长度、译文须含中文、
       不能含控制码/方括号 —— 否则条目加了也不会被 processor.load_terms 采纳。
@@ -421,11 +425,50 @@ def add_term(src, dst, min_len=None):
     if not auto_terms._validate({src: dst}, min_len):
         return False, _why_invalid(src, dst, min_len), None
 
-    if not auto_terms.merge_into_term_dict({src: dst}):
+    if manual:
+        if not _insert_manual_term(src, dst):
+            return False, "写入 term_dict.py 失败", None
+    elif not auto_terms.merge_into_term_dict({src: dst}):
         return False, "写入 term_dict.py 失败", None
 
-    log.info("术语表新增 1 条：%s → %s", src, dst)
+    log.info("术语表新增 1 条（%s）：%s → %s",
+             "手工区" if manual else "AUTO 块", src, dst)
     return True, f"已新增术语：{src} → {dst}", src
+
+
+def _insert_manual_term(src, dst):
+    """
+    把一条术语插到 TERM_DICT 开括号之后（AUTO 块之外的手工区）。
+
+    只在 add_term(manual=True) 里用。文件里找不到 `TERM_DICT = {` 时返回 False。
+    """
+    import json as _json
+
+    path = config.TERM_FILE
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            text = f.read()
+    except OSError:
+        return False
+
+    marker = "TERM_DICT = {"
+    idx = text.find(marker)
+    if idx < 0:
+        return False
+
+    line = (f"    {_json.dumps(src, ensure_ascii=False)}: "
+            f"{_json.dumps(dst, ensure_ascii=False)},\n")
+    at = idx + len(marker)
+    # 跳过紧跟在 `TERM_DICT = {` 后面的换行，把新行插在下一行之前
+    if at < len(text) and text[at] == "\r":
+        at += 1
+    if at < len(text) and text[at] == "\n":
+        at += 1
+
+    _atomic_write(path, text[:at] + line + text[at:])
+    return True
 
 
 def _atomic_write(path, text):

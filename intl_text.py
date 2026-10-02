@@ -867,6 +867,78 @@ def collect_text_files(path):
     raise FileNotFoundError(f"找不到：{path}")
 
 
+# ----------------------------------------------------------------
+# 编译输入筛选：只编译译文，缺译文才编源文件
+# ----------------------------------------------------------------
+COMPILE_TRANSLATED_SUFFIX = "_translated.txt"
+
+# 这些也是 .txt，但属于工具生成的报告 / 润色稿，不该被当成源文本编译
+COMPILE_SKIP_SUFFIXES = (
+    "_translated_report.txt",       # 重翻检查报告
+    "_polished.txt",                # 中文润色报告
+    "_cache.json",                  # 翻译缓存
+    "_conflicts.json",              # 术语冲突记录
+    "_polish_cache.json",           # 润色进度
+)
+
+
+def _is_translated_name(name):
+    """是不是译文文件（*_translated.txt，且不是检查报告）。"""
+    low = name.lower()
+    return (low.endswith(COMPILE_TRANSLATED_SUFFIX)
+            and not low.endswith("_translated_report.txt"))
+
+
+def _is_compile_artifact(name):
+    """是不是工具自己生成的报告 / 缓存，不参与编译。"""
+    low = name.lower()
+    return any(low.endswith(s) for s in COMPILE_SKIP_SUFFIXES)
+
+
+def select_compile_files(paths):
+    """
+    编译输入筛选（菜单 1「编译文本」用）：
+
+      · 只编译译文文件 `*_translated.txt`
+      · 某个源文件没有对应的 `*_translated.txt` 时，改编译源文件本身
+      · 检查报告（`*_translated_report.txt`）、润色稿（`*_polished.txt`）等
+        工具生成物一律不编译
+
+    返回 (selected, skipped)：两个都是文件路径列表。
+      · selected —— 真正要编译的文件（按输入顺序去重）
+      · skipped  —— 被规则排除掉的文件（已有译文的源文件 / 报告 / 缓存等）
+    """
+    items = list(paths) if isinstance(paths, (list, tuple)) else [paths]
+    items = [p for p in items if p]
+    if not items:
+        return [], []
+
+    selected, skipped, seen = [], [], set()
+    for p in collect_text_files(items):
+        name = os.path.basename(p)
+        if _is_compile_artifact(name):
+            skipped.append(p)
+            continue
+
+        if _is_translated_name(name):
+            chosen = p
+        else:
+            # 源文件：有译文就编译译文，没有才编译它自己
+            stem = os.path.splitext(name)[0]
+            twin = os.path.join(os.path.dirname(p) or ".",
+                                f"{stem}{COMPILE_TRANSLATED_SUFFIX}")
+            chosen = twin if os.path.isfile(twin) else p
+
+        ap = os.path.abspath(chosen)
+        if ap in seen:                 # 同一份文件被源文件与译文各命中一次
+            continue
+        seen.add(ap)
+        if os.path.abspath(p) != ap:
+            skipped.append(p)
+        selected.append(chosen)
+    return selected, skipped
+
+
 def _default_out(game_dir):
     return GS.default_language_file(game_dir)
 
@@ -932,8 +1004,13 @@ def compile_split(game_dir, paths, emit=None, backup=True, out_paths=None):
         files = sorted(os.path.join(folder, f)
                        for f in os.listdir(folder)
                        if f.lower().endswith(".txt"))
+        # ★ 只编译译文；源文件没有对应译文时才编译源文件
+        files, skipped = select_compile_files(files)
+        if skipped:
+            say(f"[编译] {part}：跳过 {len(skipped)} 个文件"
+                f"（已有译文 / 报告 / 润色稿）")
         if not files:
-            say(f"[编译] ⚠ {os.path.basename(folder)} 里没有 txt，跳过")
+            say(f"[编译] ⚠ {os.path.basename(folder)} 里没有可编译的文本，跳过")
             continue
         say(f"[编译] {part}：{len(files)} 个文本文件")
 
@@ -1004,6 +1081,10 @@ def compile_text(game_dir, input_path, out_path=None, emit=None, backup=True):
     """
     编译文本：把 intl 格式的文本（或整个文件夹里的 .txt 合并）写成语言 .dat。
 
+    ★ 只编译译文文件 `*_translated.txt`；某个源文件没有对应的译文时，
+      改编译源文件本身；检查报告 / 润色稿等生成物不编译（见
+      select_compile_files）。
+
     ★ 自动按游戏版本选方案：新版会按 Text_*_core / _game 分别编出两份 .dat。
 
     返回报告 dict：{"out", "backup", "files", "entries", "conflicts", ...}
@@ -1013,13 +1094,22 @@ def compile_text(game_dir, input_path, out_path=None, emit=None, backup=True):
             emit(msg)
 
     paths = input_path if isinstance(input_path, (list, tuple)) else [input_path]
+    paths, skipped = select_compile_files(paths)
+    if skipped:
+        say(f"[编译] 按规则跳过 {len(skipped)} 个文件"
+            f"（已有对应译文，或不是文本源）")
+    if not paths:
+        raise FileNotFoundError(
+            "没有可编译的文本。\n\n"
+            "编译规则：只编译译文文件 *_translated.txt；\n"
+            "源文件只有在没有对应译文时才编译；"
+            "检查报告 / 润色稿等生成物不参与编译。")
+
     if split_targets(game_dir, paths):
         say("[编译] 这个游戏是新版方案：按 core / game 分别编译")
         return compile_split(game_dir, paths, emit=emit, backup=backup)
 
-    files = collect_text_files(input_path)
-    if not files:
-        raise FileNotFoundError(f"{input_path} 里没有 .txt 文本文件")
+    files = paths
     if len(files) > 1:
         say(f"[编译] 共 {len(files)} 个文本文件，按文件名顺序合并")
 

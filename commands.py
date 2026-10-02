@@ -975,20 +975,6 @@ def _translate_batch(client, batch_texts, cache,
         except Exception as e:
             log.warning("术语合并失败：%s", e)
 
-    # ---------- 术语兜底替换 ----------
-    if term_pairs_list:
-        fix_count = 0
-        for k, src in enumerate(batch_texts):
-            old_final = cache.get(src)
-            if not old_final:
-                continue
-            new_final = PR.apply_terms(old_final)
-            if new_final != old_final:
-                cache.put(src, new_final)
-                fix_count += 1
-        if fix_count:
-            emit(f"  [术语] 兜底替换 {fix_count} 条")
-
     return ok
 
 
@@ -2626,7 +2612,7 @@ def cmd_intl():
     import game_scripts as GS
     import intl_text as IT
 
-    emit("\n[文本提取与编译(Beta)]")
+    emit("\n[文本提取与编译]")
     emit("  适用于 Pokémon Essentials（mkxp / RMXP）游戏：")
     emit("  ① 提取文本 —— 同游戏 debug 的 Extract Text；")
     emit("  ② 编译文本 —— 同游戏 debug 的 Compile Text；")
@@ -2830,7 +2816,7 @@ def cmd_reflow():
 
 
 def cmd_build_terms():
-    """菜单 8：Excel 转术语表"""
+    """菜单 8：术语字典 —— Excel 转术语表（右侧卡片可切到字典列表）"""
     import filepicker
     import build_terms as BT
 

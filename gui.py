@@ -29,6 +29,7 @@ import bridge
 import logger
 import commands
 import config
+import dict_editor as DE
 import env_check
 import prefix_dict as PFD
 import processor as PR
@@ -96,14 +97,14 @@ BTN_PAD_X = 22
 BTN_PAD_Y = 16
 
 MENU_ITEMS = [
-    ("1", "文本提取与编译(Beta)"),
+    ("1", "文本提取与编译"),
     ("2", "翻译"),
     ("3", "重翻检查报告"),
     ("4", "术语更新后重翻"),
     ("5", "前缀字典"),
     ("6", "中文润色"),
     ("7", "换行重排"),
-    ("8", "Excel 转术语表"),
+    ("8", "术语字典"),
     ("9", "设置"),
     ("10", "本地模型服务"),
     ("11", "日志"),
@@ -1325,12 +1326,17 @@ class FilePanel(tk.Frame):
 # 添加术语弹窗
 # ================================================================
 class TermDialog(tk.Toplevel):
-    """「添加术语」弹窗：输入原文与译文，结果放在 self.result = (原文, 译文)。"""
+    """术语弹窗：输入原文与译文，结果放在 self.result = (原文, 译文)。
 
-    def __init__(self, master, src_lang="", tgt_lang=""):
+    默认是「添加术语」；术语字典页也用它做「修改」（init_src / init_dst
+    预填当前值，标题与按钮文案换成修改）。
+    """
+
+    def __init__(self, master, src_lang="", tgt_lang="", init_src="",
+                 init_dst="", title="添加术语", ok_text="确定添加", note=None):
         tk.Toplevel.__init__(self, master, bg=BG_BASE)
         self.result = None
-        self.title("添加术语")
+        self.title(title)
         self.resizable(False, False)
         self.transient(master)
 
@@ -1339,16 +1345,16 @@ class TermDialog(tk.Toplevel):
         card.pack(padx=12, pady=12)
         body = card.body
 
-        tk.Label(body, text="添加术语", bg=CARD, fg=C_TITLE,
+        tk.Label(body, text=title, bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
-        tk.Label(body,
-                 text="新术语会立即写入术语字典；点「应用术语」时会删除\n"
-                      "相关句子的缓存并重新翻译。",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+        if note is None:
+            note = ("新术语会立即写入术语字典；点「应用术语」时会删除\n"
+                    "相关句子的缓存并重新翻译。")
+        tk.Label(body, text=note, bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left").pack(anchor="w", pady=(4, 12))
 
-        self.src_var = tk.StringVar()
-        self.dst_var = tk.StringVar()
+        self.src_var = tk.StringVar(value=init_src or "")
+        self.dst_var = tk.StringVar(value=init_dst or "")
         first = None
         for text, var in ((f"原文（{src_lang or '源语言'}）", self.src_var),
                           (f"译文（{tgt_lang or '目标语言'}）", self.dst_var)):
@@ -1366,7 +1372,7 @@ class TermDialog(tk.Toplevel):
         GlassButton(btns, "取消", width=92, height=40, bg=CARD,
                     font=FONT_SMALL,
                     command=self._cancel).pack(side="right")
-        GlassButton(btns, "确定添加", width=128, height=40, primary=True,
+        GlassButton(btns, ok_text, width=128, height=40, primary=True,
                     bg=CARD, font=FONT_SMALL,
                     command=self._ok).pack(side="right", padx=8)
 
@@ -1407,9 +1413,9 @@ class TermDialog(tk.Toplevel):
         self.destroy()
 
     @classmethod
-    def ask(cls, master, src_lang="", tgt_lang=""):
+    def ask(cls, master, src_lang="", tgt_lang="", **kw):
         """弹出对话框并等待结果；返回 (原文, 译文)，取消则返回 None。"""
-        dlg = cls(master, src_lang, tgt_lang)
+        dlg = cls(master, src_lang, tgt_lang, **kw)
         master.wait_window(dlg)
         return dlg.result
 
@@ -1521,6 +1527,16 @@ class App:
         self.prefix_edits = {}
         self.sheet_vars = {}       # Excel sheet → BooleanVar
         self.setting_widgets = {}  # key → (widget, typ)
+
+        # 菜单 8「术语字典」视图（与 Excel 转换视图共用一个页面）
+        self.excel_view = None      # Excel 转换视图
+        self.termdict_view = None   # 术语字典列表视图
+        self.dict_editor = None     # dict_editor.TermDictEditor（首次进入时建）
+        self.dict_loaded = False    # 视图是否已渲染过
+        self.dict_checks = set()    # 勾选的行（用原始原文标识）
+        self.dict_row_orig = {}     # 列表 iid → 原始原文
+        self.dict_visible = []      # 当前可见的原始原文（顺序同列表）
+        self.dict_show_limit = DE.VIEW_LIMIT_DEFAULT
 
         # 菜单 10（本地模型服务）
         self.pv_param_vars = {}    # config key → StringVar
@@ -2306,7 +2322,9 @@ class App:
         attach_label_copy(self.intl_compile_lbl, self, "编译结果")
         self.intl_compile_hint = tk.Label(
             c2.body,
-            text="等同于在游戏 debug 菜单里执行 Compile Text。",
+            text="等同于在游戏 debug 菜单里执行 Compile Text。\n"
+                 "只编译译文文件（*_translated.txt）；某个源文件没有对应译文时，"
+                 "改编译源文件本身；检查报告 / 润色稿等生成物不参与编译。",
             bg=CARD, fg=C_HINT, font=FONT_SMALL,
             justify="left", wraplength=560)
         self.intl_compile_hint.pack(anchor="w", pady=(6, 0))
@@ -2696,6 +2714,28 @@ class App:
         GlassButton(head, "白名单", width=92, height=34, bg=CARD,
                     font=FONT_SMALL,
                     command=self._open_whitelist).pack(side="left")
+        # ★ 搜索：在报告里按关键字过滤（原文 / 译文 / 说明 / 类型 / 文件名），
+        #   输入后忽略「重翻类型」勾选，方便查找历史遗留句
+        #   （术语冲突视图里会连同「重翻类型」一起藏起来）
+        self.report_search_box = tk.Frame(head, bg=CARD)
+        self.report_search_box.pack(side="left", padx=(14, 0))
+        tk.Label(self.report_search_box, text="搜索", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL).pack(side="left", padx=(0, 4))
+        self.report_search = tk.StringVar()
+        self.report_search_ent = ttk.Entry(self.report_search_box,
+                                           textvariable=self.report_search,
+                                           width=14, font=FONT)
+        self.report_search_ent.pack(side="left")
+        self.report_search_ent.bind("<KeyRelease>",
+                                    lambda _e: self._render_report_rows())
+        self.report_search_ent.bind("<Return>",
+                                    lambda _e: self._render_report_rows())
+        self.report_search_ent.bind("<Escape>",
+                                    lambda _e: self._clear_report_search())
+        clr = tk.Label(self.report_search_box, text="[清除]", bg=CARD,
+                       fg=ACCENT, font=FONT_SMALL, cursor="hand2")
+        clr.pack(side="left", padx=6)
+        clr.bind("<Button-1>", lambda _e: self._clear_report_search())
         self.report_stat = tk.Label(head, text="尚未检查", bg=CARD,
                                     fg=C_KEY, font=FONT_BIG)
         self.report_stat.pack(side="right")
@@ -2780,13 +2820,20 @@ class App:
         else:
             self.c3_conflict.pack_forget()
             self.c3_normal.pack(fill="x")
-        # 冲突视图里隐藏「重翻类型」，避免误以为它作用于冲突列表
+        # 冲突视图里隐藏「重翻类型」与搜索框，避免误以为它们作用于冲突列表
         try:
+            box = self.report_search_box
             if mode == "conflict":
                 self.report_kind_bar.pack_forget()
-            elif not self.report_kind_bar.winfo_ismapped():
-                self.report_kind_bar.pack(fill="x", pady=(6, 0),
-                                          before=self.report_wrap)
+                box.pack_forget()
+            else:
+                if not box.winfo_ismapped() and not box.winfo_manager():
+                    box.pack(side="left", padx=(14, 0),
+                             before=self.report_stat)
+                if not self.report_kind_bar.winfo_ismapped() \
+                        and not self.report_kind_bar.winfo_manager():
+                    self.report_kind_bar.pack(fill="x", pady=(6, 0),
+                                              before=self.report_wrap)
         except Exception:
             pass
 
@@ -2858,8 +2905,39 @@ class App:
     def _selected_kinds(self):
         return [k for k, v in self.report_kind_vars.items() if v.get()]
 
+    # ---------- 报告搜索 ----------
+    def _report_search_text(self):
+        """当前搜索关键字（已去首尾空白、转小写）。"""
+        try:
+            return (self.report_search.get() or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _clear_report_search(self):
+        """清空搜索框并重绘报告列表。"""
+        try:
+            self.report_search.set("")
+        except Exception:
+            pass
+        try:
+            self.report_search_ent.focus_set()
+        except Exception:
+            pass
+        self._render_report_rows()
+
+    @staticmethod
+    def _hit_search_text(path, h):
+        """把一条报告记录拍平成小写文本，供关键字包含匹配。"""
+        parts = [str(h.get(k) or "") for k in
+                 ("kind", "line_no", "src", "dst", "detail",
+                  "term_src", "term_old", "term_new")]
+        if path:
+            parts.append(str(path))
+            parts.append(os.path.basename(str(path)))
+        return " ".join(parts).lower()
+
     def _render_report_rows(self):
-        """按勾选的类型过滤报告列表。"""
+        """按勾选的类型过滤报告列表；搜索框有内容时忽略类型勾选。"""
         if getattr(self, "report_mode", "report") == "conflict":
             return
         tree = self.report_tree
@@ -2867,12 +2945,17 @@ class App:
             tree.delete(iid)
         sel = set(self._selected_kinds())
         has_filter = bool(getattr(self, "report_kind_vars", {}))
+        kw = self._report_search_text()
         shown = 0
         # ★ 行号 → hit 的映射：双击时要拿回完整原文（列表里是截断显示的）
         self.report_iid_map = {}
         for _path, h in getattr(self, "report_hits", []):
             kind = h.get("kind", "")
-            if has_filter and kind not in sel:
+            if kw:
+                # 搜索模式：在全量记录里找，不受「重翻类型」勾选限制
+                if kw not in self._hit_search_text(_path, h):
+                    continue
+            elif has_filter and kind not in sel:
                 continue
             shown += 1
             iid = tree.insert("", "end", values=(
@@ -2883,7 +2966,12 @@ class App:
             ))
             self.report_iid_map[iid] = h
         total = len(getattr(self, "report_hits", []))
-        self.report_stat.config(text=f"显示 {shown} / 共 {total} 处问题")
+        if kw:
+            short = kw if len(kw) <= 12 else kw[:12] + "…"
+            self.report_stat.config(
+                text=f"搜索「{short}」：{shown} / {total} 处")
+        else:
+            self.report_stat.config(text=f"显示 {shown} / 共 {total} 处问题")
 
     # ================================================================
     # 白名单（词 + 句子）
@@ -4748,14 +4836,20 @@ class App:
             done_label="换行重排完成")
 
     # ================================================================
-    # 页面 7：Excel 转术语表
+    # 页面 7：术语字典（Excel 转术语表 + 查看 / 编辑术语字典）
     # ================================================================
     def _page_excel(self):
         page = self.pages["excel"]
         page.grid_columnconfigure(0, weight=1)
         page.grid_rowconfigure(0, weight=1)
 
-        left = tk.Frame(page, bg=BG_BASE)
+        # ★ 同一页两个视图：Excel 转换 / 术语字典，卡片上的按钮互相切换
+        self.excel_view = tk.Frame(page, bg=BG_BASE)
+        self.excel_view.grid(row=0, column=0, sticky="nsew")
+        self.excel_view.grid_columnconfigure(0, weight=1)
+        self.excel_view.grid_rowconfigure(0, weight=1)
+
+        left = tk.Frame(self.excel_view, bg=BG_BASE)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.grid_rowconfigure(1, weight=1)
         left.grid_columnconfigure(0, weight=1)
@@ -4786,6 +4880,11 @@ class App:
                                                                     padx=12)
         GlassButton(head, "全选", width=68, height=34, bg=CARD,
                     font=FONT_SMALL, command=self._sheets_all).pack(side="left")
+        # ★ 「全选」右侧：切到术语字典列表（查看 / 修改 / 删除术语）
+        GlassButton(head, "术语字典", width=92, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._show_termdict_view).pack(side="left",
+                                                           padx=(8, 0))
         self.excel_lbl = tk.Label(head, text="", bg=CARD, fg=C_KEY,
                                   font=FONT_BIG)
         self.excel_lbl.pack(side="right")
@@ -4821,7 +4920,7 @@ class App:
         self.excel_hint.pack(fill="x", pady=(8, 0))
         self._refresh_excel_hint()
 
-        right = tk.Frame(page, bg=BG_BASE, width=330)
+        right = tk.Frame(self.excel_view, bg=BG_BASE, width=330)
         right.grid(row=0, column=1, sticky="nsew")
         right.pack_propagate(False)
         card = RoundCard(right, radius=16, pad=14)
@@ -4834,9 +4933,13 @@ class App:
                       "· 默认追加：已有术语只加不覆盖\n"
                       "· 新译法与旧译法不同会提示冲突\n"
                       "· 转换后可在菜单 4 里逐条校对译文\n"
+                      "· 点「全选」右侧的「术语字典」可查看并编辑\n"
+                      "  整个术语字典（含自动提取的术语）\n"
                       "· 输出文件：term_dict.py",
                  bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
                  justify="left").pack(anchor="w", pady=(10, 0))
+
+        self._build_termdict_view(page)
 
         if self.excel_path.get():
             self._load_sheets(self.excel_path.get())
@@ -4946,6 +5049,547 @@ class App:
 
         self.show("log")
         self.run_async(work, label="Excel 转换中…", done_label="转换完成")
+
+    # ----------------------------------------------------------------
+    # 术语字典视图（菜单 8 的第二个视图）
+    # ----------------------------------------------------------------
+    def _build_termdict_view(self, page):
+        """构建「术语字典」列表视图：查看 / 修改 / 新增 / 删除 / 撤回。"""
+        view = tk.Frame(page, bg=BG_BASE)
+        view.grid(row=0, column=0, sticky="nsew")
+        view.grid_columnconfigure(0, weight=1)
+        view.grid_rowconfigure(0, weight=1)
+        self.termdict_view = view
+        view.grid_remove()          # 默认显示 Excel 转换视图
+
+        left = tk.Frame(view, bg=BG_BASE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_rowconfigure(1, weight=1)
+        left.grid_columnconfigure(0, weight=1)
+
+        # 顶部：标题 + 搜索 / 来源过滤 + 返回
+        c1 = RoundCard(left, radius=16, pad=14, auto_height=True)
+        c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        head = tk.Frame(c1.body, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text="术语字典", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        GlassButton(head, "返回 Excel 转换", width=150, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._show_excel_view).pack(side="right")
+        self.dict_stat = tk.Label(head, text="", bg=CARD, fg=C_KEY,
+                                  font=FONT_BIG)
+        self.dict_stat.pack(side="right", padx=12)
+        attach_label_copy(self.dict_stat, self, "统计")
+
+        bar = tk.Frame(c1.body, bg=CARD)
+        bar.pack(fill="x", pady=(8, 0))
+        tk.Label(bar, text="搜索", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL).pack(side="left")
+        self.dict_search = tk.StringVar()
+        dent = ttk.Entry(bar, textvariable=self.dict_search, width=14,
+                         font=FONT)
+        dent.pack(side="left", padx=8)
+        dent.bind("<KeyRelease>", lambda e: self._filter_dict_rows())
+        dent.bind("<Escape>", lambda e: self._clear_dict_search())
+        clr = tk.Label(bar, text="[清除]", bg=CARD, fg=ACCENT,
+                       font=FONT_SMALL, cursor="hand2")
+        clr.pack(side="left")
+        clr.bind("<Button-1>", lambda e: self._clear_dict_search())
+
+        self.dict_origin = tk.StringVar(value=DE.ORIGIN_ALL)
+        for lab, val in ((DE.ORIGIN_ALL, DE.ORIGIN_ALL),
+                         ("自动提取", DE.ORIGIN_AUTO),
+                         ("手动录入", DE.ORIGIN_MANUAL)):
+            tk.Radiobutton(bar, text=lab, value=val,
+                           variable=self.dict_origin, bg=CARD, fg=TEXT,
+                           activebackground=CARD, selectcolor="#FFFFFF",
+                           font=FONT_SMALL,
+                           command=self._filter_dict_rows).pack(side="left",
+                                                                padx=4)
+        GlassButton(bar, "重新载入", width=92, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._reload_dict_rows).pack(side="left", padx=8)
+
+        # 中部：列表
+        c2 = RoundCard(left, radius=16, pad=14)
+        c2.grid(row=1, column=0, sticky="nsew")
+        selbar = tk.Frame(c2.body, bg=CARD)
+        selbar.pack(fill="x")
+        self.dict_all_var = tk.IntVar(value=0)
+        self.dict_all_chk = tk.Checkbutton(
+            selbar, text="全选", variable=self.dict_all_var,
+            onvalue=1, offvalue=0, tristatevalue=-1,
+            bg=CARD, fg=TEXT, activebackground=CARD,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            command=self._on_dict_toggle_all)
+        self.dict_all_chk.pack(side="left")
+        self.dict_check_stat = tk.Label(selbar, text="已选 0 条", bg=CARD,
+                                        fg=C_KEY, font=FONT_BIG)
+        self.dict_check_stat.pack(side="left", padx=10)
+        self.dict_pending_lbl = tk.Label(selbar, text="", bg=CARD,
+                                         fg=C_HINT, font=FONT_SMALL)
+        self.dict_pending_lbl.pack(side="right")
+
+        wrap = tk.Frame(c2.body, bg=CARD)
+        wrap.pack(fill="both", expand=True, pady=(6, 0))
+        cols = ("sel", "origin", "src", "dst")
+        tree = ttk.Treeview(wrap, columns=cols, show="headings",
+                            height=4, selectmode="extended")
+        for c, w, t in (("sel", 34, "✓"), ("origin", 92, "来源"),
+                        ("src", 250, "原文（可编辑）"),
+                        ("dst", 250, "译文（可编辑）")):
+            tree.heading(c, text=t)
+            tree.column(c, width=w,
+                        anchor="center" if c == "sel" else "w")
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        # ★ 原文 / 译文都能双击直接改（#1 是复选框列）
+        bind_tree_edit(tree, {"#3": True, "#4": True},
+                       on_commit=self._on_dict_edit)
+        bind_tree_wheel(tree)
+        attach_tree_copy(tree, self)
+        tree.bind("<Button-1>", self._on_dict_tree_click, add="+")
+        tree.bind("<Double-1>", self._on_dict_tree_dblclick, add="+")
+        self.dict_tree = tree
+
+        hint_row = tk.Frame(c2.body, bg=CARD)
+        hint_row.pack(fill="x", pady=(10, 0))
+        self.dict_hint = tk.Label(
+            hint_row,
+            text="改动先记在内存里，点「保存」才写入 term_dict.py（可「撤回」）",
+            bg=CARD, fg=C_HINT, font=FONT_SMALL)
+        self.dict_hint.pack(side="left")
+
+        bottom = tk.Frame(c2.body, bg=CARD)
+        bottom.pack(fill="x", pady=(6, 0))
+        btns = tk.Frame(bottom, bg=CARD)
+        btns.pack(side="right")
+        GlassButton(btns, "新增术语", width=96, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._on_dict_add).pack(side="left", padx=3)
+        GlassButton(btns, "修改选中", width=96, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._on_dict_edit_selected).pack(side="left",
+                                                              padx=3)
+        GlassButton(btns, "删除选中", width=96, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._on_dict_delete_selected).pack(side="left",
+                                                                padx=3)
+        self.dict_auto_btn = GlassButton(
+            btns, "一键删除自动术语", width=148, height=40, bg=CARD,
+            font=FONT_SMALL, command=self._on_dict_delete_auto)
+        self.dict_auto_btn.pack(side="left", padx=3)
+        GlassButton(btns, "撤回", width=68, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._on_dict_undo).pack(side="left", padx=3)
+        self.dict_save_btn = GlassButton(
+            btns, "保存", width=104, height=44, primary=True, bg=CARD,
+            command=self._on_dict_save)
+        self.dict_save_btn.pack(side="left", padx=(8, 0))
+
+        # 右列提示
+        right = tk.Frame(view, bg=BG_BASE, width=316)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.pack_propagate(False)
+        card = RoundCard(right, radius=16, pad=14)
+        card.pack(fill="both", expand=True)
+        tk.Label(card.body, text="术语字典", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(card.body,
+                 text="· 双击原文或译文可直接修改\n"
+                      "· 改完点「保存」才写进 term_dict.py\n"
+                      "· 保存前随时可点「撤回」逐步回退\n"
+                      "· 「一键删除自动术语」清掉 AUTO 块里\n"
+                      "  自动提取的词（保存后生效）；新增的\n"
+                      "  术语写在手工区，不会被动到\n"
+                      "· 保存后菜单 4 会把改动算作新增 / 修改\n"
+                      "  并提示重翻受影响的句子\n"
+                      "· 列表默认最多显示 600 条，用搜索缩小范围",
+                 bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
+                 justify="left").pack(anchor="w", pady=(10, 0))
+        self.dict_file_lbl = tk.Label(
+            card.body, text="", bg=CARD, fg=C_HINT, font=FONT_SMALL,
+            justify="left", wraplength=268)
+        self.dict_file_lbl.pack(anchor="w", pady=(12, 0))
+        attach_label_copy(self.dict_file_lbl, self, "术语字典")
+
+    # ---------- 视图切换 ----------
+    def _show_termdict_view(self):
+        """Excel 转换 → 术语字典列表。"""
+        if self.dict_editor is None:
+            try:
+                self.dict_editor = DE.TermDictEditor()
+            except Exception as e:
+                messagebox.showerror(
+                    "读取失败", f"读取术语字典失败：\n{e}\n\n{config.TERM_FILE}")
+                return
+            self.dict_checks = set()
+        elif not self.dict_editor.is_dirty():
+            # 菜单 4 / Excel 转换可能刚改过 term_dict.py：没有未保存改动时
+            # 悄悄重读一遍；有改动就原样留着（要重读请点「重新载入」）
+            try:
+                self.dict_editor.reload()
+            except Exception as e:
+                self.q.put(("log", f"术语字典重读失败：{e}\n"))
+        self.excel_view.grid_remove()
+        self.termdict_view.grid()
+        self._load_dict_rows()
+
+    def _show_excel_view(self):
+        """术语字典列表 → Excel 转换（有未保存改动先问一句）。"""
+        if not self._confirm_dict_leaving():
+            return
+        self.termdict_view.grid_remove()
+        self.excel_view.grid()
+
+    def _confirm_dict_leaving(self):
+        ed = self.dict_editor
+        if ed is None or not ed.is_dirty():
+            return True
+        ans = messagebox.askyesnocancel(
+            "术语字典有未保存的改动",
+            f"{ed.pending_text()}\n\n现在保存吗？\n"
+            "· 是：保存后离开\n"
+            "· 否：先留着（还在内存里，回到这个列表就能接着改）\n"
+            "· 取消：留在当前列表")
+        if ans is None:
+            return False
+        if ans:
+            return self._save_dict()
+        return True
+
+    # ---------- 载入 / 过滤 ----------
+    def _load_dict_rows(self):
+        ed = self.dict_editor
+        if ed is None:
+            return
+        self.dict_loaded = True
+        if hasattr(self, "dict_file_lbl"):
+            self.dict_file_lbl.config(text=f"字典文件：\n{config.TERM_FILE}")
+        self._filter_dict_rows()
+
+    def _reload_dict_rows(self):
+        """丢弃内存里的改动，重新从 term_dict.py 读一遍。"""
+        ed = self.dict_editor
+        if ed is None:
+            return
+        if ed.is_dirty() and not messagebox.askyesno(
+                "重新载入",
+                f"{ed.pending_text()}\n\n重新载入会丢掉这些改动，继续吗？"):
+            return
+        try:
+            ed.reload()
+        except Exception as e:
+            messagebox.showerror(
+                "读取失败", f"读取术语字典失败：\n{e}\n\n{config.TERM_FILE}")
+            return
+        self.dict_checks = set()
+        self._load_dict_rows()
+
+    def _clear_dict_search(self):
+        try:
+            self.dict_search.set("")
+        except Exception:
+            pass
+        self._filter_dict_rows()
+
+    def _filter_dict_rows(self):
+        """按搜索词 / 来源过滤，重建字典列表。"""
+        ed = self.dict_editor
+        if ed is None or not hasattr(self, "dict_tree"):
+            return
+        tree = self.dict_tree
+        for iid in tree.get_children():
+            tree.delete(iid)
+        self.dict_row_orig = {}
+        self.dict_visible = []
+        kw = (self.dict_search.get() or "").strip()
+        origin = self.dict_origin.get()
+        rows, matched = ed.rows(query=kw, origin=origin,
+                                limit=self.dict_show_limit)
+        # 有未保存改动的行打个「·改」标记（新增的单独标「新增」）
+        dirty = set(ed.changed) | set(ed.renamed)
+
+        for orig, src, dst, org in rows:
+            mark = (TERM_CHECK_ON if orig in self.dict_checks
+                    else TERM_CHECK_OFF)
+            if orig in ed.added:
+                label = "新增"
+            else:
+                label = org + ("·改" if orig in dirty else "")
+            iid = tree.insert("", "end", values=(mark, label, src, dst))
+            self.dict_row_orig[iid] = orig
+            self.dict_visible.append(orig)
+
+        total, pending, auto_n = ed.stats()
+        shown = len(self.dict_visible)
+        parts = [f"显示 {shown} / 共 {total} 条"]
+        if matched > shown:
+            parts.append(f"搜索命中 {matched} 条（超出上限未显示）")
+        parts.append(f"自动提取 {auto_n} 条")
+        self.dict_stat.config(text="，".join(parts))
+        self.dict_pending_lbl.config(
+            text=ed.pending_text(), fg=(C_WARN if pending else C_HINT))
+        self.dict_hint.config(
+            text=(f"有 {pending} 处未保存改动，点「保存」写入 term_dict.py"
+                  if pending else
+                  "改动先记在内存里，点「保存」才写入 term_dict.py（可「撤回」）"),
+            fg=(C_WARN if pending else C_HINT))
+        self._sync_dict_all_state()
+
+    # ---------- 勾选：行复选框 / 表头全选 ----------
+    def _toggle_dict_row(self, iid):
+        """切换一行的勾选状态，返回是否切换成功。"""
+        orig = self.dict_row_orig.get(iid)
+        if not orig:
+            return False
+        if orig in self.dict_checks:
+            self.dict_checks.discard(orig)
+        else:
+            self.dict_checks.add(orig)
+        self.dict_tree.set(
+            iid, "sel",
+            TERM_CHECK_ON if orig in self.dict_checks else TERM_CHECK_OFF)
+        self._sync_dict_all_state()
+        return True
+
+    def _on_dict_tree_click(self, event):
+        tree = self.dict_tree
+        if tree.identify_column(event.x) != "#1":
+            return
+        if self._toggle_dict_row(tree.identify_row(event.y)):
+            return "break"
+
+    def _on_dict_tree_dblclick(self, event):
+        """双击复选框列也算一次勾选（Tk 只派发更具体的 <Double-1>）。"""
+        tree = self.dict_tree
+        if tree.identify_column(event.x) != "#1":
+            return
+        if self._toggle_dict_row(tree.identify_row(event.y)):
+            return "break"
+
+    def _on_dict_toggle_all(self):
+        vis = list(self.dict_visible or [])
+        if not vis:
+            self._sync_dict_all_state()
+            return
+        if self.dict_all_var.get() == 0:
+            self.dict_checks.difference_update(vis)
+        else:
+            self.dict_checks.update(vis)
+        self._refresh_dict_checks()
+
+    def _refresh_dict_checks(self):
+        tree = self.dict_tree
+        for iid in tree.get_children():
+            orig = self.dict_row_orig.get(iid)
+            if not orig:
+                continue
+            tree.set(iid, "sel",
+                     TERM_CHECK_ON if orig in self.dict_checks
+                     else TERM_CHECK_OFF)
+        self._sync_dict_all_state()
+
+    def _sync_dict_all_state(self):
+        vis = list(self.dict_visible or [])
+        n = sum(1 for k in vis if k in self.dict_checks)
+        if vis and n >= len(vis):
+            state = 1
+        elif n == 0 or not vis:
+            state = 0
+        else:
+            state = -1
+        if hasattr(self, "dict_all_var"):
+            self.dict_all_var.set(state)
+        if hasattr(self, "dict_check_stat"):
+            self.dict_check_stat.config(
+                text=(f"已选 {n} / {len(vis)} 条" if vis else "已选 0 条"))
+
+    # ---------- 修改 / 新增 / 删除 / 撤回 / 保存 ----------
+    def _dict_row_values(self, iid):
+        try:
+            vals = self.dict_tree.item(iid)["values"]
+            return str(vals[2]), str(vals[3])
+        except Exception:
+            return "", ""
+
+    def _dict_selected_rows(self):
+        """选中的行 → [(原始原文, 当前原文, 当前译文), ...]。"""
+        out = []
+        for iid in self.dict_tree.selection():
+            orig = self.dict_row_orig.get(iid)
+            if not orig:
+                continue
+            src, dst = self._dict_row_values(iid)
+            out.append((orig, src, dst))
+        return out
+
+    def _on_dict_edit(self, row, col, value):
+        """双击原文 / 译文 → 先记进内存（点「保存」才落盘）。"""
+        ed = self.dict_editor
+        orig = self.dict_row_orig.get(row)
+        if ed is None or not orig:
+            self._filter_dict_rows()
+            return
+        try:
+            vals = self.dict_tree.item(row)["values"]
+            cur_src, cur_dst = str(vals[2]), str(vals[3])
+        except Exception:
+            self._filter_dict_rows()
+            return
+        new_src = value if col == "#3" else cur_src
+        new_dst = value if col == "#4" else cur_dst
+        ok, msg = ed.update(orig, new_src, new_dst)
+        if not ok:
+            messagebox.showwarning("不能这样改", msg)
+        elif msg != "没有变化":
+            self.q.put(("log", f"术语字典：{msg}\n"))
+        self._filter_dict_rows()      # 重建列表，把非法输入还原成真实值
+
+    def _on_dict_edit_selected(self):
+        """弹窗修改选中的那一行（预填当前原文 / 译文）。"""
+        ed = self.dict_editor
+        if ed is None:
+            return
+        rows = self._dict_selected_rows()
+        if not rows:
+            messagebox.showinfo("提示", "请先选中要修改的术语（双击可直接改）")
+            return
+        if len(rows) > 1:
+            messagebox.showinfo("提示", "一次只改一条，请只选一行（双击也能直接改）")
+            return
+        orig, cur_src, cur_dst = rows[0]
+        got = TermDialog.ask(
+            self.root, self.src_var.get(), self.tgt_var.get(),
+            init_src=cur_src, init_dst=cur_dst,
+            title="修改术语", ok_text="确定修改",
+            note="改动先记在内存里，点「保存」后才写入 term_dict.py。")
+        if not got:
+            return
+        ok, msg = ed.update(orig, got[0], got[1])
+        if not ok:
+            messagebox.showwarning("不能这样改", msg)
+        elif msg != "没有变化":
+            self.q.put(("log", f"术语字典：{msg}\n"))
+        self._filter_dict_rows()
+
+    def _on_dict_add(self):
+        ed = self.dict_editor
+        if ed is None:
+            return
+        got = TermDialog.ask(
+            self.root, self.src_var.get(), self.tgt_var.get(),
+            title="新增术语", ok_text="确定新增",
+            note="新术语先记在内存里，点「保存」后才写入 term_dict.py。")
+        if not got:
+            return
+        ok, msg = ed.add(got[0], got[1])
+        if not ok:
+            messagebox.showwarning("没有添加", msg)
+        else:
+            self.q.put(("log", f"术语字典：{msg}\n"))
+        self._filter_dict_rows()
+
+    def _on_dict_delete_selected(self):
+        ed = self.dict_editor
+        if ed is None:
+            return
+        picks = [k for k in list(self.dict_visible or [])
+                 if k in self.dict_checks]
+        if not picks:
+            picks = [orig for orig, _s, _d in self._dict_selected_rows()]
+        if not picks:
+            messagebox.showinfo(
+                "提示", "请先勾选（或选中）要删除的术语，再点「删除选中」")
+            return
+        if not messagebox.askyesno(
+                "确认删除",
+                f"确定删除这 {len(picks)} 条术语？\n"
+                "（点「保存」前都能用「撤回」恢复）"):
+            return
+        ok, msg = ed.delete(picks)
+        if not ok:
+            messagebox.showwarning("没有删除", msg)
+        else:
+            self.q.put(("log", f"术语字典：{msg}\n"))
+            self.dict_checks.difference_update(picks)
+        self._filter_dict_rows()
+
+    def _on_dict_delete_auto(self):
+        """一键删除 AUTO 块里所有自动提取的术语。"""
+        ed = self.dict_editor
+        if ed is None:
+            return
+        try:
+            auto_n = ed.stats()[2]
+        except Exception:
+            auto_n = 0
+        if not auto_n:
+            messagebox.showinfo("提示", "当前字典里没有自动提取的术语")
+            return
+        if not messagebox.askyesno(
+                "确认一键删除",
+                f"确定删除全部 {auto_n} 条自动提取的术语？\n"
+                "（即 term_dict.py 里 AUTO 块内的词，"
+                "不含手工新增的；\n"
+                "点「保存」前都能用「撤回」恢复）"):
+            return
+        ok, msg = ed.delete_all_auto()
+        if not ok:
+            messagebox.showinfo("提示", msg)
+            return
+        self.q.put(("log", f"术语字典：{msg}\n"))
+        self._filter_dict_rows()
+
+    def _on_dict_undo(self):
+        ed = self.dict_editor
+        if ed is None:
+            return
+        if not ed.can_undo():
+            messagebox.showinfo("提示", "没有可撤回的操作")
+            return
+        ok, msg = ed.undo()
+        if ok:
+            self.q.put(("log", f"术语字典：{msg}\n"))
+        self._filter_dict_rows()
+
+    def _save_dict(self):
+        """把内存里的改动写进 term_dict.py。返回是否成功。"""
+        ed = self.dict_editor
+        if ed is None:
+            return True
+        if not ed.is_dirty():
+            self._filter_dict_rows()
+            return True
+        try:
+            rep = ed.save()
+        except Exception as e:
+            messagebox.showerror(
+                "保存失败", f"{e}\n\n{config.TERM_FILE}")
+            self.q.put(("log", f"术语字典保存失败：{e}\n"))
+            return False
+        # 让翻译端立刻用上新字典（★ 不写 snapshot，好让菜单 4 能识别改动）
+        try:
+            PR.load_terms(force=True)
+        except Exception:
+            pass
+        summary = (f"术语字典已保存：删除 {rep['deleted']} / 改名 "
+                   f"{rep['renamed']} / 改译文 {rep['changed']} / 新增 "
+                   f"{rep['added']}")
+        self.q.put(("log", summary + "\n"))
+        if rep.get("errors"):
+            messagebox.showwarning(
+                "部分条目没写进去",
+                summary + "\n\n" + "\n".join(rep["errors"][:8]))
+        self.dict_checks = set()
+        self._filter_dict_rows()
+        return True
+
+    def _on_dict_save(self):
+        self._save_dict()
 
     # ================================================================
     # 页面 7：设置
