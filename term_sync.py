@@ -391,9 +391,10 @@ def add_term(src, dst, min_len=None, manual=False):
     """
     新增一条术语，写入 term_dict.py 的 TERM_DICT。
 
-    manual=False（默认）：写进 AUTO 块（自动提取区），菜单 4「添加术语」用。
-    manual=True：写进 TERM_DICT 顶部（AUTO 块之外的手工区），菜单 8
-      「术语字典」的新增用 —— 这样「一键删除自动术语」不会误删手工加的词。
+    manual=False（默认）：写进 AUTO 块（自动提取区），翻译时自动提取术语用。
+    manual=True：写进 TERM_DICT 顶部（AUTO 块之外的手工区），界面上
+      「添加术语」/ 菜单 8「术语字典」的新增用 —— 这样「一键删除自动术语」
+      不会误删手工加的词，整句术语直译也只认手工区的词条。
 
     ★ 校验规则直接复用 auto_terms（自动提取那套）：最短长度、译文须含中文、
       不能含控制码/方括号 —— 否则条目加了也不会被 processor.load_terms 采纳。

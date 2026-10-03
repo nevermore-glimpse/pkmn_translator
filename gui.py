@@ -1421,7 +1421,7 @@ class TermDialog(tk.Toplevel):
 
 
 class _AskText(tk.Toplevel):
-    """通用的单行文本输入弹窗（术语冲突「自定义译文」用）。"""
+    """通用的单行文本输入弹窗。"""
 
     def __init__(self, master, title, prompt, initial="", width=520):
         tk.Toplevel.__init__(self, master, bg=BG_BASE)
@@ -1978,8 +1978,9 @@ class App:
                 elif kind == "report":
                     self.set_busy(False, "检查完成")
                     self._fill_report(payload)
-                elif kind == "term_conflict_done":
-                    self._after_conflicts(payload)
+                elif kind == "conflict_applied":
+                    self.set_busy(False, "已应用手工编辑")
+                    self._after_conflict_applied(payload)
                 elif kind == "intl_extract_done":
                     r = (payload or [{}])[0] if isinstance(payload, list) else {}
                     if r.get("ok") is False:
@@ -2676,18 +2677,22 @@ class App:
         page.grid_columnconfigure(0, weight=1)
         page.grid_rowconfigure(0, weight=1)
 
-        # 报告页状态：report = 5 列问题列表；conflict = 4 列术语冲突列表
+        # 报告页状态：report = 问题列表；conflict = 术语冲突解决视图
         self.report_mode = "report"
         self.report_hits = []
         self.report_counts = {}
         self.report_kind_vars = {}
-        self.conflict_choices = {}
-        self._conflict_entry = None
+        # ★ 术语冲突视图
+        self.conflict_rows = []       # commands.load_conflict_rows() 的结果
+        self.conflict_row_iids = {}   # iid → conflict_rows 下标
+        self.conflict_sent_iids = {}  # iid → 句子 dict（含 src/dst/path）
+        self.conflict_sel = None      # 当前选中的行下标
 
         left = tk.Frame(page, bg=BG_BASE)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.grid_rowconfigure(1, weight=1)
         left.grid_columnconfigure(0, weight=1)
+        self.report_left = left
 
         c1 = RoundCard(left, radius=16, pad=18, auto_height=True)
         c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -2763,12 +2768,11 @@ class App:
         tree.tag_configure("k_old", background="#E3F0FF")
         tree.tag_configure("k_new", background="#E4F7EA")
         tree.tag_configure("k_custom", background="#FFF4D6")
-        tree.bind("<Button-1>", self._on_conflict_click)
-        tree.bind("<Double-1>", self._on_conflict_dblclick)
+        tree.bind("<Double-1>", self._on_report_dblclick)
         bind_tree_wheel(tree)
         attach_tree_copy(tree, self)      # ★ 右键 / Ctrl+C 复制列表
 
-        # ★ 底部操作区：常规模式 / 术语冲突模式，同一位置切换（省高度）
+        # ★ 底部操作区
         c3 = RoundCard(left, radius=16, pad=18, auto_height=True)
         c3.grid(row=2, column=0, sticky="ew")
 
@@ -2801,9 +2805,6 @@ class App:
             wraplength=560)
         self.report_hint.pack(anchor="w", pady=(8, 0))
 
-        self.c3_conflict = tk.Frame(c3.body, bg=CARD)
-        self._build_conflict_bar(self.c3_conflict)
-
         self.c3_normal.pack(fill="x")
 
         fp_holder = RoundCard(page, radius=16, pad=8, width=272)
@@ -2812,30 +2813,112 @@ class App:
         fp = self._make_file_panel(fp_holder, "report")
         self.fp_report = fp
 
-    def _show_c3_mode(self, mode):
-        """切换底部操作区：report = 常规；conflict = 术语冲突。"""
-        if mode == "conflict":
-            self.c3_normal.pack_forget()
-            self.c3_conflict.pack(fill="x")
-        else:
-            self.c3_conflict.pack_forget()
-            self.c3_normal.pack(fill="x")
-        # 冲突视图里隐藏「重翻类型」与搜索框，避免误以为它们作用于冲突列表
-        try:
-            box = self.report_search_box
-            if mode == "conflict":
-                self.report_kind_bar.pack_forget()
-                box.pack_forget()
-            else:
-                if not box.winfo_ismapped() and not box.winfo_manager():
-                    box.pack(side="left", padx=(14, 0),
-                             before=self.report_stat)
-                if not self.report_kind_bar.winfo_ismapped() \
-                        and not self.report_kind_bar.winfo_manager():
-                    self.report_kind_bar.pack(fill="x", pady=(6, 0),
-                                              before=self.report_wrap)
-        except Exception:
-            pass
+        # ★ 术语冲突解决视图（占左侧主区域，与报告视图互相切换；
+        #   右侧的文件面板保持不动）
+        self._build_conflict_view()
+
+    # ----------------------------------------------------------------
+    # 术语冲突：上方术语列表 + 下方命中的句子
+    # ----------------------------------------------------------------
+    _CONFLICT_TERM_COLS = (("term", 210, "术语原文"),
+                           ("old", 210, "已有译文"),
+                           ("new", 210, "新增译文"),
+                           ("state", 124, "状态（可点）"))
+
+    def _build_conflict_view(self):
+        page = self.pages["report"]
+        view = tk.Frame(page, bg=BG_BASE)
+        self.conflict_page = view
+        view.grid_columnconfigure(0, weight=1)
+        view.grid_rowconfigure(0, weight=3)     # 上：术语列表
+        view.grid_rowconfigure(1, weight=2)     # 下：命中的句子
+
+        # ---------- 上：术语冲突列表 ----------
+        c1 = RoundCard(view, radius=16, pad=14)
+        c1.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+
+        head = tk.Frame(c1.body, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text="术语冲突", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        self.conflict_stat = tk.Label(head, text="", bg=CARD, fg=C_KEY,
+                                      font=FONT_BIG)
+        self.conflict_stat.pack(side="left", padx=12)
+        attach_label_copy(self.conflict_stat, self, "统计")
+        GlassButton(head, "应用已编辑", width=118, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._apply_conflict_edits).pack(side="right")
+        GlassButton(head, "返回报告", width=104, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._toggle_conflict_view).pack(side="right",
+                                                             padx=(0, 8))
+
+        tk.Label(c1.body,
+                 text="选中一条术语 → 下方列出命中它的句子 → 点「编辑译文」"
+                      "改这一句的译文；保存后该术语自动标记为「已编辑」"
+                      "并排到列表最后。"
+                      "也可以直接点「状态」列，手动在 待解决 / 已编辑 之间切换。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=680).pack(anchor="w", pady=(6, 0))
+
+        wrap = tk.Frame(c1.body, bg=CARD)
+        wrap.pack(fill="both", expand=True, pady=(8, 0))
+        cols = [c for c, _w, _t in self._CONFLICT_TERM_COLS]
+        tree = ttk.Treeview(wrap, columns=cols, show="headings", height=4)
+        for c, w, t in self._CONFLICT_TERM_COLS:
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        tree.tag_configure("k_done", background="#E4F7EA", foreground="#4A6B55")
+        tree.bind("<<TreeviewSelect>>",
+                  lambda _e: self._on_conflict_term_select())
+        # ★ 点「状态」列 → 手动切换 待解决 / 已编辑
+        tree.bind("<Button-1>", self._on_conflict_term_click)
+        bind_tree_wheel(tree)
+        attach_tree_copy(tree, self)
+        self.conflict_term_tree = tree
+
+        # ---------- 下：命中该术语的句子 ----------
+        c2 = RoundCard(view, radius=16, pad=14)
+        c2.grid(row=1, column=0, sticky="nsew")
+
+        head2 = tk.Frame(c2.body, bg=CARD)
+        head2.pack(fill="x")
+        self.conflict_sent_title = tk.Label(head2, text="产生冲突的句子",
+                                            bg=CARD, fg=C_TITLE,
+                                            font=FONT_TITLE)
+        self.conflict_sent_title.pack(side="left")
+        self.conflict_edit_btn = GlassButton(
+            head2, "编辑译文", width=132, height=40, primary=True, bg=CARD,
+            font=FONT_BIG, command=self._conflict_edit_selected)
+        self.conflict_edit_btn.pack(side="right")
+        self.conflict_edit_btn.set_enabled(False)
+
+        wrap2 = tk.Frame(c2.body, bg=CARD)
+        wrap2.pack(fill="both", expand=True, pady=(8, 0))
+        cols2 = ("src", "dst")
+        tree2 = ttk.Treeview(wrap2, columns=cols2, show="headings", height=4)
+        for c, w, t in (("src", 380, "原文"), ("dst", 380, "译文")):
+            tree2.heading(c, text=t)
+            tree2.column(c, width=w, anchor="w")
+        sb2 = ttk.Scrollbar(wrap2, orient="vertical", command=tree2.yview)
+        tree2.configure(yscrollcommand=sb2.set)
+        tree2.pack(side="left", fill="both", expand=True)
+        sb2.pack(side="right", fill="y")
+        tree2.bind("<Double-1>", lambda _e: self._conflict_edit_selected())
+        bind_tree_wheel(tree2)
+        attach_tree_copy(tree2, self)
+        self.conflict_sent_tree = tree2
+
+        tk.Label(c2.body,
+                 text="译文取自翻译缓存；保存后写入缓存，"
+                      "要让译文文件（*_translated.txt）也更新，"
+                      "点上方「应用已编辑」。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=640).pack(anchor="w", pady=(8, 0))
 
     # ----------------------------------------------------------------
     # 报告页：重翻类型
@@ -3133,9 +3216,7 @@ class App:
 
     def _fill_report(self, result):
         if self.report_mode != "report":
-            self.report_mode = "report"
-            self._set_report_columns("report")
-            self._show_c3_mode("report")
+            self._show_report_view()
 
         hits = []
         for path, hs in (result or {}).items():
@@ -3162,107 +3243,162 @@ class App:
             f"检查完成：{len(hits)} 处问题 / {len(result or {})} 个文件")
 
     # ----------------------------------------------------------------
-    # 术语冲突：三列视图 + 逐条选择
+    # 术语冲突：上方术语列表 + 下方命中的句子
     # ----------------------------------------------------------------
-    _CONFLICT_COLS = (("term", 150, "术语原文"),
-                      ("old", 170, "已有译文"),
-                      ("new", 170, "新增译文"),
-                      ("keep", 150, "保留"))
+    def _conflict_source_paths(self):
+        """冲突视图要读哪些源文件的记录：优先用右侧已选文件。"""
+        paths = self._report_sources()
+        if paths:
+            return paths
+        out = []
+        for path, _h in getattr(self, "report_hits", []):
+            sp = commands.source_path_for_report(path)
+            if sp and sp not in out:
+                out.append(sp)
+        return out
 
-    def _set_report_columns(self, mode):
-        tree = self.report_tree
-        if mode == "conflict":
-            cols = [c for c, _w, _t in self._CONFLICT_COLS]
-            tree.configure(columns=cols, show="headings")
-            for c, w, t in self._CONFLICT_COLS:
-                tree.heading(c, text=t)
-                tree.column(c, width=w, anchor="w")
+    def _show_conflict_view(self, rows=None):
+        """进入术语冲突视图：占左侧主区域（右侧文件面板不动）。"""
+        self.report_mode = "conflict"
+        self.report_left.grid_remove()
+        self.conflict_page.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self._load_conflict_view(rows)
+
+    def _show_report_view(self):
+        """回到报告视图（问题列表）。"""
+        self.report_mode = "report"
+        try:
+            self.conflict_page.grid_remove()
+        except Exception:
+            pass
+        self.report_left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+    def _load_conflict_view(self, rows=None):
+        """读冲突记录 → 刷新上下两个列表（默认选中第一条术语）。"""
+        if rows is None:
+            rows = commands.load_conflict_rows(self._conflict_source_paths())
+        self.conflict_rows = rows
+        self.conflict_sel = 0 if rows else None
+        self._render_conflict_terms()
+        self._render_conflict_sents(self.conflict_sel)
+        return rows
+
+    def _render_conflict_terms(self):
+        """渲染上方术语列表：待解决在前、已编辑在后。"""
+        tree = self.conflict_term_tree
+        for iid in tree.get_children():
+            tree.delete(iid)
+        self.conflict_row_iids = {}
+        for idx, row in enumerate(self.conflict_rows):
+            iid = tree.insert("", "end", values=(
+                row.get("term", ""), row.get("old", ""), row.get("new", ""),
+                "已编辑" if row.get("edited") else "待解决",
+            ), tags=("k_done",) if row.get("edited") else ())
+            self.conflict_row_iids[iid] = idx
+
+        n = len(self.conflict_rows)
+        n_open = sum(1 for r in self.conflict_rows if not r.get("edited"))
+        self.conflict_stat.config(
+            text=f"待解决 {n_open} / 共 {n} 条" if n else "没有术语冲突")
+
+        if self.conflict_sel is not None:
+            for iid, idx in self.conflict_row_iids.items():
+                if idx == self.conflict_sel:
+                    tree.selection_set(iid)
+                    tree.see(iid)
+                    break
+
+    def _on_conflict_term_select(self):
+        sel = self.conflict_term_tree.selection()
+        idx = self.conflict_row_iids.get(sel[0]) if sel else None
+        self.conflict_sel = idx
+        self._render_conflict_sents(idx)
+
+    def _on_conflict_term_click(self, event):
+        """
+        点「状态」列 → 主动在 待解决 / 已编辑 之间切换（立即写回 json）。
+
+        返回 None，让 Treeview 继续做默认的选中处理。
+        """
+        tree = self.conflict_term_tree
+        if tree.identify_region(event.x, event.y) != "cell":
+            return
+        if tree.identify_column(event.x) != "#4":
+            return
+        iid = tree.identify_row(event.y)
+        idx = self.conflict_row_iids.get(iid) if iid else None
+        if idx is None or not (0 <= idx < len(self.conflict_rows)):
+            return
+
+        row = self.conflict_rows[idx]
+        new_state = not bool(row.get("edited"))
+        srcs = row.get("sources") or []
+        try:
+            commands.set_term_conflicts_edited(row.get("term", ""), srcs,
+                                               new_state)
+        except Exception as e:
+            messagebox.showerror("保存失败", str(e))
+            return
+
+        row["edited"] = new_state
+        if new_state:
+            # 手动标为已编辑 → 与「保存译文」一样排到最下方
+            self._conflict_seq = getattr(self, "_conflict_seq", 0) + 1
+            row["_edited_seq"] = self._conflict_seq
         else:
-            cols = ("kind", "line", "src", "dst", "detail")
-            tree.configure(columns=cols, show="headings")
-            for c, w, t in (("kind", 78, "类型"), ("line", 44, "行"),
-                            ("src", 178, "原文"), ("dst", 178, "译文"),
-                            ("detail", 176, "说明")):
-                tree.heading(c, text=t)
-                tree.column(c, width=w, anchor="w")
+            row.pop("_edited_seq", None)
+        self._resort_conflict_rows(row)
+        self.status_var.set(
+            f"术语冲突「{row.get('term', '')}」已标记为"
+            f"{'已编辑' if new_state else '待解决'}")
 
-    def _build_conflict_bar(self, bar):
-        tk.Label(bar, text="单击「已有译文」或「新增译文」选中该译文；"
-                           "双击「保留」列可输入自定义译文；"
-                           "双击「术语原文」可修改术语原文",
-                 bg=CARD, fg=C_WARN, font=FONT_SMALL,
-                 justify="left", wraplength=560).pack(anchor="w")
-        row = tk.Frame(bar, bg=CARD)
-        row.pack(fill="x", pady=(6, 0))
-        for text, cmd in (
-                ("全部保留已有", lambda: self._conflict_keep_all("old")),
-                ("全部保留新增", lambda: self._conflict_keep_all("new")),
-                ("自定义译文", self._conflict_custom_selected),
-                ("返回报告", self._toggle_conflict_view)):
-            GlassButton(row, text, width=112, height=40, bg=CARD,
-                        font=FONT_SMALL, command=cmd).pack(side="left",
-                                                           padx=(0, 8))
-        row2 = tk.Frame(bar, bg=CARD)
-        row2.pack(fill="x", pady=(8, 0))
-        tk.Label(row2, text="写入术语字典 → 删缓存 → 重翻",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(side="left")
-        GlassButton(row2, "应用并重翻", width=150, height=46, primary=True,
-                    bg=CARD, font=FONT_BIG,
-                    command=self._apply_conflicts).pack(side="right")
+    def _render_conflict_sents(self, idx):
+        """渲染下方句子列表：原文 + 该句当前缓存译文。"""
+        tree = self.conflict_sent_tree
+        for iid in tree.get_children():
+            tree.delete(iid)
+        self.conflict_sent_iids = {}
+
+        row = None
+        if idx is not None and 0 <= idx < len(self.conflict_rows):
+            row = self.conflict_rows[idx]
+        if row is None:
+            self.conflict_sent_title.config(text="产生冲突的句子")
+            self.conflict_edit_btn.set_enabled(False)
+            return
+
+        self.conflict_sent_title.config(
+            text=f"产生冲突的句子 · {row.get('term', '')}")
+        for s in row.get("sents", []):
+            iid = tree.insert("", "end", values=(
+                (s.get("src") or "")[:300], (s.get("dst") or "")[:300]))
+            self.conflict_sent_iids[iid] = s
+        if not row.get("sents"):
+            tree.insert("", "end", values=("（这条冲突没有记录到具体句子）", ""))
+        self.conflict_edit_btn.set_enabled(bool(row.get("sents")))
 
     def _toggle_conflict_view(self):
-        if self._conflict_entry is not None:
-            try:
-                self._conflict_entry.destroy()
-            except Exception:
-                pass
-            self._conflict_entry = None
-
-        if self.report_mode == "conflict":
-            self.report_mode = "report"
-            self._set_report_columns("report")
-            self._show_c3_mode("report")
-            self.report_hint.config(
-                text="删除勾选类型的问题句缓存并重新翻译；"
-                     "「译文残留控制码」等类型不参与重翻")
+        """「解决术语冲突」/「返回报告」：在报告与冲突视图之间切换。"""
+        if getattr(self, "report_mode", "report") == "conflict":
+            self._show_report_view()
             self._render_report_rows()
             self._refresh_conflict_btn()
             return
 
-        # 收集报告里的术语冲突（按术语原文去重）
-        rows = []
-        seen = set()
-        for _path, h in getattr(self, "report_hits", []):
-            if h.get("kind") != "术语冲突":
-                continue
-            term = (h.get("term_src") or "").strip()
-            if not term or term in seen:
-                continue
-            seen.add(term)
-            rows.append((term, h.get("term_old", "") or "",
-                         h.get("term_new", "") or ""))
-        if not rows:
-            messagebox.showinfo("提示", "当前报告里没有术语冲突")
+        srcs = self._conflict_source_paths()
+        if not srcs:
+            messagebox.showinfo(
+                "提示", "请先在右侧选择检查报告（*_translated_report.txt）")
             return
-
-        self.report_mode = "conflict"
-        self._set_report_columns("conflict")
-        tree = self.report_tree
-        for iid in tree.get_children():
-            tree.delete(iid)
-        self.conflict_choices = {}
-        for term, old, new in rows:
-            val = old or new
-            keep = "old" if old else "new"
-            iid = tree.insert("", "end", values=(
-                term, old, new, f"● {val}"), tags=(f"k_{keep}",))
-            self.conflict_choices[iid] = {
-                "term": term, "old": old, "new": new,
-                "keep": keep, "value": val,
-            }
-        self.report_stat.config(text=f"术语冲突 {len(rows)} 条")
-        self._show_c3_mode("conflict")
-        self._refresh_conflict_btn()
+        rows = commands.load_conflict_rows(srcs)
+        if not rows:
+            messagebox.showinfo(
+                "提示", "这些文件里没有术语冲突记录。\n\n"
+                        "术语冲突是翻译时记录下来的：模型给某个术语的译法与"
+                        "术语表不一致时才会产生。")
+            return
+        self._show_conflict_view(rows)
+        self.conflict_btn.set_enabled(False)
 
     def _refresh_conflict_btn(self):
         n = sum(1 for _p, h in getattr(self, "report_hits", [])
@@ -3273,162 +3409,222 @@ class App:
         except Exception:
             pass
 
-    def _conflict_set_keep(self, iid, keep, value=None):
-        info = self.conflict_choices.get(iid)
-        if not info:
+    def _conflict_edit_selected(self):
+        """「编辑译文」：编辑下方选中那句的译文。"""
+        if getattr(self, "report_mode", "report") != "conflict":
             return
-        if value is None:
-            value = info.get("old") if keep == "old" else info.get("new")
-        info["keep"] = keep
-        info["value"] = value or ""
-        tree = self.report_tree
-        term = info.get("new_term") or info["term"]
-        tree.item(iid, values=(term, info["old"], info["new"],
-                              f"● {info['value']}"), tags=(f"k_{keep}",))
+        sel = self.conflict_sent_tree.selection()
+        info = self.conflict_sent_iids.get(sel[0]) if sel else None
+        if info is None:
+            messagebox.showinfo("提示", "请先在下方列表里选中要编辑的句子")
+            return
+        row = None
+        if self.conflict_sel is not None \
+                and 0 <= self.conflict_sel < len(self.conflict_rows):
+            row = self.conflict_rows[self.conflict_sel]
+        if row is None:
+            return
+        self._open_conflict_edit(row, info)
 
-    def _conflict_set_term(self, iid, new_term):
-        """修改术语原文（写回术语字典时先改名）。"""
-        info = self.conflict_choices.get(iid)
-        if not info:
+    def _open_conflict_edit(self, row, info):
+        """
+        术语冲突里改一句译文：
+        上方原文（只读，供对照）、下方译文（可编辑）。
+        保存后写入该句所属文件的翻译缓存，并把这条术语冲突标记为「已编辑」。
+        """
+        src = info.get("src") or ""
+        dst = info.get("dst") or ""
+        src_path = info.get("path") or ""
+        term = row.get("term") or ""
+        if not src.strip():
+            messagebox.showinfo("提示", "这一行没有原文，无法定位缓存条目")
             return
-        new_term = (new_term or "").strip()
-        if not new_term or new_term == info["term"]:
-            info.pop("new_term", None)
+
+        win = tk.Toplevel(self.root)
+        win.title("编辑译文")
+        win.configure(bg=BG_BASE)
+        win.transient(self.root)
+
+        card = RoundCard(win, radius=16, pad=16, width=640, auto_height=True)
+        card.pack(padx=12, pady=12)
+        body = card.body
+
+        tk.Label(body, text=f"编辑译文 · 术语冲突「{term}」", bg=CARD,
+                 fg=C_TITLE, font=FONT_TITLE).pack(anchor="w")
+        tk.Label(body,
+                 text=(f"术语「{term}」：已有译文「{row.get('old', '')}」，"
+                       f"模型返回「{row.get('new', '')}」。\n"
+                       "保存后：这一句的译文写入翻译缓存，该术语标记为"
+                       "「已编辑」并排到列表最后。"),
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=600).pack(anchor="w", pady=(4, 10))
+
+        def textbox(parent, title, value, readonly, height):
+            tk.Label(parent, text=title, bg=CARD, fg=TEXT_DIM,
+                     font=FONT_SMALL).pack(anchor="w")
+            box = tk.Text(parent, height=height, wrap="word", font=FONT,
+                          bg="#F5F7FA" if readonly else "#FFFFFF",
+                          fg=TEXT_DIM if readonly else TEXT,
+                          relief="solid", bd=1, highlightthickness=1,
+                          highlightbackground=CARD_BORDER,
+                          padx=6, pady=6, undo=True)
+            box.insert("1.0", value)
+            if readonly:
+                box.configure(state="disabled")
+            box.pack(fill="x", pady=(4, 10))
+            return box
+
+        textbox(body, f"原文（{self.src_var.get() or '源语言'}） · 只读，用于对照",
+                src, True, 5)
+        dst_box = textbox(body, f"译文（{self.tgt_var.get() or '目标语言'}）"
+                                f" · 可编辑",
+                          dst, False, 7)
+        dst_box.focus_set()
+
+        def commit():
+            new = dst_box.get("1.0", "end-1c")
+            if new == dst:
+                win.destroy()
+                return
+            if not new.strip():
+                if not messagebox.askyesno(
+                        "译文是空的",
+                        "保存空译文会让这一句在游戏里显示为空。\n确定吗？"):
+                    return
+            try:
+                res = commands.save_report_edit(src, new, src_path or None)
+            except Exception as e:
+                messagebox.showerror("保存失败", str(e))
+                return
+            # 标记「已编辑」：该术语可能记在多个文件的冲突记录里
+            srcs = row.get("sources") or ([src_path] if src_path else [])
+            commands.set_term_conflicts_edited(term, srcs, True)
+            info["dst"] = new
+            row["edited"] = True
+            win.destroy()
+            self._after_conflict_saved(row)
+            self._append_log(
+                f"[术语冲突] 已编辑译文并写入缓存：{os.path.basename(res['cache'])}"
+                f"（术语「{term}」标记为已编辑）\n")
+
+        def cancel():
+            win.destroy()
+
+        bar = tk.Frame(body, bg=CARD)
+        bar.pack(fill="x")
+        GlassButton(bar, "取消", width=92, height=40, bg=CARD,
+                    font=FONT_SMALL, command=cancel).pack(side="right")
+        GlassButton(bar, "确定并保存", width=150, height=40, primary=True,
+                    bg=CARD, font=FONT_SMALL,
+                    command=commit).pack(side="right", padx=8)
+
+        win.bind("<Escape>", lambda _e: cancel())
+        win.protocol("WM_DELETE_WINDOW", cancel)
+        try:
+            win.update_idletasks()
+            x = self.root.winfo_rootx() + (
+                self.root.winfo_width() - win.winfo_width()) // 2
+            y = self.root.winfo_rooty() + 90
+            win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+        win.grab_set()
+
+    def _resort_conflict_rows(self, keep_row):
+        """
+        重排上方列表：待解决在前，已编辑在后，并让 keep_row 保持选中。
+
+        ★ 已编辑的按「本次标记的先后」排在后面 —— 刚处理的那条一定落到
+          最底部（旧记录可能本来就多，只按术语名排就可能把它顶到中间）。
+        """
+        self.conflict_rows.sort(key=lambda r: (
+            bool(r.get("edited")),
+            r.get("_edited_seq", 0),
+            (r.get("term") or "").lower(),
+        ))
+        try:
+            self.conflict_sel = self.conflict_rows.index(keep_row)
+        except ValueError:
+            self.conflict_sel = None
+        self._render_conflict_terms()
+        self._render_conflict_sents(self.conflict_sel)
+
+    def _after_conflict_saved(self, row):
+        """保存译文后：该术语置为已编辑 → 排到最后，并保持它仍被选中。"""
+        self._conflict_seq = getattr(self, "_conflict_seq", 0) + 1
+        row["_edited_seq"] = self._conflict_seq
+        self._resort_conflict_rows(row)
+        n_open = sum(1 for r in self.conflict_rows if not r.get("edited"))
+        self.status_var.set(
+            f"已保存译文并写入缓存：术语「{row.get('term', '')}」标记为已编辑"
+            f"（剩余待解决 {n_open} 条）")
+
+    def _apply_conflict_edits(self):
+        """
+        冲突视图的「应用已编辑」：把手工译文写进缓存与译文文件，
+        同时把**已编辑**的术语冲突从 <名>_conflicts.json 里删掉。
+        """
+        paths = self._report_sources()
+        if not paths:
+            messagebox.showwarning(
+                "提示", "请先在右侧选择检查报告（*_translated_report.txt）")
+            return
+        try:
+            n_files, n_edit = commands.count_manual_edits(paths)
+        except Exception:
+            n_files, n_edit = 0, 0
+        n_done = sum(1 for r in self.conflict_rows if r.get("edited"))
+        if not n_edit and not n_done:
+            messagebox.showinfo(
+                "没有可应用的内容",
+                "这些文件还没有手工编辑记录，也没有已编辑的术语冲突。\n\n"
+                "先在下方列表选中句子、点「编辑译文」改好并保存，"
+                "或者直接点上方「状态」列把冲突标成「已编辑」，"
+                "再回来点这个按钮。")
+            return
+
+        msg = (f"将把 {n_files} 个文件里的 {n_edit} 条手工编辑译文写入：\n"
+               f"· 翻译缓存（<主名>_cache.json）\n"
+               f"· 已生成的译文文件（<主名>_translated.txt）\n\n")
+        if n_done:
+            msg += (f"并把 {n_done} 条**已编辑**的术语冲突从\n"
+                    f"<主名>_conflicts.json 里删除。\n\n")
+        msg += "译文文件里其它行不会被改动。\n继续吗？"
+        if not messagebox.askyesno("应用已编辑", msg):
+            return
+
+        def work():
+            res = commands.apply_manual_edits(paths)
+            removed, cfiles = commands.drop_edited_term_conflicts(paths)
+            self.q.put(("conflict_applied", (res, removed, cfiles)))
+            return res
+
+        self.run_async(work, label="应用已编辑…", done_label="已应用手工编辑")
+
+    def _after_conflict_applied(self, payload):
+        """应用已编辑完成：提示结果，并刷新冲突列表（已编辑的已从记录删除）。"""
+        res, removed, cfiles = (payload if isinstance(payload, tuple)
+                                else (payload, 0, 0))
+        r = res or {}
+        messagebox.showinfo(
+            "应用已编辑",
+            f"写入缓存与译文文件：{r.get('files', 0)} 个文件 / "
+            f"{r.get('applied', 0)} 句\n"
+            + (f"缺少译文文件：{r.get('missing', 0)} 个\n"
+               if r.get("missing") else "")
+            + (f"已编辑的术语冲突：{removed} 条已从 "
+               f"{cfiles} 个 <主名>_conflicts.json 里删除\n"
+               if removed else
+               "没有已编辑的术语冲突需要清理（待解决的仍留在列表里）\n")
+            + "\n点「刷新报告」可让报告里的术语冲突一起消失。")
+        if getattr(self, "report_mode", "report") == "conflict":
+            self._load_conflict_view()
+            if not self.conflict_rows:
+                self._show_report_view()
+                self._render_report_rows()
+                self._refresh_conflict_btn()
         else:
-            info["new_term"] = new_term
-        tree = self.report_tree
-        term = info.get("new_term") or info["term"]
-        tree.item(iid, values=(term, info["old"], info["new"],
-                              f"● {info['value']}"),
-                  tags=(f"k_{info['keep']}",))
-
-    def _conflict_keep_all(self, keep):
-        for iid in list(getattr(self, "conflict_choices", {}).keys()):
-            self._conflict_set_keep(iid, keep)
-
-    def _conflict_custom_selected(self):
-        sel = self.report_tree.selection()
-        if not sel:
-            messagebox.showinfo("提示", "请先在列表里选中要自定义的术语")
-            return
-        first = self.conflict_choices.get(sel[0], {})
-        val = _AskText.ask(self.root, "自定义译文",
-                           f"术语：{first.get('term', '')}\n"
-                           f"已有：{first.get('old', '')}   "
-                           f"新增：{first.get('new', '')}\n"
-                           f"请输入要保留的译文",
-                           initial=first.get("value", ""))
-        if not val:
-            return
-        for iid in sel:
-            self._conflict_set_keep(iid, "custom", val)
-
-    def _conflict_cell_entry(self, iid, col="#4"):
-        tree = self.report_tree
-        bbox = tree.bbox(iid, col)
-        if not bbox:
-            return
-        x, y, w, h = bbox
-        info = self.conflict_choices.get(iid, {})
-        ent = tk.Entry(tree, font=FONT_SMALL, relief="solid", bd=1)
-        ent.insert(0, info.get("value", ""))
-        ent.select_range(0, "end")
-        ent.place(x=x, y=y, width=max(w, 120), height=h)
-        ent.focus_set()
-        self._conflict_entry = ent
-        state = {"done": False}
-
-        def close():
-            if state["done"]:
-                return False
-            state["done"] = True
-            try:
-                ent.destroy()
-            except Exception:
-                pass
-            self._conflict_entry = None
-            return True
-
-        def commit(_e=None):
-            val = ent.get().strip()
-            if not close():
-                return
-            if val:
-                self._conflict_set_keep(iid, "custom", val)
-
-        def cancel(_e=None):
-            close()
-
-        ent.bind("<Return>", commit)
-        ent.bind("<FocusOut>", commit)
-        ent.bind("<Escape>", cancel)
-
-    def _conflict_edit_term(self, iid):
-        """双击「术语原文」列：就地输入新的术语原文。"""
-        tree = self.report_tree
-        bbox = tree.bbox(iid, "#1")
-        if not bbox:
-            return
-        x, y, w, h = bbox
-        info = self.conflict_choices.get(iid, {})
-        ent = tk.Entry(tree, font=FONT_SMALL, relief="solid", bd=1)
-        ent.insert(0, info.get("new_term") or info.get("term", ""))
-        ent.select_range(0, "end")
-        ent.place(x=x, y=y, width=max(w, 120), height=h)
-        ent.focus_set()
-        self._conflict_entry = ent
-        state = {"done": False}
-
-        def close():
-            if state["done"]:
-                return False
-            state["done"] = True
-            try:
-                ent.destroy()
-            except Exception:
-                pass
-            self._conflict_entry = None
-            return True
-
-        def commit(_e=None):
-            val = ent.get().strip()
-            if not close():
-                return
-            if val:
-                self._conflict_set_term(iid, val)
-
-        def cancel(_e=None):
-            close()
-
-        ent.bind("<Return>", commit)
-        ent.bind("<FocusOut>", commit)
-        ent.bind("<Escape>", cancel)
-
-    def _on_conflict_click(self, event):
-        if getattr(self, "report_mode", "report") != "conflict":
-            return
-        tree = self.report_tree
-        iid = tree.identify_row(event.y)
-        col = tree.identify_column(event.x)
-        if not iid:
-            return
-        if col == "#2":
-            self._conflict_set_keep(iid, "old")
-        elif col == "#3":
-            self._conflict_set_keep(iid, "new")
-
-    def _on_conflict_dblclick(self, event):
-        if getattr(self, "report_mode", "report") != "conflict":
-            # ★ 常规报告模式：双击任意一行 → 打开「原文 / 译文」编辑窗
-            self._on_report_dblclick(event)
-            return
-        tree = self.report_tree
-        iid = tree.identify_row(event.y)
-        col = tree.identify_column(event.x)
-        if iid and col == "#4":
-            self._conflict_cell_entry(iid, col)
-        elif iid and col == "#1":
-            self._conflict_edit_term(iid)
+            self._refresh_conflict_btn()
 
     def _on_report_dblclick(self, event):
         """报告列表双击 → 弹窗编辑这一句的译文。"""
@@ -3547,60 +3743,6 @@ class App:
         except Exception:
             pass
         win.grab_set()
-
-    def _apply_conflicts(self):
-        choices = [dict(v) for v in
-                   getattr(self, "conflict_choices", {}).values()]
-        if not choices:
-            messagebox.showinfo("提示", "没有可应用的术语冲突")
-            return
-        paths = self._report_sources()
-        src, tgt, model = (self.src_var.get(), self.tgt_var.get(),
-                           self.model_var.get())
-        if not paths:
-            if not messagebox.askyesno(
-                    "确认",
-                    "没有选择文件，只会把选中的译文写入术语字典，"
-                    "不会删除缓存或重翻。\n继续吗？"):
-                return
-
-        def work():
-            res = commands.apply_term_conflicts(choices, paths, src, tgt, model)
-            self.q.put(("term_conflict_done", res))
-            return res
-
-        self.show("log")
-        self.run_async(work, label="解决术语冲突并重翻…",
-                       done_label="术语冲突已处理")
-
-    def _after_conflicts(self, res):
-        """术语冲突应用完成：提示结果，稍后回到报告页自动刷新。"""
-        r = res or {}
-        messagebox.showinfo(
-            "术语冲突已处理",
-            f"写入术语字典：{r.get('saved', 0)} 条\n"
-            + (f"修改术语原文：{r.get('renamed', 0)} 条\n"
-               if r.get('renamed') else "")
-            + f"重翻文件：{r.get('files', 0)} 个\n"
-            f"删除缓存：{r.get('removed', 0)} 条")
-        if getattr(self, "report_mode", "report") == "conflict":
-            try:
-                self._toggle_conflict_view()
-            except Exception:
-                pass
-        self.root.after(500, self._refresh_after_conflicts)
-
-    def _refresh_after_conflicts(self):
-        """重翻结束后重新检查一次，让报告反映最新状态。"""
-        if self.busy:
-            self.root.after(500, self._refresh_after_conflicts)
-            return
-        try:
-            self.show("report")
-        except Exception:
-            pass
-        if self._report_sources():
-            self._do_check()
 
     def _report_sources(self):
         """菜单 3 里选的是检查报告，这里换回真正的源文件。"""
@@ -4006,7 +4148,10 @@ class App:
             msg = (f"已更新术语「{exist}」的译文 → {dst}" if n
                    else f"术语「{exist}」的译文没有变化")
         else:
-            ok, msg, key = TS.add_term(src, dst)
+            # ★ manual=True：用户手工敲的术语写进「手工区」（AUTO 块之外），
+            #   这样它不会被「一键删除自动提取术语」误删，
+            #   也才算得上「手工术语」——整句术语直译只认这类词条。
+            ok, msg, key = TS.add_term(src, dst, manual=True)
             if not ok:
                 messagebox.showwarning("未能添加", msg)
                 self.q.put(("log", f"[添加术语] {msg}\n"))

@@ -86,6 +86,8 @@ EDITABLE = [
 
     # ---------- 术语与 Excel ----------
     ("APPLY_TERMS",        "启用术语替换",      "bool",  ""),
+    ("WHOLE_TERM_MATCH",   "整句术语直译",      "bool",
+     "整句就是一条手工术语时直接用术语译文（忽略首尾标点）"),
     ("EXCEL_SOURCE_LANG",  "Excel 源语言列",    "str",   ""),
     ("EXCEL_TARGET_LANG",  "Excel 目标语言列",  "str",   ""),
     ("EXCEL_APPEND",       "Excel 追加式写入",  "bool",  "True=新术语接末尾，False=整份覆盖"),

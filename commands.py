@@ -80,15 +80,20 @@ REPORT_KIND_ORDER = [
 # 报告里手工编辑的译文
 #   存储与读写都在 cache.py（checker 也要读，放这里会循环 import）
 # ================================================================
-def save_report_edit(src, dst):
+def save_report_edit(src, dst, src_path=None):
     """
     在报告里手工改一句译文：
       ① 写进翻译缓存（原样覆盖，重翻时不会把它当成未翻）；
       ② 记进 <缓存>_edited.json，下次「刷新报告」时这一句归入「已编辑」类型。
 
+    src_path: 这句属于哪个**源文件**（多文件报告时用它精确定位缓存；
+              省略则沿用当前 Runtime 的缓存）。
+
     返回 {"cache": 缓存路径, "edited": 记录路径}。
     """
-    cache_file = getattr(config.Runtime, "cache_file", "") or config.CACHE_FILE
+    cache_file = (cache_path_for(src_path) if src_path
+                  else getattr(config.Runtime, "cache_file", "")
+                  or config.CACHE_FILE)
     if not os.path.isfile(cache_file):
         raise FileNotFoundError(f"找不到翻译缓存：{cache_file}\n"
                                 f"（先跑一次翻译才会生成）")
@@ -352,6 +357,11 @@ def _record_term_conflicts(records):
             item = {"old": r.get("old", ""), "new": r.get("new", ""),
                     "src": []}
             data[key] = item
+        # ★ 冲突内容变了（旧译法或模型新译法不同）→ 重新算「待解决」；
+        #   一模一样的冲突再次出现时保留用户已标记的「已编辑」。
+        if (item.get("old", "") != r.get("old", "")
+                or item.get("new", "") != r.get("new", "")):
+            item.pop("edited", None)
         item["old"] = r.get("old", item.get("old", ""))
         item["new"] = r.get("new", item.get("new", ""))
         sent = (r.get("sentence") or "").strip()
@@ -373,6 +383,148 @@ def drop_term_conflicts(terms):
     if n:
         save_term_conflicts(data)
     return n
+
+
+def set_term_conflicts_edited(term, src_paths=None, edited=True):
+    """
+    把某个术语的冲突在各源文件的记录里标成「已编辑 / 待解决」。
+
+    状态有两种：
+      · 待解决（记录里没有 edited 字段）
+      · 已编辑（edited=True）—— 保存过这句的译文，或在列表里点「状态」列手动标记
+
+    src_paths: 该术语可能出现在哪些源文件的 <名>_conflicts.json 里；
+               None → 只动当前 Runtime 的那一份。
+    返回实际改动的文件数。
+    """
+    term = (term or "").strip()
+    if not term:
+        return 0
+
+    if src_paths:
+        paths = [conflict_path_for(p) for p in src_paths]
+    else:
+        paths = [_conflict_path()]
+
+    changed = 0
+    for p in dict.fromkeys(x for x in paths if x):
+        data = load_term_conflicts(p)
+        item = data.get(term)
+        if not isinstance(item, dict):
+            continue
+        if bool(item.get("edited")) == bool(edited):
+            continue
+        if edited:
+            item["edited"] = True
+        else:
+            item.pop("edited", None)
+        if save_term_conflicts(data, p):
+            changed += 1
+    if changed:
+        log.info("术语冲突「%s」标记为%s（%d 个记录文件）",
+                 term, "已编辑" if edited else "待解决", changed)
+    return changed
+
+
+def drop_edited_term_conflicts(src_paths):
+    """
+    把**已编辑**的术语冲突从这些源文件的 <名>_conflicts.json 里删掉。
+
+    术语冲突界面点「应用已编辑」时调用：译文这时已经写进缓存与译文文件，
+    这条冲突没必要再留在记录里（否则刷新报告还会看到它）。
+
+    返回 (删除条数, 改动的文件数)。
+    """
+    total = files = 0
+    for sp in dict.fromkeys(p for p in (src_paths or []) if p):
+        p = conflict_path_for(sp)
+        if not p:
+            continue
+        data = load_term_conflicts(p)
+        if not data:
+            continue
+        drop = [t for t, item in data.items()
+                if isinstance(item, dict) and item.get("edited")]
+        if not drop:
+            continue
+        for t in drop:
+            data.pop(t, None)
+        if save_term_conflicts(data, p):
+            total += len(drop)
+            files += 1
+            log.info("术语冲突记录已清理 %d 条（已编辑）：%s",
+                     len(drop), os.path.basename(p))
+    if total:
+        log.info("术语冲突：已编辑的 %d 条已从记录里移除（%d 个文件）",
+                 total, files)
+    return total, files
+
+
+def load_conflict_rows(src_paths):
+    """
+    汇总这些源文件的术语冲突记录 → 供「术语冲突列表」视图展示的行。
+
+    返回 [{"term", "old", "new", "edited", "sources": [源文件…],
+           "sents": [{"src": 句子, "dst": 当前缓存译文, "path": 源文件}…]}, …]
+
+    · 同一个术语出现在多个文件里时合并成一行（只要有一处还是待解决就算待解决）；
+    · edited=True 表示这条冲突已经被处理过（改过译文，或手动点了「状态」列）；
+    · 译文取**翻译缓存**里的当前值（手工编辑写入的也是缓存）；
+    · 待解决的排前面，已编辑的排最后；同组内按术语原文排序。
+    """
+    rows = {}
+    file_state = {}          # 源文件 → (conflict dict, Cache)
+
+    for sp in (src_paths or []):
+        if not sp:
+            continue
+        cf = conflict_path_for(sp)
+        cp = cache_path_for(sp)
+        if sp in file_state:
+            data, cache = file_state[sp]
+        else:
+            data = load_term_conflicts(cf) if cf else {}
+            cache = Cache(cp) if (cp and os.path.isfile(cp)) else None
+            file_state[sp] = (data, cache)
+
+        for term, item in (data or {}).items():
+            if not isinstance(item, dict):
+                continue
+            row = rows.get(term)
+            if row is None:
+                row = rows[term] = {
+                    "term": term, "old": "", "new": "",
+                    "edited": True, "sources": [], "sents": [],
+                    "_seen": set(),
+                }
+            if sp not in row["sources"]:
+                row["sources"].append(sp)
+            if not item.get("edited"):
+                row["edited"] = False
+            if not row["old"] and item.get("old"):
+                row["old"] = item.get("old") or ""
+            if not row["new"] and item.get("new"):
+                row["new"] = item.get("new") or ""
+
+            for sent in (item.get("src") or []):
+                sent = (sent or "").strip()
+                if not sent:
+                    continue
+                key = (sp, sent)
+                if key in row["_seen"]:
+                    continue
+                row["_seen"].add(key)
+                row["sents"].append({
+                    "src": sent,
+                    "dst": (cache.get(sent, "") if cache else "") or "",
+                    "path": sp,
+                })
+
+    out = list(rows.values())
+    for r in out:
+        r.pop("_seen", None)
+    out.sort(key=lambda r: (bool(r["edited"]), r["term"].lower()))
+    return out
 
 
 # ================================================================
@@ -597,6 +749,7 @@ def _derived_term_hits(entries=None, out_lines=None):
 TRANSLATED_SUFFIX = "_translated.txt"
 REPORT_SUFFIX     = "_translated_report.txt"
 CACHE_SUFFIX      = "_cache.json"
+CONFLICT_SUFFIX   = "_conflicts.json"
 
 # 「缓存 / 译文 / 报告」→ 源文件，按长到短匹配（_translated_report.txt 先于
 # _translated.txt，否则会被切错）
@@ -650,6 +803,19 @@ def report_path_for(src_path):
     stem = os.path.splitext(os.path.basename(src))[0]
     parent = os.path.dirname(os.path.abspath(src))
     return os.path.join(parent, f"{stem}{REPORT_SUFFIX}")
+
+
+def conflict_path_for(src_path):
+    """
+    源文件 → 对应的术语冲突记录路径（*_conflicts.json）。
+    规则与 config.Runtime.set_input 一致；不碰 Runtime，便于按文件精确读写。
+    """
+    if not src_path:
+        return None
+    src = source_of(src_path)
+    stem = os.path.splitext(os.path.basename(src))[0]
+    parent = os.path.dirname(os.path.abspath(src))
+    return os.path.join(parent, f"{stem}{CONFLICT_SUFFIX}")
 
 
 def source_path_for_report(report_path):
@@ -1190,12 +1356,23 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
     seen, todo = set(), []
     skipped_pure = 0
     skipped_path = 0
+    whole_hits = []           # ★ 整句命中手工术语：直接写缓存，不送模型
     for _, txt in entries:
         if txt in seen:
             continue
         seen.add(txt)
         if txt in cache:
             continue
+        # ★ 整句术语直译：整句就是一条手工维护的术语（只忽略首尾标点）→
+        #   把术语译文当作这句的译文写进缓存，不再送模型。
+        #   ★ 放在「纯控制符 / 资源路径」之前：像 "(?)" 这种整句都是符号、
+        #     但用户明确给了术语译文的句子，要按术语翻，而不是原样保留。
+        if getattr(config, "WHOLE_TERM_MATCH", True):
+            hit = PR.match_whole_term(txt)
+            if hit:
+                cache.put(txt, hit[1])
+                whole_hits.append((txt, hit[0], hit[1]))
+                continue
         if getattr(config, "SKIP_PURE_CONTROL", True) and PR.is_pure_control(txt):
             cache.put(txt, txt)
             skipped_pure += 1
@@ -1207,6 +1384,18 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
             continue
         todo.append(txt)
 
+    if whole_hits:
+        cache.save()
+        log.info("整句术语直译 %d 条（已写入缓存，不送模型）", len(whole_hits))
+        for src, term, dst in whole_hits:
+            log.debug("[整句术语] %r → %r（命中术语 %r）", src, dst, term)
+        emit(f"[整句术语] {len(whole_hits)} 条整句命中手工术语，"
+             f"已直接用术语译文写入缓存（不送模型）")
+        for src, term, dst in whole_hits[:5]:
+            emit(f"    {src[:40]}  →  {dst[:40]}   （术语 {term}）")
+        if len(whole_hits) > 5:
+            emit(f"    … 其余 {len(whole_hits) - 5} 条见日志")
+
     if skipped_pure:
         cache.save()
         log.info("跳过纯控制符句子 %d 条（已缓存原文）", skipped_pure)
@@ -1217,8 +1406,9 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         log.info("跳过资源路径句子 %d 条（已缓存原文）", skipped_path)
         emit(f"[过滤] 跳过 {skipped_path} 条资源路径（形如 A/B/C，不翻译）")
 
-    emit(f"[待翻] 唯一 {len(seen)}  需翻 {len(todo)}  "
-         f"缓存命中 {len(seen) - len(todo)}")
+    n_cache = (len(seen) - len(todo) - skipped_pure - skipped_path
+               - len(whole_hits))
+    emit(f"[待翻] 唯一 {len(seen)}  需翻 {len(todo)}  缓存命中 {n_cache}")
 
     # ---------- 批量翻译 ----------
     unknown_ctrl_hits = []
@@ -1348,6 +1538,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         "todo": len(todo),
         "done": len(todo) - len(failed),
         "failed": len(failed),
+        "whole": len(whole_hits),      # ★ 整句命中手工术语、直接写缓存的条数
     }
 
 
@@ -1487,6 +1678,10 @@ def _conflicts_as_hits(entries=None, out_lines=None):
     hits = []
     for term, item in data.items():
         if not isinstance(item, dict):
+            continue
+        if item.get("edited"):
+            # ★ 已经在「术语冲突」视图里标记为已编辑的，不再进检查报告
+            #   （视图里仍能看到它，排在列表最后）
             continue
         old = item.get("old", "")
         new = item.get("new", "")
@@ -1829,7 +2024,7 @@ def apply_term_conflicts(choices, paths=None, src_lang=None, tgt_lang=None,
         except Exception:
             pass
 
-    # 已解决的冲突从记录里移除，避免报告一直报同一个
+    # 处理完的冲突从记录里移除，避免报告一直报同一个
     n = drop_term_conflicts(list(mapping.keys()) + list(renames.keys()))
     if n:
         emit(f"  ✔ 已清理 {n} 条冲突记录")

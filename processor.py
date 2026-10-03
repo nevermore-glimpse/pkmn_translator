@@ -7,6 +7,7 @@
     · maps 每项：{"token", "original", "added_left", "added_right"}
     · \\n（小写）直接删除；\\N（大写）照常保护
 """
+import json
 import os
 import re
 
@@ -690,6 +691,10 @@ _MULTI_RE = None
 _MULTI_MAP = {}
 _MULTI_MAP_LOWER = {}
 
+# ★ 整句匹配表：{小写原文: (原文, 译文)}，只收「手工维护」的术语
+#   （term_dict.py 里 AUTO 块中的自动提取术语不算，见 match_whole_term）
+_TERM_WHOLE = {}
+
 _WORD_CHARS = r'\w\u00C0-\u024F'
 _TOKEN_RE = re.compile(r'[' + _WORD_CHARS + r']+')
 _PLAIN_TERM_RE = re.compile(r'^[' + _WORD_CHARS + r']+$')
@@ -782,6 +787,45 @@ def _terms_file_key():
         return (config.TERM_FILE, 0, 0, bool(config.APPLY_TERMS))
 
 
+# ----------------------------------------------------------------
+# term_dict.py 里的 AUTO 块（自动提取的术语）
+#   标记与写入逻辑见 auto_terms.AUTO_START / AUTO_END。
+#   整句匹配只认手工术语，所以这里把 AUTO 块里的原文挑出来排除掉。
+# ----------------------------------------------------------------
+_AUTO_PAIR_RE = re.compile(r'^\s*"((?:[^"\\]|\\.)*)"\s*:', re.MULTILINE)
+
+
+def _auto_block_keys(text):
+    """
+    从 term_dict.py 的源码文本里，取出 AUTO 块内所有术语原文（小写）。
+
+    AUTO 块里的条目是翻译过程中自动提取的，不算「用户手工加的术语」。
+    找不到标记（没有 AUTO 块）时返回空集合。
+    """
+    try:
+        import auto_terms
+        start_mark, end_mark = auto_terms.AUTO_START, auto_terms.AUTO_END
+    except Exception:                       # pragma: no cover - 兜底
+        start_mark = "# @@AUTO_TERMS_START@@"
+        end_mark = "# @@AUTO_TERMS_END@@"
+
+    si = text.find(start_mark)
+    if si < 0:
+        return set()
+    ei = text.find(end_mark, si)
+    block = text[si:ei if ei >= 0 else len(text)]
+
+    keys = set()
+    for m in _AUTO_PAIR_RE.finditer(block):
+        try:
+            k = json.loads('"' + m.group(1) + '"')
+        except Exception:
+            continue
+        if k:
+            keys.add(k.strip().lower())
+    return keys
+
+
 def load_terms(force=False):
     """
     加载术语表。
@@ -790,12 +834,14 @@ def load_terms(force=False):
     global _TERMS
     global _TERM_SINGLE, _TERM_MULTI, _MULTI_RE
     global _MULTI_MAP, _MULTI_MAP_LOWER, _TERMS_LOADED_KEY
+    global _TERM_WHOLE
 
     if not config.APPLY_TERMS:
         if _TERMS or _TERM_SINGLE:
             _TERMS = []
             _TERM_SINGLE, _TERM_MULTI = {}, []
             _MULTI_RE, _MULTI_MAP, _MULTI_MAP_LOWER = None, {}, {}
+            _TERM_WHOLE = {}
             _TERMS_LOADED_KEY = None
         log.info("术语替换已关闭（APPLY_TERMS=False）")
         return
@@ -810,7 +856,8 @@ def load_terms(force=False):
 
     ns = {}
     with open(config.TERM_FILE, "r", encoding="utf-8") as f:
-        exec(f.read(), ns)
+        term_text = f.read()
+    exec(term_text, ns)
     td = ns.get("TERM_DICT", {})
 
     good = []
@@ -866,9 +913,77 @@ def load_terms(force=False):
 
     _TERMS_LOADED_KEY = key
 
+    # ---- 整句匹配表（只收手工术语，AUTO 块的自动术语排除） ----
+    auto_keys = _auto_block_keys(term_text)
+    _TERM_WHOLE = {}
+    for k, v in good:
+        if not v.strip():
+            continue
+        lk = k.strip().lower()
+        if lk in auto_keys or lk in _TERM_WHOLE:
+            continue            # 先到先得：good 已按原文长度降序排好
+        _TERM_WHOLE[lk] = (k, v)
+
     _check_case_conflicts(good)
     log.info("术语表加载：%d 条（单词 %d / 多词 %d，跳过短词 %d 条）",
              len(_TERMS), len(_TERM_SINGLE), len(_TERM_MULTI), skipped_short)
+    log.info("整句术语匹配表：%d 条（已排除自动提取术语 %d 条）",
+             len(_TERM_WHOLE), len(auto_keys))
+
+
+# ----------------------------------------------------------------
+# 整句术语匹配：整句就是一条手工术语 → 直接用术语译文
+# ----------------------------------------------------------------
+# 参与「首尾剥离」的标点/空白。刻意不含 \ [ ] { } < > @ # ~ ——
+# 这些是控制码 / 标签 / 占位符的构件，剥掉它们会把 [Pikachu] 这类
+# 资源名或标签当成整句术语误翻。
+_WHOLE_STRIP_CHARS = (
+    " \t\u3000"                                  # 空白（含全角空格）
+    ".,;:!?…。，、；：！？·・"                    # 句读
+    "¡¿"                                         # 西语倒置标点
+    "\"'“”‘’«»（）()"                            # 引号 / 括号
+)
+
+
+def match_whole_term(text):
+    """
+    整句术语匹配（手工术语专用）。
+
+    把 text 首尾的空白与标点剥掉后，若剩下的整串正好等于**一条手工维护的
+    术语原文**（term_dict.py 里 AUTO 块中的自动提取术语不参与），
+    就认为这句话的译文就是该术语的译文。
+
+    返回 (命中的术语原文, 该句译文)；不匹配返回 None。
+    译文 = 原来的标点**原样** + 术语译文（例如 "Yes!" → "是!"），
+    所以标点只影响匹配，不会丢。
+
+    ★ 先按整串原样查一次（术语本身可能就是 "(?)" 这种带标点的），
+      查不到再剥首尾标点查一次。
+    """
+    if not text or not _TERM_WHOLE:
+        return None
+
+    hit = _TERM_WHOLE.get(text.strip().lower())
+    if hit:
+        return hit
+
+    # 剥首尾标点 / 空白：先算正文区间，标点原样保留在两侧
+    n = len(text)
+    s, e = 0, n
+    while s < e and text[s] in _WHOLE_STRIP_CHARS:
+        s += 1
+    while e > s and text[e - 1] in _WHOLE_STRIP_CHARS:
+        e -= 1
+    if s >= e:
+        return None                      # 整句都是标点，没有正文
+    if s == 0 and e == n:
+        return None                      # 首尾没有标点，上面已经查过了
+
+    core = text[s:e]
+    hit = _TERM_WHOLE.get(core.lower())
+    if not hit:
+        return None
+    return (hit[0], text[:s] + hit[1] + text[e:])
 
 
 def find_terms(text, derived_out=None, allow_derived=None):

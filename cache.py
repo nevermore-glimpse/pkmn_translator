@@ -42,9 +42,14 @@ def edited_path():
     return base + "_edited.json"
 
 
-def load_edits():
-    """读手工编辑记录 → {原文: 译文}（读不到返回 {}）。"""
-    p = edited_path()
+def load_edits(path=None):
+    """
+    读手工编辑记录 → {原文: 译文}（读不到返回 {}）。
+
+    path=None 时读当前 Runtime 缓存对应的记录；Cache.save_edit 会传入
+    **自己那份缓存**对应的记录，避免多文件场景下写错地方。
+    """
+    p = path or edited_path()
     if not os.path.isfile(p):
         return {}
     try:
@@ -103,12 +108,19 @@ class Cache:
             self._dirty = True
         return n
 
+    def edited_path(self):
+        """本缓存对应的手工编辑记录：<缓存名>_edited.json。"""
+        base, _ext = os.path.splitext(self.path)
+        return base + "_edited.json"
+
     def save_edit(self, src, dst):
         """
         报告里手工改一句译文：写进缓存 + 记进编辑记录。
 
         ★ 编辑记录是给「刷新报告」用的：下次检查时这一句会归入「已编辑」
           类型（默认不勾选、不参与重翻），不会因为改好了就从报告里消失。
+        ★ 记录写在**本缓存**旁边（不是 Runtime 那份），多文件报告里
+          按源文件精确定位时才不会串到别的文件上。
         """
         src_key = (src or "").strip()
         if not src_key:
@@ -116,9 +128,9 @@ class Cache:
         self.put(src_key, dst)
         self.save(force=True)
 
-        edits = load_edits()
+        p = self.edited_path()
+        edits = load_edits(p)
         edits[src_key] = dst
-        p = edited_path()
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         tmp = p + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

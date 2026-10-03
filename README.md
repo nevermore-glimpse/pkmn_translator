@@ -156,6 +156,40 @@ edits into the output file, click **"应用已编辑" (Apply edits)** next to "C
 
 So the order is: **edit lines → "Apply edits" → (optionally) "Refresh report"**.
 
+#### Resolving term conflicts
+
+A term conflict means the model translated a term differently from the terminology
+list (e.g. the list says `Pikachu = 皮卡丘` but the model wrote 皮卡揪). Conflicts are
+recorded in `<input>_conflicts.json` while translating; the **"解决术语冲突"
+(Resolve term conflicts)** button on the report page is enabled once there are any.
+
+It opens a dedicated view that fills the main area (the file panel on the right stays
+put):
+
+- **Top**: the conflict list — `术语原文` (term) / `已有译文` (list translation) /
+  `新增译文` (model translation) / `状态` (status).
+  There are only two states, `待解决` (pending) and `已编辑` (edited); pending rows come
+  first and edited ones are shown in green at the bottom. **Clicking the `状态` cell
+  toggles the state by hand** (no sentence edit required) and writes it back at once.
+- **Bottom**: the sentences that hit the selected term (`原文` + the sentence's
+  current cached translation).
+- **"编辑译文" (Edit translation)** — or double-clicking a sentence — opens a dialog
+  with the **source read-only** on top and an **editable translation** below. On
+  "确定并保存" (Save) it:
+  1. writes the new translation into the cache of the file that sentence belongs to
+     (and into `<cache>_edited.json`, so the report files it under "已编辑");
+  2. marks that term **已编辑** and moves its row to the very bottom of the list.
+- Click **"应用已编辑" (Apply edits)** in the top-right corner to push the change into
+  the generated `*_translated.txt` as well; at the same time every **已编辑** conflict is
+  deleted from `<input>_conflicts.json` (the view returns to the report automatically
+  once the record is empty). Pending ones stay in the list.
+  **"返回报告" (Back to report)** just leaves the view without applying anything.
+
+> This flow only edits **sentence translations**; the terminology list is untouched.
+> To change the term itself, use the term dictionary page (menu 8).
+> If the conflict content changes later (the model returns yet another translation),
+> the "已编辑" mark is cleared automatically; an identical conflict keeps it.
+
 #### Line rewrapping (Menu 7)
 
 Pick the translation `.txt` files on the right, hit **Refresh list**, then select the
@@ -179,6 +213,23 @@ You can also use mine:
 | 2 | Ivysaur | 妙蛙草 |
 
 Select menu `3` → choose the Excel file → choose source/target languages → `term_dict.py` is generated automatically.
+
+#### Whole-sentence terms (on by default)
+
+When a line is exactly a term (for example `Defensa X`, `¡Defensa X!` or `(?)`),
+no model call is needed: before translating, the tool checks the terminology list
+and, on a hit, writes the term's translation straight into the cache.
+
+- Only **hand-maintained** terms participate — entries the translation run
+  auto-extracted into the `term_dict.py` AUTO block are ignored.
+- Leading/trailing punctuation and whitespace are ignored **for matching only**
+  and are kept verbatim in the translation: `Yes!` → `是!`.
+- Backslashes and `[ ] { } < > @ # ~` are *not* stripped (they build control
+  codes / tags / placeholders, so `[Pikachu]` is never mistaken for a term).
+- A term that itself contains punctuation is matched as-is first
+  (`(?)` → `神石`), then with the surrounding punctuation stripped.
+
+Toggle: Settings → 「整句术语直译」(`WHOLE_TERM_MATCH`, default on).
 
 ### Re-translate After Adding New Terms (Menu 3)
 
