@@ -6,7 +6,7 @@
   3. 特殊情况行（未配对文本）
   4. 译文残留控制码（名单外的 \\字母）
   5. 译文残留占位符（@0@ / ⟦0⟧）
-  6. 额外命中（翻译失败 / 占位符兜底 / 术语冲突）
+  6. 额外命中（翻译失败 / 占位符缺失 / 术语冲突）
 
 输出：与输出文件同目录的 <名>_report.txt
 """
@@ -328,9 +328,11 @@ def check(src_lines, out_lines, entries, special, report_path,
     failed_srcs = set()
     if extra_hits:
         for item in extra_hits:
-            # ★ 术语冲突只是「术语译法不一致」，句子本身的翻译没问题，
-            #   不该因为它就跳过其它检查（未翻译 / 符号不匹配等）
-            if (item.get('kind') or '') == '术语冲突':
+            # ★ 这两类只是「提示 / 参考」，句子本身的翻译没问题，
+            #   不该因为它们就跳过其它检查（未翻译 / 符号不匹配等）：
+            #     · 术语冲突 —— 术语译法不一致，与句子质量无关
+            #     · 派生命中 —— 术语词根命中的抽查提示（extra hit 里带 info=True）
+            if (item.get('kind') or '') == '术语冲突' or item.get('info'):
                 continue
             s = (item.get('src') or '').strip()
             if s:

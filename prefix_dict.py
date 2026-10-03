@@ -150,13 +150,17 @@ def _apply_terms_to_text(text):
 
 
 def _terms_hit_in(text):
-    """返回 text 中命中的术语 [(原文, 译文), ...]；术语表不可用时返回 []。"""
+    """返回 text 中命中的术语 [(原文, 译文), ...]；术语表不可用时返回 []。
+
+    ★ 只认整词（allow_derived=False）：前缀预填是「把 \tg[] 里的名字换成译文」，
+      派生匹配（Altarianites → Altaria）在这里会把后缀吃掉，故不启用。
+    """
     if not text:
         return []
     try:
         import processor as _PR
         _PR.load_terms()
-        return _PR.find_terms(text) or []
+        return _PR.find_terms(text, allow_derived=False) or []
     except Exception as e:
         log.debug("术语命中检测失败：%s", e)
         return []

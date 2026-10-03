@@ -51,7 +51,7 @@ LANG_OPTIONS = [
 # 重翻检查报告时，默认要处理的问题类型（GUI 里可逐项勾选）
 RETRANSLATE_KINDS = {
     "疑似未翻译", "疑似异常句", "译文残留占位符",
-    "翻译失败", "占位符兜底", "术语冲突","符号不匹配",
+    "翻译失败", "占位符缺失", "术语冲突","符号不匹配",
 }
 
 # ★ 永远不参与自动重翻的类型：
@@ -66,11 +66,13 @@ NEVER_RETRANSLATE_KINDS = {
 MANUAL_KINDS = {"已编辑"}
 
 # 报告里可能出现的问题类型（展示 / 排序用）
+# ★ 「派生命中」是「提示 / 抽查」类：默认不勾选（不显示、默认不重翻），
+#   勾上才显示；它不会抑制该句的其它检查（见 checker.check 的 info 标记）。
 REPORT_KIND_ORDER = [
-    "翻译失败", "占位符兜底", "术语冲突", "控制码回退",
+    "翻译失败", "占位符缺失", "术语冲突", "控制码回退",
     "疑似未翻译", "疑似异常句",
     "译文残留占位符", "译文残留控制码",
-    "符号不匹配", "特殊行", "已编辑",
+    "符号不匹配", "特殊行", "已编辑", "派生命中",
 ]
 
 
@@ -91,7 +93,12 @@ def save_report_edit(src, dst):
         raise FileNotFoundError(f"找不到翻译缓存：{cache_file}\n"
                                 f"（先跑一次翻译才会生成）")
     cache = Cache(cache_file)
-    return cache.save_edit(src, dst)
+    res = cache.save_edit(src, dst)
+    # ★ 手工改好了 → 清掉它的「占位符缺失」记录
+    #   （之后这一句按「已编辑」显示，不再重复报占位符缺失）
+    if drop_placeholder_missing([(src or "").strip()]):
+        log.info("手工编辑后清除占位符缺失记录：%s", (src or "").strip()[:50])
+    return res
 
 
 # ================================================================
@@ -368,6 +375,224 @@ def drop_term_conflicts(terms):
     return n
 
 
+# ================================================================
+# 占位符缺失记录（翻译时落盘，检查报告 / 菜单 3 复用）
+#   结构：{原文: {"missing": ["@3@"], "dst": 模型那一版译文, "detail": …}}
+#
+#   ★ 翻译时**不再做兜底补回**：重试后仍缺占位符的句子一律保留原文，
+#     并把缺失情况记在这里 —— 于是每次「刷新报告」都能在菜单 3 里
+#     按类型「占位符缺失」看到它，可以勾选重翻，也可以双击手工改。
+# ================================================================
+def _placeholder_path():
+    """占位符缺失记录文件：与缓存文件同目录。"""
+    pf = getattr(config.Runtime, "placeholder_file", None)
+    if pf:
+        return pf
+    cache = config.Runtime.cache_file
+    d = os.path.dirname(cache) or "."
+    base = os.path.splitext(os.path.basename(cache))[0]
+    return os.path.join(d, f"{base}_placeholder.json")
+
+
+def load_placeholder_missing(path=None):
+    """读取占位符缺失记录，返回 dict；文件不存在 / 损坏时返回 {}。"""
+    import json
+    p = path or _placeholder_path()
+    if not os.path.exists(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning("读取占位符缺失记录失败：%s", e)
+        return {}
+
+
+def save_placeholder_missing(data, path=None):
+    """写入占位符缺失记录（原子替换）。"""
+    import json
+    p = path or _placeholder_path()
+    try:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data or {}, f, ensure_ascii=False, indent=2)
+        atomic_replace(tmp, p)
+        return True
+    except Exception as e:
+        log.warning("写入占位符缺失记录失败：%s", e)
+        return False
+
+
+def _record_placeholder_missing(records):
+    """
+    把本次翻译新发现的占位符缺失并进记录文件。
+    records: [{"src": 原文, "missing": ["@3@"], "dst": 模型那版译文}]
+    """
+    if not records:
+        return
+    data = load_placeholder_missing()
+    for r in records:
+        key = (r.get("src") or "").strip()
+        if not key:
+            continue
+        data[key] = {
+            "missing": list(r.get("missing") or []),
+            "dst": r.get("dst", ""),
+            "detail": r.get("detail") or
+                      f'占位符 {"、".join(r.get("missing") or [])} 丢失',
+        }
+    save_placeholder_missing(data)
+
+
+def drop_placeholder_missing(srcs):
+    """
+    这些句子已经处理好了（重翻成功 / 手工改过），把记录移除。
+    返回实际移除的条数。
+    """
+    data = load_placeholder_missing()
+    if not data:
+        return 0
+    n = 0
+    for s in srcs or []:
+        key = (s or "").strip()
+        if key and key in data:
+            data.pop(key, None)
+            n += 1
+    if n:
+        save_placeholder_missing(data)
+    return n
+
+
+def _placeholder_as_hits(entries=None, out_lines=None):
+    """
+    读取落盘的占位符缺失记录，转成 checker 能吃的 extra_hits。
+    这样菜单 3 单独刷新报告时也能看到（并勾选重翻 / 手工编辑）。
+
+    entries/out_lines 用来把记录关联回具体行号与当前译文；
+    源文件里已经没有的句子（记录过期）顺手清掉。
+    """
+    data = load_placeholder_missing()
+    if not data:
+        return []
+
+    line_of = {}
+    for ln, s in (entries or []):
+        k = (s or "").strip()
+        if k and k not in line_of:
+            line_of[k] = ln
+
+    hits, stale = [], []
+    for src, item in data.items():
+        if not isinstance(item, dict):
+            continue
+        key = (src or "").strip()
+        ln = line_of.get(key)
+        if entries is not None and ln is None:
+            stale.append(src)
+            continue
+        dst = ""
+        if ln is not None and out_lines is not None and ln < len(out_lines):
+            dst = out_lines[ln].strip()
+        missing = item.get("missing") or []
+        detail = item.get("detail") or (
+            f'占位符 {"、".join(missing)} 丢失' if missing else "占位符丢失")
+        hits.append({
+            'line_no': ln if ln is not None else -1,
+            'kind': '占位符缺失',
+            'src': src, 'dst': dst,
+            'detail': (detail + "；翻译时已保留原文，"
+                              "可在此双击手工修改，或勾选本类型重翻"),
+            'missing': list(missing),
+        })
+    if stale:
+        drop_placeholder_missing(stale)
+    log.info("载入占位符缺失记录 %d 条", len(hits))
+    return hits
+
+
+# ================================================================
+# 派生命中（方案 F）：报告里列出「术语词根派生词」命中，供抽查
+#   · 只提示，不改译文、不抑制这句的其它检查（info=True）
+#   · 与翻译时注入 prompt 的匹配同源（processor.find_derived_terms）
+# ================================================================
+def _has_derived_candidate(line):
+    """
+    便宜的预筛：这行有没有「词根 + 后缀」形态的词。
+
+    只分词 + 查表，不做 protect()，所以绝大多数行几乎零成本；
+    预筛为真才走完整的 find_derived_terms（与翻译时同一套）。
+    """
+    if not line or not getattr(config, "TERM_DERIVED_MATCH", True):
+        return False
+    try:
+        import processor as PR
+        if not PR._TERM_SINGLE:
+            return False
+        lookup = PR._derived_lookup
+        min_len = PR.TERM_DERIVED_MIN_ROOT
+        for tok in PR._TOKEN_RE.findall(line):
+            if len(tok) <= min_len:
+                continue
+            if lookup(tok.lower())[0]:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _derived_term_hits(entries=None, out_lines=None):
+    """
+    把「术语词根派生命中」列进报告（方案 F，只作提示）。
+
+    例如术语表里有 Altaria=七夕青鸟，源文里的 Altarianites 就会在这里
+    记一条：说明它命中了哪个词根、该用什么译名，方便你抽查模型有没有照做。
+    """
+    if not entries or not getattr(config, "TERM_DERIVED_MATCH", True):
+        return []
+    try:
+        import processor as PR
+        PR.load_terms()
+        if not PR._TERM_SINGLE:
+            return []
+    except Exception as e:
+        log.debug("派生命中扫描跳过（术语表不可用）：%s", e)
+        return []
+
+    hits = []
+    for ln, src in entries:
+        if not _has_derived_candidate(src):
+            continue
+        try:
+            found = PR.find_derived_terms(src)
+        except Exception as e:
+            log.debug("派生命中扫描失败（跳过该行）：%s", e)
+            continue
+        if not found:
+            continue
+        dst = ""
+        if out_lines is not None and 0 <= ln < len(out_lines):
+            dst = out_lines[ln].strip()
+        detail = "；".join(f'{d["word"]} → 词根 {d["root"]}={d["dst"]}'
+                           for d in found[:5])
+        if len(found) > 5:
+            detail += f"；…另 {len(found) - 5} 处"
+        hits.append({
+            'line_no': ln,
+            'kind': '派生命中',
+            'src': src,
+            'dst': dst,
+            'detail': f"术语词根派生命中：{detail}",
+            # ★ info=True：只提示，不跳过这句的其它检查（checker.check 里认这个标记）
+            'info': True,
+            'derived': found,
+        })
+    if hits:
+        log.info("派生命中 %d 条（术语词根派生匹配）", len(hits))
+    return hits
+
+
 # 生成物后缀（选文件时要跳过 / 报告模式下要识别）
 TRANSLATED_SUFFIX = "_translated.txt"
 REPORT_SUFFIX     = "_translated_report.txt"
@@ -611,106 +836,6 @@ def _apply_lang_model(src_lang=None, tgt_lang=None, model=None):
 
 
 # ================================================================
-# 占位符兜底
-# ================================================================
-def _force_restore(raw, maps, src=None):
-    """
-    兜底补回丢失的占位符。
-
-    返回【token 形态】的文本（仍含 @N@ / ⟦N⟧），由调用方后续的
-    PR.finalize()→restore() 统一还原为控制码。
-    （此前返回已还原文本会导致 verify 再次判失败、整条被丢弃，已修正。）
-    """
-    if not maps:
-        return raw
-
-    # ★ 被合并进连续占位符的成员（consumed）由 merged 项代表，
-    #   模型输出里本来就只有合并后的 @K@，不能当「缺失」处理
-    missing = [item["token"] for item in maps
-               if not item.get("consumed") and item["token"] not in raw]
-    if not missing:
-        return raw
-
-    missing_set = set(missing)
-    result = raw
-
-    for m_idx, item in enumerate(maps):
-        token = item["token"]
-        if token not in missing_set or item.get("consumed"):
-            continue
-        original = item.get("original", "")
-
-        new_result = _insert_token_by_hint(
-            result, token, original, maps, m_idx, missing_set, src=src
-        )
-        if new_result is not None:
-            result = new_result
-        else:
-            result = result.rstrip() + " " + token
-        missing_set.discard(token)
-
-    return result
-
-
-def _insert_token_by_hint(text, token, original, maps, m_idx, missing_set,
-                          src=None):
-    """返回插入后的文本，或 None 表示无法判断。"""
-    if not original:
-        return None
-
-    # ① 说话人/标签起始：\tg[... 或 [xxx... → 句首
-    if original.startswith("\\tg["):
-        return token + text
-
-    # ② 说话人结束 ]
-    if original == "]":
-        for i in range(m_idx - 1, -1, -1):
-            prev_item = maps[i]
-            prev_orig = prev_item.get("original", "")
-            prev_token = prev_item["token"]
-            if prev_orig.startswith("\\tg[") and prev_token in text:
-                pos = text.find(prev_token) + len(prev_token)
-                return text[:pos] + token + text[pos:]
-        for i, ch in enumerate(text):
-            if ch.isspace() or ch in "，。！？、；：!?,.;:":
-                return text[:i] + token + text[i:]
-        return text + token
-
-    # ③ 换行符 \n \N → 最后一个句末标点后
-    if original in ("\\n", "\\N"):
-        for i in range(len(text) - 1, -1, -1):
-            if text[i] in "。！？!?.":
-                return text[:i + 1] + token + text[i + 1:]
-        return text + token
-
-    # ④ 找后 anchor，插到它前面
-    for i in range(m_idx + 1, len(maps)):
-        next_token = maps[i]["token"]
-        if next_token in text:
-            pos = text.find(next_token)
-            return text[:pos] + token + text[pos:]
-
-    # ⑤ 找前 anchor，插到它后面
-    for i in range(m_idx - 1, -1, -1):
-        prev_token = maps[i]["token"]
-        if prev_token in text:
-            pos = text.find(prev_token) + len(prev_token)
-            return text[:pos] + token + text[pos:]
-
-    # ⑥ 有源文时按占位符原内容在源文中的相对位置插回
-    #    （比单纯追加更贴近原句，尤其 @N@ 这类插值变量的位置）
-    if src and original:
-        idx = src.find(original)
-        if idx >= 0:
-            ratio = idx / max(1, len(src))
-            pos = int(round(len(text) * ratio))
-            pos = max(0, min(len(text), pos))
-            return text[:pos] + token + text[pos:]
-
-    return None
-
-
-# ================================================================
 # 分批策略：条数 + 总字符数双限制
 # ================================================================
 def _make_batches(todo, batch_size=None, max_chars=None):
@@ -738,8 +863,14 @@ def _make_batches(todo, batch_size=None, max_chars=None):
 # ================================================================
 def _translate_batch(client, batch_texts, cache,
                      unknown_ctrl_hits, failed, extra_hits,
-                     mode_of_entry=None, bi=1, conflict_records=None):
-    """翻译一批文本，写入缓存。返回成功条数。"""
+                     mode_of_entry=None, bi=1, conflict_records=None,
+                     ph_state=None):
+    """
+    翻译一批文本，写入缓存。返回成功条数。
+
+    ph_state: 占位符缺失记录的累积器（见 _translate_core）
+              {"records": [...], "known": {...}, "fixed": [...]}
+    """
     if not batch_texts:
         return 0
 
@@ -872,19 +1003,27 @@ def _translate_batch(client, batch_texts, cache,
                 except Exception:
                     time.sleep(1.0)
             if not retried:
-                raw = _force_restore(raw, maps, src=src)
-                log.info("[批 %d][%d] 占位符兜底补回", bi, k)
-                extra_hits.append({
+                # ★ 不再做占位符兜底补回：重试后仍缺占位符的句子一律
+                #   保留原文，并记入检查报告（类型「占位符缺失」）——
+                #   用户在菜单 3 里能按类型看到它，双击手工改或勾选重翻。
+                detail = (f'占位符 {"、".join(missing_ph)} 丢失，'
+                          f'重试后仍未补回；已保留原文')
+                log.error("[批 %d][%d] 占位符缺失 %s，保留原文并记入报告",
+                          bi, k, missing_ph)
+                failed.append({
                     'src': src,
-                    'kind': '占位符兜底',
-                    'dst': raw,
-                    'detail': f'占位符 {missing_ph} 丢失，已按位置特征补回',
+                    'kind': '占位符缺失',
+                    'reason': detail,
+                    # 这句不会被替换，译文文件里保留的就是原文
+                    'dst': src,
                 })
-
-            ok_final, _ = PR.verify(raw, maps)
-            if not ok_final:
-                log.error("[批 %d][%d] 占位符仍失败，保留原文", bi, k)
-                failed.append({'src': src, 'reason': '占位符丢失无法恢复'})
+                if ph_state is not None:
+                    ph_state["records"].append({
+                        'src': src,
+                        'missing': list(missing_ph),
+                        'dst': raw,
+                        'detail': detail,
+                    })
                 continue
 
         # 还原 + 拼回前缀
@@ -928,6 +1067,9 @@ def _translate_batch(client, batch_texts, cache,
         log.debug("[批 %d][%d] 最终译文=%r", bi, k, final)
         cache.put(src, final)
         ok += 1
+        # ★ 这一句已经翻好了（初次翻译或重翻）：清掉它的占位符缺失记录
+        if ph_state is not None and src in ph_state["known"]:
+            ph_state["fixed"].append(src)
 
     # ---------- 术语合并（内联提取） ----------
     if getattr(config, "AUTO_EXTRACT_TERMS", True) and batch_terms:
@@ -1083,6 +1225,9 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
     failed = []
     extra_hits = []
     conflict_records = []      # ★ 术语冲突：落盘后供检查报告 / 冲突面板复用
+    # ★ 占位符缺失：落盘后菜单 3 每次刷新报告都能按类型看到
+    ph_state = {"records": [], "known": set(load_placeholder_missing()),
+                "fixed": []}
 
     if todo:
         if getattr(config, "SORT_TODO_BY_LEN", True):
@@ -1104,7 +1249,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
                                   unknown_ctrl_hits, failed, extra_hits,
                                   mode_of_entry=mode_of_entry,
                                   bi=bi,
-                                  conflict_records=conflict_records)
+                                  conflict_records=conflict_records,
+                                  ph_state=ph_state)
 
             cache.tick()
             done += len(batch_texts)
@@ -1133,6 +1279,16 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         emit(f"  [术语冲突] 记录 {len(conflict_records)} 条，"
              f"可在菜单 3 用「解决术语冲突」处理")
 
+    # ---------- 占位符缺失记录落盘（供检查报告 / 菜单 3 复用） ----------
+    if ph_state["records"]:
+        _record_placeholder_missing(ph_state["records"])
+        emit(f"  [占位符缺失] {len(ph_state['records'])} 条已记入检查报告，"
+             f"可在菜单 3 按类型「占位符缺失」手工修改或重翻")
+    if ph_state["fixed"]:
+        n = drop_placeholder_missing(ph_state["fixed"])
+        if n:
+            log.info("占位符缺失记录已清除 %d 条（这些句子已翻好）", n)
+
     # ---------- 回写 ----------
     translations = {txt: cache.get(txt) for _, txt in entries if cache.get(txt)}
     replaced = P.write_output(
@@ -1149,7 +1305,9 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         out_lines, _ = P.read_file(out_path, config.OUTPUT_ENCODING)
         report_path = _report_path()
         hits = checker.check(lines, out_lines, entries, special, report_path,
-                             extra_hits=failed + extra_hits)
+                             extra_hits=(failed + extra_hits
+                                         + _derived_term_hits(entries,
+                                                              out_lines)))
         _print_summary(hits, report_path)
     except Exception as e:
         log.error("自动检查失败：%s", e)
@@ -1207,7 +1365,7 @@ def _update_snapshot():
 def _print_summary(hits, report_path):
     c = Counter(h['kind'] for h in hits)
     emit(f"  共 {len(hits)} 处问题：")
-    for k in ('翻译失败', '占位符兜底', '术语冲突',
+    for k in ('翻译失败', '占位符缺失', '术语冲突',
               '疑似未翻译', '疑似异常句',
               '符号不匹配', '译文残留控制码', '译文残留占位符', '特殊行'):
         if c.get(k):
@@ -1296,7 +1454,9 @@ def check_file(path, write_report=True):
     entries, special = P.extract_entries(src_lines)
     report_path = _report_path()
     hits = checker.check(src_lines, out_lines, entries, special, report_path,
-                         extra_hits=_conflicts_as_hits(entries, out_lines))
+                         extra_hits=(_conflicts_as_hits(entries, out_lines)
+                                     + _placeholder_as_hits(entries, out_lines)
+                                     + _derived_term_hits(entries, out_lines)))
     return hits
 
 

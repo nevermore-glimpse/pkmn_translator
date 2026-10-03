@@ -43,7 +43,7 @@ def resource_path(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.4.3"
+VERSION     = "1.4.4"
 APP_NAME    = "宝可梦同人游戏翻译工具"
 APP_TITLE   = f"{APP_NAME}v{VERSION}"
 
@@ -73,6 +73,8 @@ OUTPUT_FILE  = os.path.join(BASE_DIR, "intl_translated.txt")
 CACHE_FILE   = os.path.join(BASE_DIR, "intl_cache.json")
 TERM_FILE    = os.path.join(BASE_DIR, "term_dict.py")
 CONFLICT_FILE = os.path.join(BASE_DIR, "term_conflicts.json")
+# ★ 占位符缺失记录（翻译时落盘，菜单 3 刷新报告时按类型显示）
+PLACEHOLDER_FILE = os.path.join(BASE_DIR, "placeholder_missing.json")
 REPORT_DIR   = os.path.join(BASE_DIR, "reports")
 EXCEL_FILE   = os.path.join(BASE_DIR, "术语表（Glossary）.xlsx")
 ICON_FILE    = os.path.join(BASE_DIR, "start.ico")
@@ -90,6 +92,7 @@ class Runtime:
     output_file = OUTPUT_FILE
     cache_file  = CACHE_FILE
     conflict_file = CONFLICT_FILE   # ★ 术语冲突记录（与缓存同源）
+    placeholder_file = PLACEHOLDER_FILE  # ★ 占位符缺失记录（与缓存同源）
     last_dir    = BASE_DIR      # ★ 最近一次浏览的目录（GUI 用）
     plugin_font = ""            # ★ 植入中文插件时用户自选的字体（空=内置萝莉体）
 
@@ -99,6 +102,7 @@ class Runtime:
         cls.output_file = OUTPUT_FILE
         cls.cache_file  = CACHE_FILE
         cls.conflict_file = CONFLICT_FILE
+        cls.placeholder_file = PLACEHOLDER_FILE
         cls.last_dir    = BASE_DIR
         cls.plugin_font = ""
 
@@ -110,6 +114,7 @@ class Runtime:
         cls.output_file = os.path.join(parent, f"{stem}_translated.txt")
         cls.cache_file  = os.path.join(parent, f"{stem}_cache.json")
         cls.conflict_file = os.path.join(parent, f"{stem}_conflicts.json")
+        cls.placeholder_file = os.path.join(parent, f"{stem}_placeholder.json")
         cls.last_dir    = parent
 
     @classmethod
@@ -239,6 +244,10 @@ PAIR_SIMILARITY_MIN = 0.70
 
 # ---------- 术语 ----------
 APPLY_TERMS        = True
+# ★ 词根派生匹配（默认开）：整词查不到时按「词根 + 常见后缀」再试一次，
+#   例如 Altaria=七夕青鸟 也能覆盖 Altarianite / Altarianites 这类派生词。
+#   命中的术语只注入 prompt（不改译文），词根与后缀白名单见 processor.py。
+TERM_DERIVED_MATCH = True
 ASK_LANG_EACH_TIME = True
 # ---------- 玩家名替换 ----------
 PLAYER_TOKEN = r"\PN"              # 游戏脚本里的玩家名控制码

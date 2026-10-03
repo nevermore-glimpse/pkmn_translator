@@ -384,7 +384,7 @@ def _merge_placeholder_runs(text, maps, counter):
         被合并的成员项打上 consumed 标记；
       · restore() 按 maps 顺序执行：先还原 merged 项 → 文本里重新出现
         连续占位符 → 再轮到成员项把各自还原成控制码（两段式还原）；
-      · verify() / 占位符兜底会跳过 consumed 成员（它们由 merged 项代表）。
+      · verify() 会跳过 consumed 成员（它们由 merged 项代表）。
     """
     if not maps or not text:
         return text, maps
@@ -707,6 +707,53 @@ def _is_placeholder_token(s):
 
 _TERMS_LOADED_KEY = None     # (路径, mtime, size, APPLY_TERMS)
 
+# ----------------------------------------------------------------
+# ★ 词根派生匹配（方案 A）
+#   术语当词根：整词查不到时，按下面的后缀白名单剥一层再查，
+#   于是 Altaria=七夕青鸟 也能覆盖 Altarianite / Altarianites /
+#   Altariaium Z 这类派生词、复合词。
+#
+#   · 只对「纯字母单词」术语生效（多词术语不参与），词根至少
+#     TERM_DERIVED_MIN_ROOT 个字母，避免 Rat 命中 Raticate 这类误伤；
+#   · 后缀从短到长试 → 先命中的词根最长：同时登记了 Altaria 与
+#     Altarianite 时，Altarianites 会认更具体的 Altarianite；
+#   · 命中后**只是把这些术语注入 prompt**（不改译文），由模型按
+#     提示词规则沿用译名；开关见 config.TERM_DERIVED_MATCH。
+# ----------------------------------------------------------------
+TERM_DERIVED_SUFFIXES = (
+    "s", "z", "'s", "es", "ies", "ite", "ites", "nite", "nites",
+    "ium", "iumz",
+)
+#   注：词里的撇号不是词字符（_TOKEN_RE 不含 '），"Altaria's" 会被切成
+#   "Altaria" + "s"，整词就能命中，所以 "'s" 实际不会被剥到，留着只为
+#   把白名单写全、以后若改分词逻辑也仍然适用。
+
+TERM_DERIVED_MIN_ROOT = 4    # 词根最短长度
+_DERIVED_SUFFIX_ORDER = tuple(sorted(TERM_DERIVED_SUFFIXES, key=len))
+
+
+def _derived_lookup(token_lower):
+    """
+    在术语表里找 token 的词根（方案 A 派生匹配）。
+
+    返回 (词根小写, 用掉的后缀)；找不到返回 (None, None)。
+    ★ 后缀由短到长试，所以命中的是**最长**的那个词根。
+    """
+    if not token_lower or len(token_lower) <= TERM_DERIVED_MIN_ROOT:
+        return None, None
+    for suf in _DERIVED_SUFFIX_ORDER:
+        if not suf or not token_lower.endswith(suf):
+            continue
+        stem = token_lower[: -len(suf)]
+        # 「…ies」除了直接剥，还试 y 还原（Berries → Berry）
+        roots = (stem, stem + "y") if suf == "ies" else (stem,)
+        for root in roots:
+            if len(root) < TERM_DERIVED_MIN_ROOT or not root.isalpha():
+                continue
+            if root in _TERM_SINGLE:
+                return root, suf
+    return None, None
+
 
 def _check_case_conflicts(terms):
     """检测术语表里是否有大小写不同但译文不同的词。"""
@@ -824,16 +871,28 @@ def load_terms(force=False):
              len(_TERMS), len(_TERM_SINGLE), len(_TERM_MULTI), skipped_short)
 
 
-def find_terms(text):
+def find_terms(text, derived_out=None, allow_derived=None):
     """
     找出 text 中命中的术语，返回 [(原文, 译文), ...]（去重，保持出现顺序）。
 
     ★ 多词术语优先：命中 "Profesor Oak" 时不再单独报 "Profesor"。
+    ★ 整词查不到时按「词根 + 后缀」再试一次（方案 A 派生匹配），
+      命中的术语同样会注入 prompt。派生命中可经 derived_out 收集：
+      derived_out 传 list 时，每命中一个派生词追加
+      {"word": 原文里的词形, "root": 术语原文, "dst": 术语译文,
+       "suffix": 用掉的后缀}（同一词形不重复）。
+
+    allow_derived=None 时取 config.TERM_DERIVED_MATCH（默认开）；
+    菜单 5 的 \tg[] 术语预填会传 False，保持那边只认整词。
     """
     if not text or (not _TERM_SINGLE and not _MULTI_RE):
         return []
 
+    if allow_derived is None:
+        allow_derived = bool(getattr(config, "TERM_DERIVED_MATCH", True))
+
     seen = set()
+    derived_seen = set()
     result = []
     spans = []
 
@@ -857,9 +916,25 @@ def find_terms(text):
             s, e = m.start(), m.end()
             if any(a <= s and e <= b for a, b in spans):
                 continue
-            hit = _TERM_SINGLE.get(m.group(0).lower())
+            word = m.group(0)
+            hit = _TERM_SINGLE.get(word.lower())
+            suffix = None
+            if hit is None and allow_derived:
+                root_key, suffix = _derived_lookup(word.lower())
+                if root_key:
+                    hit = _TERM_SINGLE.get(root_key)
             if not hit:
                 continue
+            if derived_out is not None and suffix:
+                dkey = (word.lower(), hit[0].lower())
+                if dkey not in derived_seen:
+                    derived_seen.add(dkey)
+                    derived_out.append({
+                        "word": word,
+                        "root": hit[0],
+                        "dst": hit[1],
+                        "suffix": suffix,
+                    })
             key = hit[0].lower()
             if key in seen:
                 continue
@@ -867,6 +942,23 @@ def find_terms(text):
             result.append(hit)
 
     return result
+
+
+def find_derived_terms(text):
+    """
+    只扫「词根派生命中」，返回 [{"word","root","dst","suffix"}, ...]。
+
+    报告类型「派生命中」（方案 F）用；与翻译时的匹配同源：
+    同样先 protect() 再跑 find_terms，所以控制码 / 标签内部的词不会被误算。
+    """
+    if not text:
+        return []
+    if not _TERM_SINGLE:
+        return []
+    safe, _maps = protect(text)
+    out = []
+    find_terms(safe, derived_out=out)
+    return out
 
 
 def _apply_terms_plain(text):

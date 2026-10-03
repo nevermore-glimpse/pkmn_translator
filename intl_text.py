@@ -878,6 +878,7 @@ COMPILE_SKIP_SUFFIXES = (
     "_polished.txt",                # 中文润色报告
     "_cache.json",                  # 翻译缓存
     "_conflicts.json",              # 术语冲突记录
+    "_placeholder.json",            # 占位符缺失记录
     "_polish_cache.json",           # 润色进度
 )
 
