@@ -39,7 +39,7 @@ def _is_placeholder(k):
 
 def _is_skipped_short(k):
     """processor.load_terms 会跳过「长度 ≤3 的纯英文词」。"""
-    return len(k) <= 3 and k.isascii() and k.isalpha()
+    return len(k) <= 2 and k.isascii() and k.isalpha()
 
 
 def why_invalid_key(src, dst=""):
@@ -52,7 +52,7 @@ def why_invalid_key(src, dst=""):
     if _is_placeholder(src):
         return "占位符型条目（@0@ 等）不是术语，加载时会被跳过"
     if _is_skipped_short(src):
-        return "原文太短：纯英文 3 个字符以内加载时会被跳过"
+        return "原文太短：纯英文 2 个字符以内加载时会被跳过"
     if dst and src == dst:
         return "原文与译文相同"
     return ""

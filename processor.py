@@ -825,7 +825,7 @@ def load_terms(force=False):
         if _is_placeholder_token(k):
             skipped_ph += 1
             continue
-        if len(k) <= 3 and k.isascii() and k.isalpha():
+        if len(k) <= 2 and k.isascii() and k.isalpha():
             skipped_short += 1
             continue
         good.append((k, v))
