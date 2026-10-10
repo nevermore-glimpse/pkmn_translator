@@ -56,8 +56,9 @@ SYSTEM_PROMPT = r"""你是专业游戏本地化译者，负责把游戏文本翻
 每条译文后紧跟一行：
 <编号>@@T:原文术语1=译文术语1|原文术语2=译文术语2
 无专有名词写：<编号>@@T:
-只能提取以下类型的名词：训练家/NPC、宝可梦、地名/城镇/道路/地区、道具、招式、特性、组织/队伍、建筑。
-绝不能提取以下类型的词：代词、冠词、介词、连词、助动词、纯数字、时间、货币、已是中文、整个句子等。
+只能提取以下类型的名词：训练家/NPC名、宝可梦名、地名/城镇名/道路名/地区名、道具名、招式名、特性名、组织/队伍名、建筑名。
+绝不能提取以下类型的词：-形容词、副词、代词、冠词、介词、连词、动词、助动词、情态动词、数词、量词、感叹词、拟声词、语气词、纯数字
+-时间、日期、货币、单位、百分比、年龄、顺序词、颜色词、普通描述词、动作、情感、评价、已是中文的普通词。
 编号一致，每行只有一个 @@T: 前缀。
 
 【示例】
@@ -365,7 +366,11 @@ class OllamaClient:
 
         payload = {
             "model": self.model or getattr(config, "API_MODEL", ""),
-            "max_tokens": _api_max_tokens(num_predict),
+            # ★ 与 OpenAI 那条路保持一致：没显式给 num_predict 时用 config 的
+            #   （原来直接传 None → _api_max_tokens 当成 0 → 直接取上限，
+            #    用户调小的 NUM_PREDICT 在 Anthropic 协议下被无视了）
+            "max_tokens": _api_max_tokens(
+                config.NUM_PREDICT if num_predict is None else num_predict),
             "messages": conv,
         }
         if system:
@@ -571,14 +576,15 @@ def polish_with_retry(client, batch, depth=0):
     if not batch:
         return {}
 
+    retries = int(getattr(config, "BATCH_RETRIES", 2) or 0)
     last_err = None
-    for attempt in range(getattr(config, "BATCH_RETRIES", 2) + 1):
+    for attempt in range(retries + 1):
         try:
             return client.polish_batch(batch)
         except Exception as e:
             last_err = e
             log.warning("润色整批失败（第 %d/%d 次）：%s",
-                        attempt + 1, config.BATCH_RETRIES + 1, e)
+                        attempt + 1, retries + 1, e)
             time.sleep(min(2.0 * (attempt + 1), 6.0))
 
     if len(batch) > 1 and depth < 4:

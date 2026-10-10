@@ -716,9 +716,9 @@ _TEXT_DIR_RE = re.compile(r"^Text_(.+)_(core|game)$", re.I)
 
 
 def parse_intl_text(text, name="intl.txt", allow_constants=False,
-                    normalize_keys=False):
+                    normalize_keys=False, trim="rstrip"):
     """
-    按游戏的 pbEachIntlSection / pbGetText 规则解析文本 → 结构。
+    按游戏的解析规则把文本 → 结构。
 
     返回 {段号: 内容}，段号形如 ("map", 12) / (None, 24)；
     内容是 list（数组分段）或 OHash（哈希分段）。
@@ -727,7 +727,17 @@ def parse_intl_text(text, name="intl.txt", allow_constants=False,
                      打开后会按 SECTION_NAMES 换算成编号。
     normalize_keys ：新版方案编译时会把哈希的键再过一遍 stringToKey
                      （旧版 pbGetText 不会），往返一致性要求必须跟着做。
+    trim           ：每行怎么去空白 —— 两个版本的**做法不一样**，必须跟着改：
+                       "rstrip" 旧版 pbEachIntlSection：`line.gsub(/\\s+$/,"")`
+                                 只去行尾空白，行首的空格是内容的一部分；
+                       "strip"  新版 Compiler.pbEachSection：`line.strip()`
+                                 首尾都去。
+
+    ★ 条目的取法（照游戏源码，别自己想）：
+        数组段 3 行一条 → 序号 / 原文 / 译文，取**译文**（第 3 行）；
+        哈希段 2 行一条 → 原文 / 译文，取**译文**（第 2 行）。
     """
+    keep = (lambda s: s.rstrip()) if trim == "rstrip" else (lambda s: s.strip())
     lines = text.split("\n")
     sections = []
     current = None
@@ -749,7 +759,7 @@ def parse_intl_text(text, name="intl.txt", allow_constants=False,
                 raise ValueError(
                     f"{name}：第 {idx + 1} 行出现在任何 [分段] 之前 —— "
                     f"文件开头必须先有一个 [分段名]")
-            current[1].append(line.rstrip())
+            current[1].append(keep(line))
     if current is not None:
         sections.append(current)
 
@@ -792,7 +802,11 @@ def parse_intl_text(text, name="intl.txt", allow_constants=False,
                 j = int(body[i])
                 while len(items) <= j:
                     items.append(None)
-                items[j] = denormalize_value(body[i + 1])
+                # ★ 三行一条：序号 / 原文 / 译文 → 写进 .dat 的是**译文**
+                #   （游戏 pbGetText 里 itemlength==3 时先 i+=1 再取 section[i+1]，
+                #    也就是三行里的第三行）。取成 body[i+1] 会把原文原样写回去，
+                #    译了跟没译一样 —— 宝可梦名 / 招式名 / 道具名这些全是数组段。
+                items[j] = denormalize_value(body[i + 2])
         else:
             if len(body) % 2 != 0:
                 raise ValueError(
@@ -811,7 +825,13 @@ def parse_intl_text(text, name="intl.txt", allow_constants=False,
 
 
 def _merge(a, b):
-    """把 b 合进 a（同类合并；不同类型用 b 覆盖）。返回冲突条数。"""
+    """
+    把 b 合进 a（同类合并；不同类型用 b 覆盖）。返回冲突条数。
+
+    ★ 跟游戏一致：空值（nil）不覆盖已有内容
+      （v21：`target[k] = v if v`）。这样「某个文件里这条是空的」不会
+      把另一份文件里已经译好的内容冲掉。
+    """
     conflicts = 0
     if isinstance(a, list) and isinstance(b, list):
         while len(a) < len(b):
@@ -826,6 +846,8 @@ def _merge(a, b):
     if isinstance(a, OHash) and isinstance(b, OHash):
         index = {k: i for i, (k, _v) in enumerate(a.pairs)}
         for k, v in b.pairs:
+            if v is None:
+                continue
             if k in index:
                 if a.pairs[index[k]][1] != v:
                     conflicts += 1
@@ -1020,8 +1042,10 @@ def compile_split(game_dir, paths, emit=None, backup=True, out_paths=None):
         for p in files:
             with io.open(p, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
+            # ★ 新版用 Compiler.pbEachSection：行首尾空白都去掉，键再过 stringToKey
             secs = parse_intl_text(text, os.path.basename(p),
-                                   allow_constants=True, normalize_keys=True)
+                                   allow_constants=True, normalize_keys=True,
+                                   trim="strip")
             for key, value in secs.items():
                 if key not in merged:
                     merged[key] = value
@@ -1035,26 +1059,8 @@ def compile_split(game_dir, paths, emit=None, backup=True, out_paths=None):
             say(f"[编译] ⚠ {part}：{conflicts} 条在两份文本里不同，"
                 f"已按靠后的覆盖")
 
-        max_map = max([k[1] for k in merged if k[0] == "map"], default=-1)
-        max_id = max([k[1] for k in merged if k[0] is None], default=-1)
-        table = [None] * max(max_id, 0) if (max_id >= 0 or max_map >= 0) else []
-        if max_map >= 0:
-            if not table:
-                table.append(None)
-            table[0] = [None] * (max_map + 1)
-        for (kind, sid), value in merged.items():
-            if kind == "map":
-                if table[0] is None:
-                    table[0] = [None] * (sid + 1)
-                while len(table[0]) <= sid:
-                    table[0].append(None)
-                table[0][sid] = _marshal_value(value, plain_hash=True,
-                                               with_encoding=True)
-            else:
-                while len(table) <= sid:
-                    table.append(None)
-                table[sid] = _marshal_value(value, plain_hash=True,
-                                            with_encoding=True)
+        table = _build_table(merged, plain_hash=True, with_encoding=True)
+        _pad_to_existing(table, out)
 
         bak = None
         if os.path.isfile(out) and backup:
@@ -1123,7 +1129,8 @@ def compile_text(game_dir, input_path, out_path=None, emit=None, backup=True):
                 text = f.read()
         except OSError as e:
             raise IOError(f"读取 {p} 失败：{e}") from e
-        secs = parse_intl_text(text, os.path.basename(p))
+        # ★ 旧版用 pbEachIntlSection：只去行尾空白，键不做 stringToKey
+        secs = parse_intl_text(text, os.path.basename(p), trim="rstrip")
         n = sum(len(v) for v in secs.values())
         per_file.append((os.path.basename(p), len(secs), n))
         say(f"[编译] {os.path.basename(p)}：{len(secs)} 段 / {n} 条")
@@ -1143,22 +1150,7 @@ def compile_text(game_dir, input_path, out_path=None, emit=None, backup=True):
             f"已按靠后的文件覆盖")
 
     # 组回「第 0 段是各地图」的结构
-    #   ★ 顶层数组长度只看非 map 段（map 段都塞进第 0 段里），
-    #     别被地图编号（可能到 288）撑大 —— 否则写出来和游戏自己那份不一样。
-    max_map = max([k[1] for k in merged if k[0] == "map"], default=-1)
-    max_id = max([k[1] for k in merged if k[0] is None], default=-1)
-    table = [None] * (max_id + 1)
-    if max_map >= 0:
-        table[0] = [None] * (max_map + 1)
-    for (kind, sid), value in merged.items():
-        if kind == "map":
-            if table[0] is None:
-                table[0] = [None] * (sid + 1)
-            while len(table[0]) <= sid:
-                table[0].append(None)
-            table[0][sid] = _marshal_value(value)
-        else:
-            table[sid] = _marshal_value(value)
+    table = _build_table(merged)
 
     out = out_path or _default_out(game_dir)
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
@@ -1183,6 +1175,68 @@ def compile_text(game_dir, input_path, out_path=None, emit=None, backup=True):
     return {"out": out, "backup": bak, "files": [f for f, _s, _n in per_file],
             "sections": len(merged), "entries": entries,
             "conflicts": conflicts, "detail": per_file, "kinds": kinds}
+
+
+def _build_table(merged, plain_hash=False, with_encoding=False):
+    """
+    merged（{(kind, id): 内容}）→ 写进 .dat 的顶层数组。
+
+    结构照游戏 pbGetText / compile_text_from_file：
+      · 第 0 段放**各地图**的文本表（下标 = 地图号），
+        地图段再多层也不会把顶层数组撑大；
+      · 其余段按下标直接放。
+
+    ★ 只有地图段时也要留出第 0 位 —— 否则表是空的，`table[0] = …` 越界。
+    """
+    maps, secs = {}, {}
+    for (kind, sid), value in merged.items():
+        (maps if kind == "map" else secs)[sid] = value
+
+    max_id = max(secs) if secs else -1
+    need0 = bool(maps) or (0 in secs)
+    table = [None] * max(max_id + 1, 1 if need0 else 0)
+
+    if maps:
+        row = [None] * (max(maps) + 1)
+        for sid, value in maps.items():
+            row[sid] = _marshal_value(value, plain_hash, with_encoding)
+        table[0] = row
+    elif 0 in secs:
+        table[0] = _marshal_value(secs.pop(0), plain_hash, with_encoding)
+
+    for sid, value in secs.items():
+        while len(table) <= sid:
+            table.append(None)
+        table[sid] = _marshal_value(value, plain_hash, with_encoding)
+    return table
+
+
+def _pad_to_existing(table, out):
+    """
+    把新表补到和「原来的 .dat」一样长（只补末尾的 nil，不改内容）。
+
+    ★ 为什么：提取时空条目会被跳过，末尾那些空位编回来就没了；
+      但游戏自己写出来的表是保留这些 nil 的。补回去能让文件形态和游戏
+      自己那份一致（读起来完全等价，只是不再无端变短）。
+    """
+    if not os.path.isfile(out):
+        return 0
+    try:
+        old = read_messages(out)
+    except Exception:
+        return 0
+    if not isinstance(old, list) or not old:
+        return 0
+    added = 0
+    while len(table) < len(old):
+        table.append(None)
+        added += 1
+    o0 = old[0]
+    if isinstance(o0, list) and isinstance(table[0], list):
+        while len(table[0]) < len(o0):
+            table[0].append(None)
+            added += 1
+    return added
 
 
 def _make_plain_hash(pairs, with_encoding=True):

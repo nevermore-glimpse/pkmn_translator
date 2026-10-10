@@ -40,7 +40,8 @@ BANNER = """\
   8. 术语字典（Excel 转术语表 / 查看编辑字典）
   9. 设置
   10. 本地模型服务（Ollama / llama.cpp / LM Studio）
-  11. 日志 / 环境检查
+  11. 开启DEBUG（检测引擎 / 写 $DEBUG=true）
+  12. 日志 / 环境检查
   0. 退出
 ====================================================================
 """
@@ -180,6 +181,8 @@ def run_cli():
             elif choice == "10":
                 commands.cmd_provider()
             elif choice == "11":
+                commands.cmd_debug()
+            elif choice == "12":
                 commands.cmd_show_logs()
             elif choice == "0":
                 log.info("用户退出")

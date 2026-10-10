@@ -1494,7 +1494,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
     try:
         out_lines, _ = P.read_file(out_path, config.OUTPUT_ENCODING)
         report_path = _report_path()
-        hits = checker.check(lines, out_lines, entries, special, report_path,
+        hits = checker.check(out_lines, entries, special, report_path,
                              extra_hits=(failed + extra_hits
                                          + _derived_term_hits(entries,
                                                               out_lines)))
@@ -1644,7 +1644,7 @@ def check_file(path, write_report=True):
 
     entries, special = P.extract_entries(src_lines)
     report_path = _report_path()
-    hits = checker.check(src_lines, out_lines, entries, special, report_path,
+    hits = checker.check(out_lines, entries, special, report_path,
                          extra_hits=(_conflicts_as_hits(entries, out_lines)
                                      + _placeholder_as_hits(entries, out_lines)
                                      + _derived_term_hits(entries, out_lines)))
@@ -3372,8 +3372,41 @@ def cmd_provider():
         emit("无效选项")
 
 
+def cmd_debug():
+    """菜单 11：开启 DEBUG（检测引擎 → 写 $DEBUG=true → 关掉启动时的全量编译）"""
+    import filepicker
+    import game_scripts as GS
+    import debug_tool as DT
+
+    emit("\n[开启 DEBUG]")
+    emit("  ① 识别 Essentials 版本，比对引擎的基本函数有没有被改过；")
+    emit("  ② 往 mainFunction 里写 $DEBUG=true（等价于用调试模式启动游戏）；")
+    emit("  ③ 关掉 debug 启动时「删 Data/*.dat + 全量重编译」这两步。")
+
+    folder = filepicker.pick_dir(
+        initial_dir=config.Runtime.last_dir or config.BASE_DIR,
+        title="选择游戏根目录（里面有 Game.exe 和 Data）")
+    if not folder:
+        emit("已取消")
+        return
+    ok, why = GS.check_game_root(folder)
+    if not ok:
+        emit(f"✘ {why}：{folder}")
+        return
+    config.Runtime.set_dir(folder)
+
+    raw = input("\n1=只检测 / 2=开启 / 3=还原 [1]: ").strip()
+    if raw == "3":
+        DT.restore(folder, emit=emit)
+        return
+    if raw == "2":
+        DT.enable_debug(folder, emit=emit, force=False)
+        return
+    DT.scan_only(folder, emit=emit)
+
+
 def cmd_show_logs():
-    """菜单 11：日志 / 环境检查"""
+    """菜单 12：日志 / 环境检查"""
     import env_check
 
     log_dir = os.path.join(config.BASE_DIR, "logs")

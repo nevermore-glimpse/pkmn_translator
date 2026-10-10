@@ -594,8 +594,26 @@ def _left_right_of(maps):
     return ("⟦", "⟧") if maps[0]["token"].startswith("⟦") else ("@", "@")
 
 
+_TOKEN_NUM_RE = re.compile(r"(\d+)")
+
+
+def _token_number(token):
+    """
+    从 token 里取出编号：`@12@` → 12。取不到返回 None。
+
+    ★ 编号**不能拿 maps 里的下标代替**：占位符编号是全局计数器发的，
+      连续占位符合并（_merge_placeholder_runs）还会再往上加，
+      maps 里既有 merged 项也有成员项 —— 下标和编号对不上，
+      宽松匹配会去找错的那一个（模型把 @7@ 写成 @@7@@ 时就还原不回来了）。
+    """
+    m = _TOKEN_NUM_RE.search(token or "")
+    return int(m.group(1)) if m else None
+
+
 def _loose_pattern(idx, left, right):
-    """宽松匹配 token 的各种变体。"""
+    """宽松匹配 token 的各种变体（idx 为 None 时返回 None）。"""
+    if idx is None:
+        return None
     n = r'0*' + str(idx)
     if left == "@":
         return re.compile(
@@ -620,7 +638,7 @@ def restore(text, maps):
     result = text
     left, right = _left_right_of(maps)
 
-    for idx, item in enumerate(maps):
+    for item in maps:
         token       = item["token"]
         original    = item["original"]
         added_left  = item["added_left"]
@@ -630,7 +648,8 @@ def restore(text, maps):
         if pos != -1:
             m_start, m_end = pos, pos + len(token)
         else:
-            m = _loose_pattern(idx, left, right).search(result)
+            pat = _loose_pattern(_token_number(token), left, right)
+            m = pat.search(result) if pat else None
             if m is None:
                 continue
             m_start, m_end = m.start(), m.end()
@@ -656,7 +675,7 @@ def verify(text, maps):
     left, right = _left_right_of(maps)
     missing, pos = [], 0
 
-    for idx, item in enumerate(maps):
+    for item in maps:
         # ★ 被合并进连续占位符的成员：由 merged 项代表，模型输出里不会有
         if item.get("consumed"):
             continue
@@ -665,7 +684,8 @@ def verify(text, maps):
         if i != -1:
             pos = i + len(token)
             continue
-        m = _loose_pattern(idx, left, right).search(text, pos)
+        pat = _loose_pattern(_token_number(token), left, right)
+        m = pat.search(text, pos) if pat else None
         if not m:
             missing.append(token)
             continue
@@ -1333,7 +1353,7 @@ def unwrap(text, mode="newline"):
 
 
 def reflow(src, dst, mode="newline", min_chars=None, max_chars=None,
-           min_gap=None, punct=None):
+           min_gap=None):
     """
     对一条已译好的译文做「换行重排」（不调用模型）：
 
@@ -1351,11 +1371,16 @@ def reflow(src, dst, mode="newline", min_chars=None, max_chars=None,
     if not config.REWRAP_ENABLE:
         return base
     return rewrap(base, min_chars=min_chars, max_chars=max_chars,
-                  min_gap=min_gap, punct=punct, mode=mode)
+                  min_gap=min_gap, mode=mode)
 
 
-def rewrap(text, min_chars=None, max_chars=None, punct=None,
-           min_gap=None, mode="newline"):
+# ★ 这些标点后可以提前换行（软断点）。提到模块层建一次 ——
+#   rewrap 是逐条调用的，每条都 set(...) 一遍纯属浪费。
+_SOFT_PUNCT = set("，、；：,;: 　")
+
+
+def rewrap(text, min_chars=None, max_chars=None, min_gap=None,
+           mode="newline"):
     """
     翻译后重新分行。
     mode="newline" → 用 \\n
@@ -1380,7 +1405,6 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None,
 
     insert_char = '\\n' if mode == "newline" else ' '
 
-    soft_punct = set("，、；：,;: 　")
     soft_threshold = max(min_chars, min_gap)
 
     parts = []
@@ -1429,7 +1453,7 @@ def rewrap(text, min_chars=None, max_chars=None, punct=None,
 
         if count >= soft_threshold and i < n:
             next_ch = text[i]
-            if next_ch in soft_punct:
+            if next_ch in _SOFT_PUNCT:
                 _break_at(i)
                 count = 0
 

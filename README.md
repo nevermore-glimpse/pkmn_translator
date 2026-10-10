@@ -2,7 +2,7 @@
 
 [中文](README-ch.md) | [English](README.md)
 
-A batch translation tool for Pokémon fan game text files, powered by a local Ollama LLM.
+A batch translation tool for Pokémon fan game text files, powered by a local Ollama LLM.  
 Supports terminology lists, placeholder protection, resume from cache, and automatic checking.
 
 ## Features
@@ -18,12 +18,12 @@ Supports terminology lists, placeholder protection, resume from cache, and autom
 - ✏️ **Edit translations by hand + apply them** — Double-click any row in the check report to edit it: source text on top (read-only, for reference), translation below. Saved into the cache and filed under a new "已编辑" (edited) kind that is never overwritten by re-translation. Then hit **"应用已编辑"** to push every hand-edited line into the translation cache *and* into the generated `*_translated.txt` — untouched lines stay byte-identical (menu 3).
 - 🈶 **Chinese text plugin** — **Four plugin bodies ship with the tool (21.1 / 20.1 / 19.1 / legacy) and the right one is picked automatically from the game's `Essentials::VERSION`** (plus whether the game has a plugin system at all).
   - Games **with** a `Plugins/` folder: the plugin is dropped in there and every plugin (including the game's own) is **compiled straight into `Data/PluginScripts.rxdata`** — no debug mode, no launching the game. A compatibility shim is added when the version can't be read, falling back to the engine's own implementation if the plugin raises.
-  - Games **without** a `Plugins/` folder, or without a plugin system at all (pre-v19, **Ruby 1.8.1**): the plugin is concatenated into a single script and **inserted just *before* the `Main` script in `Scripts.rxdata`** — RGSS evaluates scripts top to bottom and enters the game loop the moment it reaches `Main`, so anything placed *after* `Main` never runs (that was the original "injected but no effect" bug). For unpacked games the file is named after `Main`'s number minus one (e.g. `999_Main.rb` → `998_pkmn_chinese_text.rb`) so it sorts between the last normal script and `Main`.
+  - Games **without** a `Plugins/` folder, or without a plugin system at all (pre-v19, **Ruby 1.8.1**): the plugin is concatenated into a single script and **inserted just *before* the `Main` script in `Scripts.rxdata`** — RGSS evaluates scripts top to bottom and enters the game loop the moment it reaches `Main`, so anything placed *after* `Main` never runs (that was the original "injected but no effect" bug). For unpacked games the file is named after `Main`'s number minus one (e.g. `999_Main.rb` → `998_pkmn_chinese_text.rb`) so it sorts between the last normal script and `Main`.  
     The legacy body patches `String#ord` (via `unpack("U")` — `self[0]` only returns the first *byte* in 1.8 and would never detect Chinese) and `String#each_char`, routes every per-character split through `_pkmn_chars()` (Ruby 1.8's `$KCODE` is not `'U'`, so `scan(/./m)` splits *bytes* and Chinese is never detected), writes both the modern `FONT_NAME` and the legacy `MessageConfig::FontName` font constants, and builds the `\p{Han}` regex at runtime so old Oniguruma won't choke. Re-injecting never stacks duplicates, and "restore" removes exactly that one entry. Verified: `Scripts.rxdata` round-trips byte-for-byte on six real games, so only the one inserted entry changes (menu 1).
 - 🧠 **Terminology re-translation** — Detects newly added terms and re-translates only the affected sentences
 - ⚙️ **In-app settings** — Edit all configuration values from the menu, no manual file editing
-- 📋 **One-click copy** — Right-click any report / term / prefix list to copy it as
-  tab-separated text (paste straight into Excel); logs, file paths, statistics and
+- 📋 **One-click copy** — Right-click any report / term / prefix list to copy it as  
+  tab-separated text (paste straight into Excel); logs, file paths, statistics and  
   settings fields are copyable too
 - 🖥️ **Standalone exe** — Releases include a ready-to-run Windows executable
 
@@ -77,8 +77,8 @@ python main.py          # acrylic GUI (default)
 python main.py --cli    # command-line menu
 ```
 
-On startup, the tool automatically checks your Python environment, dependencies,
-Ollama service, and the required model. If Ollama is not running, it will offer to
+On startup, the tool automatically checks your Python environment, dependencies,  
+Ollama service, and the required model. If Ollama is not running, it will offer to  
 launch it for you (Ollama Desktop App is preferred, with `ollama serve` as fallback).
 
 GUI pages:
@@ -88,13 +88,26 @@ GUI pages:
 2. Translate                  8. Excel to terminology
 3. Re-translate report        9. Settings   (double-click a row to edit)
 4. Re-translate terms        10. Local model server
-5. Prefix dictionary         11. Log
-6. Chinese polish (resumable)
+5. Prefix dictionary         11. Enable DEBUG
+6. Chinese polish (resumable) 12. Log
 ```
 
-Pages 2–7 have a file checklist sidebar on the right; add files via
-"Single file" or "Whole folder". Page 1 uses a game-folder picker
-instead (it must contain a `Data` folder and an `.exe`). Page 10 has an
+Page 11 ("Enable DEBUG") works on a chosen game executable: pick the  
+game's `.exe` (its folder becomes the game directory; a `Data` folder is  
+not required), then choose one of six methods from the dropdown — write  
+`$DEBUG=true` into Main, strip `$DEBUG` conditions (F9 / party Debug /  
+walk-through-walls), inject a SPECIAL-key hook, inject into `pbRepel`  
+(set `$DEBUG` or open the debug menu), or generate a **debug launcher  
+(test)** that starts the game in debug mode without modifying the game  
+itself. Method ⑥ is the only one that needs no `Data` folder; it uses an  
+in-memory patch for RGSS (v16–v18) or `Game.exe debug` + a `preloadScript`  
+in `mkxp.json` for mkxp-z (v19–v21.1), and fills in empty placeholder  
+`Data/*.dat` / `pbs/*.txt` files so debug mode does not trigger a full  
+recompile.
+
+Pages 2–7 have a file checklist sidebar on the right; add files via  
+"Single file" or "Whole folder". Page 1 uses a game-folder picker  
+instead (it must contain a `Data` folder and an `.exe`). Page 10 has an  
 "Adaptation" sidebar listing what changed after switching provider.
 
 Command-line menu:
@@ -118,7 +131,7 @@ Menus 3 / 4 / 5 ask for "single file / whole folder" first.
 
 ### Create Desktop Shortcut (Optional)
 
-Double-click `创建桌面快捷方式.vbs` (Create Desktop Shortcut.vbs).
+Double-click `创建桌面快捷方式.vbs` (Create Desktop Shortcut.vbs).  
 A shortcut named *Pokémon Fan Game Translation Tool* will be created on your desktop.
 
 ### Translation Workflow
@@ -133,35 +146,36 @@ A shortcut named *Pokémon Fan Game Translation Tool* will be created on your de
 Runs a fresh check on the output file, then:
 
 - Auto re-translates lines marked as **Untranslated** or **Suspected untranslated**
-- Only reports **Symbol mismatch** and **Special lines** — these are not auto-fixed
+- Only reports **Symbol mismatch** and **Special lines** — these are not auto-fixed  
   (symbol mismatches usually mean the model dropped a control code; retrying rarely helps)
 
 Only the affected cache entries are deleted, so re-translation is fast.
 
 #### Editing a translation by hand
 
-Double-click any row in the report list: the top box shows the **source** (read-only,
-for reference) and the bottom box the **translation** (editable). Saving writes the
-line into the translation cache and files it under the "已编辑" (edited) kind, which
+Double-click any row in the report list: the top box shows the **source** (read-only,  
+for reference) and the bottom box the **translation** (editable). Saving writes the  
+line into the translation cache and files it under the "已编辑" (edited) kind, which  
 is **never** overwritten by re-translation.
 
-That alone does **not** touch the already-generated `*_translated.txt`. To push your
+That alone does **not** touch the already-generated `*_translated.txt`. To push your  
 edits into the output file, click **"应用已编辑" (Apply edits)** next to "Copy list":
 
 - every entry of `<cache>_edited.json` is written back into the translation cache;
-- the translation file is rewritten **in place** — only the edited lines change,
+- the translation file is rewritten **in place** — only the edited lines change,  
   every other line stays byte-identical (line endings included);
-- lines whose source text no longer matches (e.g. after manual rewrapping) are
+- lines whose source text no longer matches (e.g. after manual rewrapping) are  
   skipped and reported in the log; a missing translation file only updates the cache.
 
 So the order is: **edit lines → "Apply edits" → (optionally) "Refresh report"**.
 
 #### Resolving term conflicts
 
-A term conflict means the model translated a term differently from the terminology
-list (e.g. the list says `Pikachu = 皮卡丘` but the model wrote 皮卡揪). Conflicts are
-recorded in `<input>_conflicts.json` while translating; the **"解决术语冲突"
+A term conflict means the model translated a term differently from the terminology  
+list (e.g. the list says `Pikachu = 皮卡丘` but the model wrote 皮卡揪). Conflicts are  
+recorded in `<input>_conflicts.json` while translating; the **"解决术语冲突"  
 (Resolve term conflicts)** button on the report page is enabled once there are any.
+
 
 It opens a dedicated view that fills the main area (the file panel on the right stays
 put):

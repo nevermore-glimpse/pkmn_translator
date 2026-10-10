@@ -43,7 +43,7 @@ def resource_path(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.4.5"
+VERSION     = "1.5.0"
 APP_NAME    = "宝可梦同人游戏翻译工具"
 APP_TITLE   = f"{APP_NAME}v{VERSION}"
 
@@ -198,7 +198,7 @@ OLLAMA_URL  = "http://localhost:11434/api/chat"
 MODEL       = "qwen3.5:4b"
 TIMEOUT     = 600.0
 NUM_CTX     = 8192
-NUM_PREDICT = 2048
+NUM_PREDICT = 4096
 TEMPERATURE = 0.4
 TOP_P       = 0.8
 KEEP_ALIVE  = "30m"
@@ -218,11 +218,11 @@ SINGLE_RETRIES   = 3
 CACHE_SAVE_EVERY = 1
 
 # ★ 自适应分批：单批原文总字符超过该值就提前切批，避免超长句撑爆上下文
-MAX_BATCH_CHARS  = 2048
+MAX_BATCH_CHARS  = 4096
 # ★ 按长度排序后再分批：同批句子长度接近，输出更稳定、更少截断
 SORT_TODO_BY_LEN = True
 # ★ 单批注入 prompt 的术语上限
-MAX_TERMS_IN_PROMPT = 80
+MAX_TERMS_IN_PROMPT = 100
 # ★ 模型原样回显原文时视为失败，触发重试
 TREAT_ECHO_AS_FAIL = True
 
@@ -256,7 +256,7 @@ TERM_DERIVED_MATCH = True
 ASK_LANG_EACH_TIME = True
 # ---------- 玩家名替换 ----------
 PLAYER_TOKEN = r"\PN"              # 游戏脚本里的玩家名控制码
-PLAYER_PLACEHOLDER = "玛俐大小姐"  # 送模型时的替换文本（含罕见括号，防误伤）
+PLAYER_PLACEHOLDER = "<666>"  # 送模型时的替换文本（含罕见括号，防误伤）
 
 # ---------- 自动术语提取 ----------
 AUTO_EXTRACT_TERMS    = True    # 翻译时自动提取专有名词

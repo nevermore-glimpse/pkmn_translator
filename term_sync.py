@@ -147,18 +147,31 @@ def diff_terms():
 # ================================================================
 # 命中的缓存
 # ================================================================
-def _build_patterns(terms):
-    """为每个术语生成词边界正则。跳过含特殊字符的。"""
-    word_chars = r'\w\u00C0-\u024F'
+_WORD_CHARS = r'\w\u00C0-\u024F'
+# 并进一条正则的术语个数上限（太多会让单条正则臃肿、编译也慢）
+_COMBINE_CHUNK = 200
+
+
+def _build_combined_patterns(terms):
+    """
+    把术语**并成**一两条带词边界的正则（长词在前，保证优先匹配长术语）。
+
+    ★ 原来是「每条术语一个正则 × 每个缓存 key 一遍」的双层循环，
+      N 个术语要扫 N 遍缓存；并成一条后只扫一遍，术语多时快一个数量级。
+    ★ 含 \\ / [ / ] 的术语跳过（与原来一致：这类多半是控制码，不做词边界匹配）。
+    """
+    ok = [t for t in terms
+          if t and '\\' not in t and '[' not in t and ']' not in t]
+    if not ok:
+        return []
+    ok.sort(key=len, reverse=True)
     pats = []
-    for t in terms:
-        if not t or '\\' in t or '[' in t or ']' in t:
-            continue
+    for i in range(0, len(ok), _COMBINE_CHUNK):
+        body = "|".join(re.escape(t) for t in ok[i:i + _COMBINE_CHUNK])
         try:
-            pats.append((t, re.compile(
-                r'(?<![' + word_chars + r'])' +
-                re.escape(t) +
-                r'(?![' + word_chars + r'])')))
+            pats.append(re.compile(
+                r'(?<![' + _WORD_CHARS + r'])(' + body +
+                r')(?![' + _WORD_CHARS + r'])'))
         except re.error:
             continue
     return pats
@@ -173,12 +186,15 @@ def find_affected_cache(cache_data, terms):
     if not terms:
         return []
 
-    pats = _build_patterns(terms)
+    pats = _build_combined_patterns(terms)
+    if not pats:
+        return []
     hits = []
     for key in cache_data:
-        for term, pat in pats:
-            if pat.search(key):
-                hits.append((key, term))
+        for pat in pats:
+            m = pat.search(key)
+            if m:
+                hits.append((key, m.group(1)))
                 break
     return hits
 
@@ -190,10 +206,6 @@ def find_affected_cache(cache_data, terms):
 _PAIR_LINE_RE = re.compile(
     r'^(\s*)("(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*")(,?)(\s*(?:#.*)?)$'
 )
-
-
-def _split_lines_keepends(text):
-    return text.splitlines()
 
 
 def load_auto_block():
@@ -224,7 +236,7 @@ def load_auto_block():
 
     block = text[si + len(start_mark):ei]
     pairs = []
-    for line in _split_lines_keepends(block):
+    for line in block.splitlines():
         m = _PAIR_LINE_RE.match(line)
         if not m:
             continue

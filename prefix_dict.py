@@ -33,10 +33,10 @@ def _load():
     global _entries, _loaded
     if _loaded:
         return
-    _loaded = True
 
     if not os.path.exists(DICT_FILE):
         _entries = {}
+        _loaded = True          # 文件不存在是正常状态，不用反复去查
         return
 
     try:
@@ -49,9 +49,12 @@ def _load():
             _entries = dict(data)
         else:
             _entries = {}
+        _loaded = True
         log.info("前缀字典加载：%d 条（%s）", len(_entries), DICT_FILE)
     except Exception as e:
-        log.warning("前缀字典加载失败：%s", e)
+        # ★ 读失败时**不要**把 _loaded 置 True：否则这一次异常会把字典
+        #   永久钉成空的，后面再怎么调都读不回来（只能重启程序）。
+        log.warning("前缀字典加载失败（下次会重试）：%s", e)
         _entries = {}
 
 

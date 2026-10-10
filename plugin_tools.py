@@ -886,26 +886,44 @@ def restore_plugin(game_dir, emit=None):
 # ================================================================
 # 没有插件目录的游戏：把插件拼成一个脚本，追加到脚本的最后
 # ================================================================
-def scripts_container(game_dir):
+def scripts_containers(game_dir):
     """
-    游戏脚本的落盘位置 → ("file", Data/Scripts 目录) / ("rxdata", 路径) /
-    (None, None)。
+    游戏脚本的**所有**落盘位置 →
+    [("file", Data/Scripts 目录), ("rxdata", 路径), ...]
 
-    ★ 解包过（Data/Scripts 里有 .rb）就写文件；否则改 Scripts.rxdata；
-      Scripts.rxdata 不在时退回 ScriptsBackup.rxdata。
+    ★ 两处都有就都返回 —— v21 起很多同人游戏「Data/Scripts/**.rb（解包源码）」
+      和「Data/Scripts.rxdata（运行时读的那份）」并存，运行时读哪份取决于
+      Game.ini 的 `Scripts=` 指向，**只写一处会出现「改了不生效」**。
+    ★ 一处都没有 → 返回 []（不进 ScriptsBackup：那是只读兜底数据源，
+      只有连 Scripts.rxdata 都没有时才拿它顶一下）。
     """
+    out = []
     sdir = GS.scripts_dir(game_dir)
     if os.path.isdir(sdir):
         for _dp, _dn, fs in os.walk(sdir):
             if any(str(f).endswith(".rb") for f in fs):
-                return "file", sdir
+                out.append(("file", sdir))
+                break
     rx = GS.rxdata_path(game_dir)
     if os.path.isfile(rx):
-        return "rxdata", rx
-    bak = os.path.join(GS.data_dir(game_dir), GS.BACKUP_NAME)
-    if os.path.isfile(bak):
-        return "rxdata", bak
-    return None, None
+        out.append(("rxdata", rx))
+    elif not out:
+        bak = os.path.join(GS.data_dir(game_dir), GS.BACKUP_NAME)
+        if os.path.isfile(bak):
+            out.append(("rxdata", bak))
+    return out
+
+
+def scripts_container(game_dir):
+    """
+    游戏脚本的第一个落盘位置 → ("file", Data/Scripts 目录) / ("rxdata", 路径) /
+    (None, None)。
+
+    ★ 只是 `scripts_containers` 的第一个 —— 写入请用 `scripts_containers`
+      把两处都改掉（见 inject_script_plugin / remove_script_plugin）。
+    """
+    got = scripts_containers(game_dir)
+    return got[0] if got else (None, None)
 
 
 def _settings_text(src_dir, font_file, family, copied):
@@ -1051,32 +1069,11 @@ def _our_files(scripts_dir):
     return out
 
 
-def inject_script_plugin(game_dir, src_dir, font_file, family, copied,
-                         emit=None):
+def _inject_into_scripts(mode, path, body, say):
     """
-    把插件拼成一个脚本写进游戏脚本里。
-
-      · 没解包 → 插一条到 Scripts.rxdata 里 **Main 之前**（先备份；已经注入
-        过的先移除，所以反复执行不会堆好几份）；
-      · 解包成 Data/Scripts/ → 写一个「排在最靠后的普通脚本之后、Main 之前」
-        的 .rb 文件。
-
-    ★ 为什么一定要在 Main 之前：RGSS 从上往下依次执行脚本，读到 Main 就进
-      游戏主循环 —— 挂在 Main 后面的脚本永远不会被执行。
-
-    返回 {"mode", "where", "backup", "scripts", "bytes", "ordered"}。
+    把插件脚本 body 写进**一处**脚本容器（file / rxdata）。
+    返回描述 dict；已经注入过的先移除，所以反复执行不会堆好几份。
     """
-    def say(msg):
-        if emit:
-            emit(msg)
-
-    body, _n = build_script_body(src_dir, font_file, family, copied)
-    mode, path = scripts_container(game_dir)
-    if mode is None:
-        raise FileNotFoundError(
-            "这个游戏里既没有 Data/Scripts 目录，也没有 Data/Scripts.rxdata "
-            "—— 找不到可以写脚本的地方")
-
     if mode == "file":
         for old in _our_files(path):        # 幂等：先删上次注入的（含旧名字）
             try:
@@ -1133,43 +1130,81 @@ def inject_script_plugin(game_dir, src_dir, font_file, family, copied,
     os.replace(tmp, path)
     say(f"[插件] 已写进 {os.path.basename(path)}（共 {len(kept)} 个脚本，"
         f"原文件已备份：{os.path.basename(bak)}）")
-    log.info("脚本方式植入插件：%s → %s（%d 个脚本，本插件在第 %d 条，"
-             "Main 在第 %s 条）", game_dir, path, len(kept), at,
-             _main_index(kept))
     return {"mode": "rxdata", "where": path, "backup": bak,
             "scripts": len(kept), "dropped": dropped,
             "ordered": has_main, "index": at,
             "bytes": len(body.encode("utf-8"))}
 
 
+def inject_script_plugin(game_dir, src_dir, font_file, family, copied,
+                         emit=None):
+    """
+    把插件拼成一个脚本写进游戏脚本里（**两处都写**）。
+
+      · 解包成 Data/Scripts/ → 写一个「排在最靠后的普通脚本之后、Main 之前」
+        的 .rb 文件；
+      · 有 Scripts.rxdata → 插一条到它里面 **Main 之前**（先备份；已经注入
+        过的先移除，所以反复执行不会堆好几份）。
+
+    ★ 为什么一定要在 Main 之前：RGSS 从上往下依次执行脚本，读到 Main 就进
+      游戏主循环 —— 挂在 Main 后面的脚本永远不会被执行。
+    ★ 两处并存时**两处都写**：运行时读哪份取决于 Game.ini 的 Scripts=，
+      只写一处会出现「改了不生效」。
+
+    返回 {"mode", "where", "backup", "scripts", "bytes", "ordered", "targets"}。
+    """
+    def say(msg):
+        if emit:
+            emit(msg)
+
+    body, _n = build_script_body(src_dir, font_file, family, copied)
+    containers = scripts_containers(game_dir)
+    if not containers:
+        raise FileNotFoundError(
+            "这个游戏里既没有 Data/Scripts 目录，也没有 Data/Scripts.rxdata "
+            "—— 找不到可以写脚本的地方")
+    if len(containers) > 1:
+        say(f"[插件] 脚本有 {len(containers)} 处（解包 .rb 与 Scripts.rxdata "
+            "并存），两处都写")
+    targets = []
+    for mode, path in containers:
+        rep = _inject_into_scripts(mode, path, body, say)
+        targets.append(rep)
+        log.info("脚本方式植入插件：%s → %s（mode=%s）", game_dir, path, mode)
+    return {**targets[0], "targets": targets}
+
+
 def _script_bodies(game_dir):
-    """读出本工具注入的那些脚本正文（还原时用来找 `# Copied font:` 标记）。"""
-    mode, path = scripts_container(game_dir)
-    if mode == "file":
-        out = []
-        for p in _our_files(path):
-            try:
-                out.append(io.open(p, "r", encoding="utf-8",
-                                   errors="replace").read())
-            except OSError:
-                pass
-        old = os.path.join(path, SCRIPT_FILE_NAME)   # 万一标记被改过
-        if os.path.isfile(old):
-            try:
-                out.append(io.open(old, "r", encoding="utf-8",
-                                   errors="replace").read())
-            except OSError:
-                pass
-        return out
-    if mode != "rxdata":
-        return []
-    try:
-        with open(path, "rb") as f:
-            obj = _rb_load(f)
-    except Exception:
-        return []
+    """读出本工具注入的那些脚本正文（还原时用来找 `# Copied font:` 标记）。
+
+    ★ 两处（.rb 与 Scripts.rxdata）都读 —— 可能只有一处真的注入过。
+    """
     out = []
-    if isinstance(obj, list):
+    for mode, path in scripts_containers(game_dir):
+        if mode == "file":
+            for p in _our_files(path):
+                try:
+                    out.append(io.open(p, "r", encoding="utf-8",
+                                       errors="replace").read())
+                except OSError:
+                    pass
+            old = os.path.join(path, SCRIPT_FILE_NAME)   # 万一标记被改过
+            if os.path.isfile(old):
+                try:
+                    out.append(io.open(old, "r", encoding="utf-8",
+                                       errors="replace").read())
+                except OSError:
+                    pass
+            continue
+        if mode != "rxdata":
+            continue
+        try:
+            with open(path, "rb") as f:
+                obj = _rb_load(f)
+        except Exception:
+            continue
+        if not isinstance(obj, list):
+            continue
         for e in obj:
             if not _is_our_script(e):
                 continue
@@ -1182,48 +1217,55 @@ def _script_bodies(game_dir):
 
 
 def remove_script_plugin(game_dir, emit=None):
-    """删掉本工具塞进脚本里的那份（rxdata 条目或那个 .rb 文件）。"""
+    """删掉本工具塞进脚本里的那份（**两处**都清：.rb 文件与 rxdata 条目）。"""
     def say(msg):
         if emit:
             emit(msg)
 
-    mode, path = scripts_container(game_dir)
     removed = []
-    if mode is None:
-        return {"removed": removed}
-    if mode == "file":
-        targets = list(_our_files(path))
-        old = os.path.join(path, SCRIPT_FILE_NAME)
-        if os.path.isfile(old) and old not in targets:
-            targets.append(old)
-        for p in targets:
-            try:
-                os.remove(p)
-                removed.append(f"Data/Scripts/{os.path.basename(p)}")
-                say(f"[还原] 已删除 Data/Scripts/{os.path.basename(p)}")
-            except OSError as e:
-                say(f"[还原] 删除 {os.path.basename(p)} 失败：{e}")
-        return {"removed": removed}
+    dropped = 0
+    backup = None
+    for mode, path in scripts_containers(game_dir):
+        if mode == "file":
+            targets = list(_our_files(path))
+            old = os.path.join(path, SCRIPT_FILE_NAME)
+            if os.path.isfile(old) and old not in targets:
+                targets.append(old)
+            for p in targets:
+                try:
+                    os.remove(p)
+                    removed.append(f"Data/Scripts/{os.path.basename(p)}")
+                    say(f"[还原] 已删除 Data/Scripts/{os.path.basename(p)}")
+                except OSError as e:
+                    say(f"[还原] 删除 {os.path.basename(p)} 失败：{e}")
+            continue
 
-    try:
-        with open(path, "rb") as f:
-            obj = _rb_load(f)
-    except Exception as e:
-        say(f"[还原] 读不了 {os.path.basename(path)}：{e}")
-        return {"removed": removed}
-    if not isinstance(obj, list):
-        return {"removed": removed}
-    kept = [e for e in obj if not _is_our_script(e)]
-    n = len(obj) - len(kept)
-    if not n:
-        return {"removed": removed}
-    bak = f"{path}.{time.strftime('%Y%m%d-%H%M%S')}.bak"
-    shutil.copyfile(path, bak)
-    tmp = path + ".tmp"
-    with open(tmp, "wb") as f:
-        _rb_write(f, kept)
-    os.replace(tmp, path)
-    removed.append(f"{os.path.basename(path)} 里的 {n} 个脚本")
-    say(f"[还原] 已从 {os.path.basename(path)} 里删掉 {n} 个注入的脚本"
-        f"（原文件已备份：{os.path.basename(bak)}）")
-    return {"removed": removed, "dropped": n, "backup": bak}
+        try:
+            with open(path, "rb") as f:
+                obj = _rb_load(f)
+        except Exception as e:
+            say(f"[还原] 读不了 {os.path.basename(path)}：{e}")
+            continue
+        if not isinstance(obj, list):
+            continue
+        kept = [e for e in obj if not _is_our_script(e)]
+        n = len(obj) - len(kept)
+        if not n:
+            continue
+        bak = f"{path}.{time.strftime('%Y%m%d-%H%M%S')}.bak"
+        shutil.copyfile(path, bak)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            _rb_write(f, kept)
+        os.replace(tmp, path)
+        removed.append(f"{os.path.basename(path)} 里的 {n} 个脚本")
+        dropped += n
+        backup = backup or bak
+        say(f"[还原] 已从 {os.path.basename(path)} 里删掉 {n} 个注入的脚本"
+            f"（原文件已备份：{os.path.basename(bak)}）")
+    out = {"removed": removed}
+    if dropped:
+        out["dropped"] = dropped
+    if backup:
+        out["backup"] = backup
+    return out

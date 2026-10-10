@@ -74,17 +74,26 @@ def _validate(terms, min_len):
 # 读取现有术语
 # ================================================================
 def _load_existing_terms(path):
-    """加载 term_dict.py 里已有的 TERM_DICT。"""
+    """
+    加载 term_dict.py 里已有的 TERM_DICT。
+
+    ★ 读不出来时**必须报错**（而不是返回空表）：
+      空表会让上层以为「这些术语都没见过」，于是把它们重新写进 AUTO 块 ——
+      结果同一原文出现两条，Python 取最后一条生效，
+      「保留原有译文」的规则被悄悄绕过，AUTO 块还会越写越大。
+    """
     if not os.path.exists(path):
         return {}
+    ns = {}
     try:
-        ns = {}
         with open(path, "r", encoding="utf-8") as f:
             exec(f.read(), ns)
-        return ns.get("TERM_DICT", {})
     except Exception as e:
-        log.warning("读取 term_dict.py 失败：%s", e)
-        return {}
+        raise ValueError(f"term_dict.py 读不出来：{e}") from e
+    data = ns.get("TERM_DICT", {})
+    if not isinstance(data, dict):
+        raise ValueError("term_dict.py 里的 TERM_DICT 不是字典")
+    return data
 
 
 # ================================================================
@@ -110,7 +119,12 @@ def merge_into_term_dict(new_terms, conflicts_out=None):
         log.debug("候选术语未通过校验，全部丢弃")
         return 0
 
-    existing = _load_existing_terms(config.TERM_FILE)
+    try:
+        existing = _load_existing_terms(config.TERM_FILE)
+    except Exception as e:
+        # ★ 读不出来就别写：宁可这批术语不入库，也不能把 AUTO 块写重复
+        log.warning("本次跳过术语合并（%s）", e)
+        return 0
     existing_index = {
         _normalize_key(k): (k, v) for k, v in existing.items()
     }
@@ -213,10 +227,12 @@ def merge_into_term_dict(new_terms, conflicts_out=None):
 
 
 def _atomic_write(path, text):
+    """原子写回（复用 cache.atomic_replace：Windows 上带占用重试）。"""
+    from cache import atomic_replace
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
-    os.replace(tmp, path)
+    atomic_replace(tmp, path)
 
 
 # ================================================================

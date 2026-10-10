@@ -3,12 +3,16 @@
 宝可梦同人游戏翻译工具 —— 亚克力毛玻璃图形界面。
 
 布局：
-  左侧  圆形头像（悬停显示作者信息）+ 标题 + 10 个菜单（悬停放大 + 底部阴影）
+  左侧  圆形头像（**点击回主页** + 悬停显示作者信息）+ 菜单列表（悬停放大 +
+        底部阴影，菜单装不下时整列可上下滑动）
   右侧  各功能页面
+    · 主页（头像全身照 + 作者姓名 + Bilibili / GitHub 主页链接）—— **不在左侧
+      菜单里**，**工具启动时默认就是它**，点左上角头像随时回来
     · 菜单 2/3/4/5/6/7 右侧带「待操作文件」勾选侧边栏
     · 菜单 10 右侧带「切换适配」清单侧边栏
+    · 菜单 11 右侧带「游戏根目录」侧边栏
     · 底部常驻状态条（进度 + 取消）
-  菜单 11 为日志页，任务启动后自动跳转过去。
+  菜单 12 为日志页，任务启动后自动跳转过去。
 """
 import os
 import queue
@@ -107,13 +111,17 @@ MENU_ITEMS = [
     ("8", "术语字典"),
     ("9", "设置"),
     ("10", "本地模型服务"),
-    ("11", "日志"),
+    ("11", "开启DEBUG"),
+    ("12", "日志"),
 ]
 
+# ★ "0"（主页）**不进左侧菜单**（用户要求）：只留在这里，供 _build_content
+#   建页面用；进入方式是点左上角头像。
 MENU_KEYS = {
+    "0": "home",
     "1": "intl", "2": "translate", "3": "report", "4": "terms",
     "5": "prefix", "6": "polish", "7": "reflow", "8": "excel",
-    "9": "settings", "10": "provider", "11": "log",
+    "9": "settings", "10": "provider", "11": "debug", "12": "log",
 }
 
 
@@ -131,6 +139,59 @@ def _intl_outs(report):
     if dirs:
         return "、".join(os.path.basename(p) for p in dirs.values())
     return report.get("out") or ""
+
+
+def _split_lines(text):
+    """
+    源码 → 行列表（**先统一行尾为 LF**）。
+
+    ★ 空文本要得到**空列表**，不是 `[""]` —— `"".split("\\n")` 会给出一个
+      空串元素，difflib 就把它当成「有一行空内容」，两边一比全成 replace，
+      于是「基准有、目标没有」被误标成「两边都不同（chg）」，红/绿都不会亮。
+
+    ★ 必须先把 CRLF / CR 归一成 LF：基准（官方源码）是 LF，游戏
+      Scripts.rxdata 里多为 CRLF —— 不归一化时每行末尾都差一个 `\\r`，
+      逐行比对会「整段全红」，明明只改了一个词却像重写了整个函数。
+    """
+    if not text:
+        return []
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    # ★ 末尾的空行不算「多一行」：很多函数文本以换行结尾，切出来最后一个
+    #   是空串；留着会让对比多出一个「目标独有」的空行（绿底出现在最后）。
+    while lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _line_diff_pairs(base_lines, goal_lines):
+    """
+    按 PyCharm 风格把两段代码逐行对齐 → [(基准行, 目标行, tag), ...]。
+
+    tag ∈ {"eq", "del", "add", "chg"}：
+      eq  两边相同；del 仅基准有；add 仅目标有；chg 同行都有但不同。
+    用 difflib.SequenceMatcher 找块，块内配对成行。
+    """
+    import difflib
+    sm = difflib.SequenceMatcher(None, base_lines, goal_lines)
+    out = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                out.append((base_lines[i1 + k], goal_lines[j1 + k], "eq"))
+        elif tag == "replace":
+            n = max(i2 - i1, j2 - j1)
+            for k in range(n):
+                bl = base_lines[i1 + k] if i1 + k < i2 else ""
+                gl = goal_lines[j1 + k] if j1 + k < j2 else ""
+                out.append((bl, gl, "chg"))
+        elif tag == "delete":
+            for k in range(i1, i2):
+                out.append((base_lines[k], "", "del"))
+        elif tag == "insert":
+            for k in range(j1, j2):
+                out.append(("", goal_lines[k], "add"))
+    return out
 
 
 def round_rect(canvas, x1, y1, x2, y2, r=14, **kw):
@@ -458,16 +519,56 @@ class MenuItem(tk.Canvas):
 
 
 _AVATAR_CACHE = {}
+# 主页大图缓存：原图是上亿像素的 JPEG，缩放很贵，只做一次
+_HERO_CACHE = {}
+
+
+def load_fitted_photo(path, max_w, max_h):
+    """
+    把图片按比例缩进 max_w×max_h（保持宽高比）→ PhotoImage；失败返回 None。
+
+    ★ 原图可能上亿像素：先用 PIL 的 draft() 让 JPEG 在**解码阶段**就降采样，
+      再用 LANCZOS 缩到目标尺寸，避免一次性解码出巨大的位图。
+    """
+    if not path or not os.path.exists(path):
+        return None
+    key = (path, max_w, max_h)
+    if key in _HERO_CACHE:
+        return _HERO_CACHE[key]
+    photo = None
+    try:
+        from PIL import Image, ImageTk
+        Image.MAX_IMAGE_PIXELS = None          # 原图很大，解除告警阈值
+        im = Image.open(path)
+        im.draft("RGB", (max_w, max_h))
+        im = im.convert("RGB")
+        w, h = im.size
+        scale = min(float(max_w) / w, float(max_h) / h, 1.0)
+        size = (max(1, int(w * scale)), max(1, int(h * scale)))
+        if size != (w, h):
+            im = im.resize(size, Image.LANCZOS)
+        photo = ImageTk.PhotoImage(im)
+    except Exception as e:                     # noqa: BLE001
+        photo = None
+        try:
+            if log:
+                log.debug("主页图片加载失败：%s", e)
+        except Exception:                      # noqa: BLE001
+            pass
+    if photo is not None:
+        _HERO_CACHE[key] = photo
+    return photo
 
 
 class Avatar(tk.Canvas):
-    """圆形头像，悬停弹出作者信息。"""
+    """圆形头像：悬停弹出作者信息，点击（给了 on_click 时）跳转主页。"""
 
-    def __init__(self, master, size=68, path=None):
+    def __init__(self, master, size=68, path=None, on_click=None):
         tk.Canvas.__init__(self, master, width=size, height=size,
                            highlightthickness=0, bg=CARD, cursor="hand2")
         self.size = size
         self.path = path
+        self.on_click = on_click
         self._photo = None
         self._tip = None
         self._tip_job = None
@@ -477,7 +578,7 @@ class Avatar(tk.Canvas):
 
         self.bind("<Enter>", self._schedule_tip)
         self.bind("<Leave>", self._hide_tip)
-        self.bind("<ButtonRelease-1>", self._toggle_tip)
+        self.bind("<ButtonRelease-1>", self._click)
 
     # ---------- 图像 ----------
     def _load_image(self):
@@ -591,6 +692,14 @@ class Avatar(tk.Canvas):
         if self._tip and self._tip.winfo_exists():
             self._tip.destroy()
         self._tip = None
+
+    def _click(self, _e=None):
+        """点击：给了 on_click 就跳转（如回主页），否则切换作者信息气泡。"""
+        if self.on_click is not None:
+            self._hide_tip()
+            self.on_click()
+            return
+        self._toggle_tip()
 
     def _toggle_tip(self, _e=None):
         if self._tip and self._tip.winfo_exists():
@@ -1495,6 +1604,168 @@ class _AskText(tk.Toplevel):
         return dlg.result
 
 
+class AntiDebugDialog(tk.Toplevel):
+    """
+    反调试「复核」窗口：把疑似反调试的代码原样摆给用户看。
+
+    用户可以：
+      · 直接在框里改（改完点「用我改的这段」）
+      · 点「自动注释」让工具按老规矩加 `# [pkmn-debug] `
+      · 点「加入白名单并跳过」——这段以后再也不问（落盘到
+        `antidebug_whitelist.json`；引擎自带的 F9 呼出调试菜单那段已内置）
+      · 点「跳过」本次不动它
+      · 点「取消」整次「开启 DEBUG」都不做了
+
+    result = {"action": "comment" | "manual" | "skip" | "cancel",
+              "text": 改好后的整份脚本文本（skip / cancel 时没有）}
+    """
+
+    CTX = 3          # 上下各带几行上下文
+
+    def __init__(self, master, src, idx=1, total=1):
+        tk.Toplevel.__init__(self, master, bg=BG_BASE)
+        import debug_tool as DT
+        self.DT = DT
+        self.src = src
+        self.result = None
+        self.title("发现疑似「反调试」代码")
+        self.transient(master)
+        self.configure(padx=0, pady=0)
+
+        card = RoundCard(self, radius=16, pad=16, width=720,
+                         auto_height=True)
+        card.pack(padx=12, pady=12)
+        body = card.body
+
+        where = ("解包文件 %s" % src["path"]
+                 if src.get("mode") == "file"
+                 else ("PluginScripts.rxdata 里插件第 %s 个 · 第 %s 个文件"
+                       % (src["key"][0], src["key"][1])
+                       if src.get("mode") == "plugin"
+                       else "Scripts.rxdata 第 %s 条" % src.get("key")))
+        tk.Label(body, text="发现疑似「反调试」代码", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(body,
+                 text=("第 %d/%d 处　脚本：%s\n位置：%s"
+                       % (idx, total, src.get("name") or "", where)),
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left").pack(anchor="w", pady=(4, 2))
+        tk.Label(body,
+                 text="下面这段每帧把 $DEBUG 摁回 false（或把场景踢掉），"
+                      "正是「开了 DEBUG 没效果」的原因。\n"
+                      "确认是反调试就注释掉；它是正常代码（比如按 F9 呼出调试"
+                      "菜单）就加白名单。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=670).pack(anchor="w", pady=(2, 8))
+
+        lines = src["text"].split("\n")
+        lo, hi = DT.region_of(src["text"], src["blocks"], self.CTX)
+        pos = "、".join("第 %d–%d 行" % (b["start"] + 1, b["end"] + 1)
+                        for b in src["blocks"])
+        tk.Label(body, text="被判为反调试的部分：%s（下面带 %d 行上下文，"
+                            "行号从 %d 起）" % (pos, self.CTX, lo + 1),
+                 bg=CARD, fg=C_KEY, font=FONT_SMALL).pack(anchor="w")
+
+        box = tk.Frame(body, bg=CARD)
+        box.pack(fill="both", expand=True, pady=(4, 10))
+        self.txt = tk.Text(box, width=88, height=14, font=FONT_MONO,
+                           wrap="none", bg="#FFFFFF", fg="#20304A",
+                           relief="solid", borderwidth=1,
+                           insertbackground="#20304A")
+        sb = ttk.Scrollbar(box, orient="vertical", command=self.txt.yview)
+        self.txt.configure(yscrollcommand=sb.set)
+        self.txt.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.txt.insert("1.0", "\n".join(lines[lo:hi + 1]))
+        self.txt.edit_modified(False)
+
+        btns = tk.Frame(body, bg=CARD)
+        btns.pack(fill="x")
+        GlassButton(btns, "取消（中止）", width=110, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._cancel).pack(side="left")
+        GlassButton(btns, "跳过本次", width=100, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._skip).pack(side="left", padx=6)
+        GlassButton(btns, "加入白名单并跳过", width=150, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._whitelist).pack(side="left")
+        GlassButton(btns, "用我改的这段", width=120, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._manual).pack(side="right", padx=6)
+        GlassButton(btns, "自动注释", width=110, height=40, primary=True,
+                    bg=CARD, font=FONT_SMALL,
+                    command=self._auto).pack(side="right")
+
+        self.update_idletasks()
+        self._center(master)
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.txt.focus_set()
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+
+    def _center(self, master):
+        try:
+            x = master.winfo_rootx() + (master.winfo_width()
+                                        - self.winfo_width()) // 2
+            y = master.winfo_rooty() + (master.winfo_height()
+                                        - self.winfo_height()) // 3
+            self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            pass
+
+    # ---- 各按钮 ----
+    def _text_now(self):
+        return self.txt.get("1.0", "end-1c")
+
+    def _auto(self):
+        # edited=None → enable_debug 按原来的规矩给那几行加 `# [pkmn-debug] `
+        self.result = {"action": "comment", "edited": None}
+        self.destroy()
+
+    def _manual(self):
+        cur = self._text_now()
+        orig = self.DT.region_text(self.src["text"], self.src["blocks"],
+                                   self.CTX)
+        if cur == orig:
+            if not messagebox.askyesno(
+                    "没有改动", "这段代码你没改过，按原样写回等于不动它。\n"
+                    "要继续吗？（一般该点「跳过」或「自动注释」）",
+                    parent=self):
+                return
+        self.result = {"action": "manual", "edited": cur}
+        self.destroy()
+
+    def _skip(self):
+        self.result = {"action": "skip"}
+        self.destroy()
+
+    def _whitelist(self):
+        code = self.DT.block_text(self.src["text"], self.src["blocks"])
+        added, n = self.DT.add_antidebug_whitelist(code)
+        if added:
+            messagebox.showinfo(
+                "已加入白名单",
+                "这段代码已记进白名单（共 %d 条），以后开 DEBUG 不再问它。\n\n"
+                "要删掉的话，编辑程序目录下的 antidebug_whitelist.json。"
+                % n, parent=self)
+        self.result = {"action": "skip"}
+        self.destroy()
+
+    def _cancel(self):
+        self.result = {"action": "cancel"}
+        self.destroy()
+
+    @classmethod
+    def review(cls, master, src, idx=1, total=1):
+        dlg = cls(master, src, idx, total)
+        master.wait_window(dlg)
+        return dlg.result or {"action": "cancel"}
+
+
 # ================================================================
 # 主应用
 # ================================================================
@@ -1563,7 +1834,7 @@ class App:
         self.root.after(500, self._env_check_async)
         self.root.after(1500, lambda: self._check_update(silent=True))
 
-        self.show("translate")
+        self.show("home")      # ★ 启动首页 = 主页（点头像随时回来）
 
     # ---------------- 样式 ----------------
     def _style(self):
@@ -1650,17 +1921,23 @@ class App:
 
         head = tk.Frame(body, bg=CARD)
         head.pack(fill="x", pady=(2, 8))
-        Avatar(head, size=76, path=config.AVATAR_FILE).pack(anchor="w")
+        # ★ 点头像 → 主页
+        Avatar(head, size=76, path=config.AVATAR_FILE,
+               on_click=lambda: self.show("home")).pack(anchor="w")
 
         tk.Frame(body, bg=CARD_BORDER, height=1).pack(fill="x", pady=(2, 8))
 
+        # ★ 菜单装不下时整列可以上下滑动（菜单项变多 / 窗口变矮都靠它）
+        outer, mbody = make_scroll_area(body, bg=CARD)
+        outer.pack(fill="both", expand=True)
+
         for idx, name in MENU_ITEMS:
-            btn = MenuItem(body, idx, name,
+            btn = MenuItem(mbody, idx, name,
                            command=lambda k=MENU_KEYS[idx]: self.show(k))
             btn.pack(fill="x", pady=4)
             self.menu_btns[MENU_KEYS[idx]] = btn
 
-        tip = tk.Label(body, text="悬停头像查看作者信息", bg=CARD,
+        tip = tk.Label(body, text="点头像回主页 · 悬停看作者信息", bg=CARD,
                        fg=C_HINT, font=FONT_SMALL)
         tip.pack(side="bottom", pady=(8, 0))
 
@@ -1680,6 +1957,16 @@ class App:
                      lambda e, c=bgc: paint_bg(c, e.width, e.height))
             self.pages[key] = page
 
+        # ★ 任务4：检测报告页（隐藏页，不在左侧菜单里）
+        rp = tk.Frame(holder, bg=BG_BASE)
+        rp.grid(row=0, column=0, sticky="nsew")
+        rbg = tk.Canvas(rp, highlightthickness=0, bg=BG_BASE)
+        rbg.place(x=0, y=0, relwidth=1, relheight=1)
+        rbg.bind("<Configure>",
+                 lambda e, c=rbg: paint_bg(c, e.width, e.height))
+        self.pages["dbgreport"] = rp
+
+        self._page_home()
         self._page_intl()
         self._page_translate()
         self._page_report()
@@ -1690,6 +1977,8 @@ class App:
         self._page_excel()
         self._page_settings()
         self._page_provider()
+        self._page_debug()
+        self._page_dbg_report()
         self._page_log()
 
     # ---------------- 状态条 ----------------
@@ -2031,6 +2320,181 @@ class App:
                     self.plugin_restore_lbl.config(
                         text=("已还原：" + "、".join(removed)) if removed
                         else "没有找到插件脚本（可能本来就没植入过）")
+                elif kind == "dbg_scan_done":
+                    r = payload or {}
+                    if r.get("ok"):
+                        self._dbg_show_check(r.get("check"),
+                                             r.get("report_path"))
+                    else:
+                        self.dbg_stat.config(text="✘ 检测失败", fg=ERR_COLOR)
+                        self.dbg_check_lbl.config(
+                            text=r.get("reason", ""), fg=ERR_COLOR)
+                elif kind == "dbg_enable_done":
+                    r = payload or {}
+                    self._dbg_show_check(r.get("check"), r.get("report_path"))
+                    if not r.get("ok"):
+                        self.dbg_do_lbl.config(
+                            text=f"✘ {r.get('reason') or '失败'}",
+                            fg=ERR_COLOR)
+                    elif r.get("changed"):
+                        what = []
+                        if any(t.get("written") for t in
+                               ((r.get("debug") or {}).get("targets") or [])):
+                            what.append("写入 $DEBUG=true")
+                        if any(t.get("written") for t in
+                               ((r.get("antidebug") or {}).get("targets")
+                                or [])):
+                            what.append("注释反调试代码")
+                        if (r.get("guard") or {}).get("added"):
+                            what.append("关闭启动时的全量编译")
+                        mres = r.get("mode_res") or {}
+                        mode = r.get("mode") or "main"
+                        mname = {"main": "通用", "keys": "方式二",
+                                 "special": "方式三",
+                                 "special_menu": "方式四",
+                                 "repel": "方式五",
+                                 "repel_menu": "方式六"}.get(mode, mode)
+                        if mode != "main":
+                            if mres.get("ok"):
+                                what.append(f"{mname}已应用")
+                            else:
+                                what.append(f"{mname}未命中（{mres.get('reason')}）")
+                        self.dbg_do_lbl.config(
+                            text="✔ 已完成：" + ("、".join(what) or "检查通过"),
+                            fg=C_OK)
+                    else:
+                        self.dbg_do_lbl.config(
+                            text="· 没有需要改动的地方（已经是开启状态）",
+                            fg=C_KEY)
+                    self._dbg_refresh_folder_info()
+                    # ★ 任务2：方式②没认出任何 $DEBUG 条件 → 问要不要按基准补行
+                    if r.get("ok") and r.get("mode_none"):
+                        self._ask_baseline_strip(r)
+                elif kind == "dbg_overwrite_ver":
+                    # 覆盖前「读不出版本号」→ 检测认完版本后继续走确认流程
+                    _d, _chk = payload[0], payload[1]
+                    _tag = payload[2] if len(payload) > 2 else "menus"
+                    _bver = (_chk or {}).get("baseline") or ""
+                    _by = ""
+                    if _bver:
+                        _exact = (_chk or {}).get("exact")
+                        _by = ("指纹完全吻合" if _exact else "最接近的一份基准")
+                        self._emit_log(
+                            f"[覆盖] 认出是 v{_bver}，用它覆盖\n")
+                    if _tag == "scene_map":
+                        self._do_overwrite_scene_map_ask(_d, _bver, _by)
+                    else:
+                        self._do_overwrite_menus_ask(_d, _bver, _by)
+                elif kind == "dbg_scene_overwrite_done":
+                    r = payload or {}
+                    if r.get("ok"):
+                        names = "、".join(r.get("written") or [])
+                        self.dbg_ow_lbl.config(
+                            text=f"✔ 已用基准覆盖地图更新（Scene_Map）：{names}",
+                            fg=C_OK)
+                        messagebox.showinfo(
+                            "覆盖地图更新完成",
+                            "已用官方同版本基准覆盖游戏的 Scene_Map"
+                            f"（地图更新）：\n  {names}\n\n"
+                            "原作者对 Scene_Map 的改动已被替换掉（原文件已备份，"
+                            "可用「还原覆盖」恢复）。\n\n"
+                            "建议接着用「方式② 删条件 / 方式③④ F6 键」——"
+                            "现在 $DEBUG 条件是官方写法，一定能认出来。")
+                    else:
+                        why = r.get("reason") or "覆盖失败"
+                        self.dbg_ow_lbl.config(text=f"✘ {why}", fg=ERR_COLOR)
+                        messagebox.showerror("覆盖地图更新失败", why)
+                elif kind == "dbg_strip_baseline_done":
+                    r = payload or {}
+                    n = r.get("added", 0)
+                    names = "、".join(t.get("script", "")
+                                     for t in (r.get("targets") or []))
+                    if r.get("ok") and n:
+                        self._emit_log(
+                            f"[方式二·兜底] 完成：共补 {n} 处（{names}）\n")
+                        messagebox.showinfo(
+                            "已按基准补行",
+                            f"已按官方 v{r.get('version')} 基准，在对应位置补了"
+                            f" {n} 处「去掉 debug 条件」的代码：\n  {names}\n\n"
+                            "只加了代码、没有删任何东西；原文件已备份，"
+                            "可用「还原」恢复。")
+                    else:
+                        self._emit_log(
+                            "[方式二·兜底] 没有需要补的地方\n")
+                        messagebox.showinfo(
+                            "没有需要补的地方",
+                            r.get("reason") or
+                            "官方基准里带 $DEBUG 的地方，游戏里要么已经有了、"
+                            "要么找不到对应函数 —— 没有可补的。\n\n"
+                            "可以试试「用基准覆盖地图更新」把 Scene_Map 盖回"
+                            "官方版，再开方式②。")
+                elif kind == "dbg_overwrite_done":
+                    r = payload or {}
+                    if r.get("ok"):
+                        names = "、".join(r.get("written") or [])
+                        self.dbg_ow_lbl.config(
+                            text=f"✔ 已覆盖 {len(r.get('written') or [])} 个"
+                                 f"调试菜单脚本：{names}",
+                            fg=C_OK)
+                    else:
+                        self.dbg_ow_lbl.config(
+                            text=f"✘ {r.get('reason') or '覆盖失败'}",
+                            fg=ERR_COLOR)
+                elif kind == "dbg_overwrite_restore_done":
+                    r = payload or {}
+                    n = r.get("restored", 0)
+                    self.dbg_ow_lbl.config(
+                        text=(f"✔ 已还原 {n} 个脚本" if n
+                              else "· 没有找到本工具覆盖过的备份"),
+                        fg=C_OK if n else C_KEY)
+                elif kind == "dbg_launcher_done":
+                    r = payload or {}
+                    if r.get("ok"):
+                        files = r.get("files") or []
+                        note = r.get("note") or ""
+                        self.dbg_do_lbl.config(
+                            text=f"✔ 调试启动器已生成：{ '、'.join(files) }\n"
+                                 + (f"  {note}\n" if note else "")
+                                 + f"  到游戏目录双击「{r.get('main', '启动文件')}」"
+                                   f"即以调试模式进入。",
+                            fg=C_OK)
+                        messagebox.showinfo(
+                            "调试启动器已生成",
+                            "已在游戏目录生成：\n  "
+                            + "\n  ".join(files)
+                            + (("\n\n" + note) if note else "")
+                            + f"\n\n双击「{r.get('main', '启动文件')}」"
+                              "即以调试模式进入游戏。")
+                    else:
+                        why = r.get("reason") or "生成失败"
+                        self.dbg_do_lbl.config(text=f"✘ {why}", fg=ERR_COLOR)
+                        if r.get("unsupported"):
+                            messagebox.showwarning(
+                                "这类游戏暂时开不了调试", why)
+                        else:
+                            messagebox.showerror("生成调试启动器失败", why)
+                elif kind == "dbg_apply_report_done":
+                    r = payload or {}
+                    applied = r.get("applied") or []
+                    if applied:
+                        messagebox.showinfo(
+                            "写回完成",
+                            f"已写回 {len(applied)} 个函数：\n"
+                            + "\n".join(applied[:20])
+                            + (f"\n…另有 {len(applied) - 20} 个"
+                               if len(applied) > 20 else ""))
+                    else:
+                        messagebox.showwarning(
+                            "没有写回任何内容",
+                            r.get("reason") or "没有可应用的已编辑条目。")
+                elif kind == "dbg_restore_done":
+                    r = payload or {}
+                    n = r.get("restored", 0)
+                    self.dbg_do_lbl.config(
+                        text=(f"✔ 已还原 {n} 处改动" if n
+                              else "· 没有找到本工具做过的备份"),
+                        fg=C_OK if n else C_KEY)
+                    self._dbg_refresh_folder_info()
                 elif kind == "prefix_done":
                     messagebox.showinfo("完成",
                                         "前缀字典已写入并应用到翻译文件")
@@ -2226,6 +2690,71 @@ class App:
             self.status_var.set(f"{label} 已连接，但模型未就绪：{cur_model}")
         else:
             self.status_var.set(f"{label} 未连接：{msg}（翻译功能不可用）")
+
+    # ================================================================
+    # 页面 0：主页（点左侧头像进来；工具启动时默认也是它）
+    # ================================================================
+    def _page_home(self):
+        page = self.pages["home"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+
+        outer, inner = make_scroll_area(page, bg=BG_BASE)
+        outer.grid(row=0, column=0, sticky="nsew")
+
+        card = RoundCard(inner, radius=18, pad=20, auto_height=True)
+        card.pack(fill="x")
+        body = card.body
+
+        # ---- 顶部声明（用户要求）----
+        notice = tk.Label(body, text="本工具完全免费，不会有任何盈利行为",
+                          bg=CARD, fg=ACCENT_DEEP,
+                          font=(FONT_FAMILY, FONT_SIZES["big"] + 1, "bold"))
+        notice.pack(anchor="center", pady=(0, 16))
+
+        # ---- 头像全身照 ----
+        box = tk.Frame(body, bg=CARD)
+        box.pack(anchor="center")
+        photo = load_fitted_photo(config.AVATAR_FILE, 760, 520)
+        self.home_photo_lbl = tk.Label(box, bg=CARD, bd=0,
+                                       highlightthickness=0)
+        self.home_photo_lbl.pack()
+        if photo is not None:
+            self.home_photo_lbl.configure(image=photo)
+            self.home_photo_lbl.image = photo          # 防 GC
+        else:
+            self.home_photo_lbl.configure(
+                text="（没找到头像：%s）"
+                     % os.path.basename(config.AVATAR_FILE),
+                fg=C_HINT, font=FONT_SMALL)
+
+        # ---- 作者姓名 ----
+        name = tk.Label(body, text=config.AUTHOR_NAME, bg=CARD, fg=C_TITLE,
+                        font=(FONT_FAMILY, FONT_SIZES["title"] + 4, "bold"))
+        name.pack(anchor="center", pady=(18, 12))
+        attach_label_copy(name, self, "作者名")
+
+        # ---- 主页链接 ----
+        row = tk.Frame(body, bg=CARD)
+        row.pack(anchor="center")
+        self._home_link(row, "Bilibili 主页", config.AUTHOR_BILIBILI)
+        self._home_link(row, "GitHub 主页", config.AUTHOR_GITHUB)
+
+        tk.Label(body, text=f"{config.APP_NAME}  v{config.VERSION}",
+                 bg=CARD, fg=C_KEY, font=FONT_B).pack(
+            anchor="center", pady=(16, 0))
+
+    def _home_link(self, parent, text, url):
+        """主页上的一个「XX 主页」链接按钮 + 底下那行网址（都能点开）。"""
+        col = tk.Frame(parent, bg=CARD)
+        col.pack(side="left", padx=10)
+        GlassButton(col, text, width=176, height=46, primary=True, bg=CARD,
+                    command=lambda: webbrowser.open(url)).pack()
+        link = tk.Label(col, text=url, bg=CARD, fg=ACCENT,
+                        font=FONT_SMALL, cursor="hand2")
+        link.pack(pady=(6, 0))
+        link.bind("<Button-1>", lambda e: webbrowser.open(url))
+        attach_label_copy(link, self, "主页网址")
 
     # ================================================================
     # 页面 1：文本提取与编译
@@ -5748,7 +6277,8 @@ class App:
         info.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         head = tk.Frame(info.body, bg=CARD)
         head.pack(fill="x")
-        Avatar(head, size=64, path=config.AVATAR_FILE).pack(side="left")
+        Avatar(head, size=64, path=config.AVATAR_FILE,
+               on_click=lambda: self.show("home")).pack(side="left")
         box = tk.Frame(head, bg=CARD)
         box.pack(side="left", padx=14)
         tk.Label(box, text=config.AUTHOR_NAME, bg=CARD, fg=C_TITLE,
@@ -6865,7 +7395,1443 @@ class App:
         webbrowser.open(url)
 
     # ================================================================
-    # 页面 10：日志
+    # 页面 11：开启 DEBUG
+    # ================================================================
+    def _page_debug(self):
+        self.debug_folder = None
+        self.debug_exe = None       # ★ 用户手选的游戏启动程序（exe）
+        self.debug_has_data = True  # ★ 选中的目录里有没有 Data
+        self.debug_modes_locked = False  # ★ 无 Data 时锁成「调试启动器」
+        # ★ 用户要求：引擎被改过也**默认继续写入**，所以默认勾上。
+        self.debug_force = tk.BooleanVar(value=True)
+        page = self.pages["debug"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+
+        left = tk.Frame(page, bg=BG_BASE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        outer, inner = make_scroll_area(left, bg=BG_BASE)
+        outer.pack(fill="both", expand=True)
+
+        # ---- 上层：引擎体检 ----
+        c1 = RoundCard(inner, radius=16, pad=16, auto_height=True)
+        c1.pack(fill="x", pady=(0, 10))
+        head1 = tk.Frame(c1.body, bg=CARD)
+        head1.pack(fill="x")
+        tk.Label(head1, text="引擎体检", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        self.dbg_stat = tk.Label(head1, text="", bg=CARD, fg=C_KEY,
+                                 font=FONT_BIG)
+        self.dbg_stat.pack(side="right")
+        attach_label_copy(self.dbg_stat, self, "体检结果")
+
+        row1 = tk.Frame(c1.body, bg=CARD)
+        row1.pack(fill="x", pady=(8, 0))
+        GlassButton(row1, "开始检测", width=132, height=46, primary=True,
+                    bg=CARD, command=self._do_debug_scan).pack(side="left")
+        # ★ 任务4：检测报告按钮，在「开始检测」右侧
+        GlassButton(row1, "检测报告", width=132, height=46, bg=CARD,
+                    command=self._open_report).pack(side="left", padx=(10, 0))
+        # ★ 任务3：用基准覆盖 debug 菜单脚本
+        GlassButton(row1, "用基准覆盖 debug 菜单", width=196, height=46,
+                    bg=CARD,
+                    command=self._do_overwrite_menus).pack(side="left",
+                                                          padx=(10, 0))
+        # ★ 任务3：用基准覆盖「地图更新」（Scene_Map）
+        GlassButton(row1, "用基准覆盖地图更新", width=178, height=46,
+                    bg=CARD,
+                    command=self._do_overwrite_scene_map).pack(side="left",
+                                                               padx=(10, 0))
+        tk.Label(c1.body,
+                 text="① 检测结果**只在右侧运行日志里展示**（本卡片不再罗列）；"
+                      "检测完可点「检测报告」进报告页逐行对比、编辑并回写。\n"
+                      "② 「用基准覆盖 debug 菜单」＝把官方同版本引擎的调试菜单"
+                      "脚本整份覆盖到游戏里，并把菜单文字换成中文 —— "
+                      "**只动调试菜单那几个脚本，改动前会自动备份**，出问题可"
+                      "用「还原覆盖」恢复。\n"
+                      "③ 「用基准覆盖地图更新」＝把官方同版本引擎的 **Scene_Map**"
+                      "（地图场景：按键处理、F9 调试菜单、转场）整份盖回游戏 —— "
+                      "同人游戏常把它改得面目全非，导致「方式二：删 $DEBUG 条件」"
+                      "一个都认不出来；盖回官方版后方式二/三/四就有干净的落点了。"
+                      "**只替换 Scene_Map 这一个脚本、不做翻译、改动前自动备份**。\n"
+                      "④ 按游戏脚本里的版本号挑官方基准（内置 16 / 17 / 18 / "
+                      "19 / 19.1 / 20 / 20.1 / 21 / 21.1）。基准的形态跟 "
+                      "RMXP 脚本编辑器一样：**脚本名 → 它里面的函数**，"
+                      "按脚本名找到对应的那份，再逐个对函数体指纹："
+                      "一致=没动过、被改=函数体变了、缺失=基准里有游戏里没有、"
+                      "新增=作者自己加的不算问题，Settings 脚本不参与比对。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
+        self.dbg_check_lbl = tk.Label(c1.body, text="", bg=CARD, fg=C_KEY,
+                                      font=FONT_SMALL, justify="left",
+                                      wraplength=560)
+        self.dbg_check_lbl.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.dbg_check_lbl, self, "检测详情")
+        row1b = tk.Frame(c1.body, bg=CARD)
+        row1b.pack(fill="x", pady=(6, 0))
+        GlassButton(row1b, "还原覆盖", width=108, height=38, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_overwrite_restore).pack(side="left")
+        self.dbg_ow_lbl = tk.Label(c1.body, text="", bg=CARD, fg=C_KEY,
+                                   font=FONT_SMALL, justify="left",
+                                   wraplength=560)
+        self.dbg_ow_lbl.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.dbg_ow_lbl, self, "覆盖结果")
+
+        # ---- 中层：开启 DEBUG ----
+        c2 = RoundCard(inner, radius=16, pad=16, auto_height=True)
+        c2.pack(fill="x", pady=(0, 10))
+        head2 = tk.Frame(c2.body, bg=CARD)
+        head2.pack(fill="x")
+        tk.Label(head2, text="开启 DEBUG", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+
+        row2 = tk.Frame(c2.body, bg=CARD)
+        row2.pack(fill="x", pady=(8, 0))
+        self.dbg_do_btn = GlassButton(
+            row2, "开启 DEBUG", width=140, height=46, primary=True,
+            bg=CARD, command=self._do_debug_enable)
+        self.dbg_do_btn.pack(side="left")
+        tk.Checkbutton(
+            row2, text="引擎被改过也继续写入（默认）",
+            variable=self.debug_force, bg=CARD, fg=TEXT,
+            activebackground=CARD, activeforeground=TEXT,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            cursor="hand2").pack(side="left", padx=12)
+        GlassButton(row2, "还原", width=88, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_debug_restore).pack(side="right")
+        # ★ 方式⑦：生成调试启动器（选中方式⑦时可用）
+        self.dbg_launcher_btn = GlassButton(
+            row2, "生成调试启动器", width=136, height=40, bg=CARD,
+            font=FONT_SMALL, command=self._do_make_launcher)
+        self.dbg_launcher_btn.pack(side="right", padx=8)
+
+        # ★ 任务5/任务2：开启方式改下拉框（容纳六种方式）
+        row2b = tk.Frame(c2.body, bg=CARD)
+        row2b.pack(fill="x", pady=(8, 0))
+        tk.Label(row2b, text="开启方式：", bg=CARD, fg=C_TITLE,
+                 font=FONT_SMALL).pack(side="left")
+        self.debug_mode = tk.StringVar(value="main")
+        self._debug_mode_labels = [
+            ("main", "① 通用（写 Main，启动即调试）"),
+            ("keys", "② 删条件（F9/队伍/穿墙 免 $DEBUG 可用）"),
+            ("special", "③ F6 键（按 F6 直接开调试 + 提示）"),
+            ("special_menu", "④ F6 键（按 F6 直接开调试菜单）"),
+            ("repel", "⑤ 除虫喷雾（用喷雾即设 $DEBUG）"),
+            ("repel_menu", "⑥ 除虫喷雾（用喷雾即开调试菜单）"),
+            ("launcher", "⑦ 调试启动器（生成 exe，双击进调试）"),
+        ]
+        self._debug_mode_cb = ttk.Combobox(
+            row2b, textvariable=self.debug_mode, width=42, state="readonly",
+            font=FONT_SMALL,
+            values=[lab for _k, lab in self._debug_mode_labels])
+        self._debug_mode_cb.pack(side="left", padx=8)
+        self._debug_mode_cb.bind("<<ComboboxSelected>>",
+                                 self._on_debug_mode_change)
+        self._set_debug_mode_value("main")
+        self.dbg_mode_desc = tk.Label(c2.body, text="", bg=CARD, fg=C_HINT,
+                                      font=FONT_SMALL, justify="left",
+                                      wraplength=560)
+        self.dbg_mode_desc.pack(anchor="w", pady=(4, 0))
+        self._on_debug_mode_change()
+        self.dbg_do_lbl = tk.Label(c2.body, text="", bg=CARD, fg=C_KEY,
+                                   font=FONT_SMALL, justify="left",
+                                   wraplength=560)
+        self.dbg_do_lbl.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.dbg_do_lbl, self, "开启结果")
+        tk.Label(c2.body,
+                 text="另有：① 顺手清掉脚本里的**反调试**代码：在 Scene_Map "
+                      "里检测到 `if $DEBUG … end` 会直接触发处理，检测到 "
+                      "`$DEBUG = false` 直接整行注释；\n"
+                      "　 ★ 检测范围**含插件脚本 `Data/PluginScripts.rxdata`**"
+                      "（v19+ 的插件机制，游戏真正 eval 的就是插件里那份）——"
+                      "插件里除了按插件名，还认「重开 `class Scene_Map`」的文件；"
+                      "其它检测（基准比对 / 方式②③④）不看插件脚本；\n"
+                      "② 按脚本名找到 **Compiler**，给它的 main 装一道闸："
+                      "Data 里已有编译数据时，不再删 Data/*.dat、不再全量重编译"
+                      "（按住 Ctrl 启动仍会真编译一次）；\n"
+                      "③ 改动前先把脚本源文件改名为 .bak，再复制一份来改 —— "
+                      ".bak 里始终是原始文件，「还原」就是把它改回原名；\n"
+                      "④ 方式②「一处都没认出来」时会弹窗问你要不要按版本基准"
+                      "在对应位置补「免 $DEBUG 条件」的代码（见右侧提示）。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
+
+        # ---- 下层：使用提示 ----
+        c3 = RoundCard(inner, radius=16, pad=16, auto_height=True)
+        c3.pack(fill="x")
+        self.dbg_hint_lbl = tk.Label(
+            c3.body,
+            text="· 选「游戏启动程序（exe）」即可，游戏目录会自动用它所在文件夹\n"
+                 "· 没有 Data 文件夹的游戏：只能用**方式⑦ 调试启动器**"
+                 "（它不改本体、不依赖 Data）\n"
+                 "· 改完 PBS 想重新编译时，按住 Ctrl 启动游戏即可\n"
+                 "· 本工具只动 Main / Compiler / 反调试这三处脚本，别的都不碰\n"
+                 "· 脚本「解包成 Data/Scripts/*.rb」和「压在 Scripts.rxdata 里」"
+                 "两种都有时会**两处都改**，免得改了不生效的那份\n"
+                 "· 备份**只做一次**：同一个文件第一次改动前存一份 "
+                 "<脚本名>.pkmn-debug-<时间>.bak，之后反复开关都复用这一份，"
+                 "不会越堆越多；确认没问题后可以自己删掉",
+            bg=CARD, fg=C_HINT, font=FONT_SMALL,
+            justify="left", wraplength=560)
+        self.dbg_hint_lbl.pack(anchor="w", pady=(6, 0))
+
+        # ---- 右侧：游戏启动程序（exe）----
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder.grid(row=0, column=1, sticky="nsew")
+        fp_holder.grid_propagate(False)
+        body = fp_holder.body
+        tk.Label(body, text="游戏启动程序", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 4))
+        GlassButton(body, "选择游戏启动程序 (exe)", width=196, height=36,
+                    bg=CARD, font=FONT_SMALL,
+                    command=self._dbg_pick_exe).pack(anchor="w", padx=10)
+        self.dbg_folder_lbl = tk.Label(body, text="未选择", bg=CARD,
+                                       fg=C_KEY, font=FONT_SMALL,
+                                       wraplength=200, justify="left")
+        self.dbg_folder_lbl.pack(anchor="w", padx=10, pady=(6, 0))
+        attach_copy(self.dbg_folder_lbl, [
+            ("复制 exe 路径", lambda: getattr(self, "debug_exe", "") or ""),
+            ("复制游戏目录",
+             lambda: getattr(self, "debug_folder", "") or ""),
+        ], app=self, hotkey=False)
+        self.dbg_info_lbl = tk.Label(body, text="", bg=CARD, fg=C_KEY,
+                                     font=FONT_SMALL, wraplength=200,
+                                     justify="left")
+        self.dbg_info_lbl.pack(anchor="w", padx=10, pady=(4, 0))
+        attach_label_copy(self.dbg_info_lbl, self, "游戏信息")
+        tk.Label(body,
+                 text="提示：\n"
+                      "· 选游戏的启动程序（Game.exe 之类，只要是 exe 就行），\n"
+                      "  工具会自动用它所在的文件夹作为游戏目录；\n"
+                      "· 目录里 exe 很多时（Game.exe / Game_new.exe /\n"
+                      "  Game (old).exe …），**你选的这个就是主程序**，\n"
+                      "  不会再被旧版/编辑器抢走；\n"
+                      "· 先「开始检测」，确认引擎没问题再「开启 DEBUG」\n"
+                      "· 检测出「被改 / 缺失」时，多半是作者动过引擎；\n"
+                      "  现在**默认就继续写入**（不再拦你），\n"
+                      "  「引擎被改过也继续写入」已默认勾上；\n"
+                      "· 单文件大 exe（加密打包）用「方式⑦ 调试启动器」，\n"
+                      "  它会**运行时看进程加载的 dll**：\n"
+                      "    · RGSS*.dll        → 内存补丁；\n"
+                      "    · msvcrt-ruby*.dll → mkxp-z，改用原生命令行 "
+                      "`debug` 参数；\n"
+                      "    · 都认不出          → 也用 `debug` 参数再试一次。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=200).pack(anchor="w", padx=10,
+                                                      pady=(10, 0))
+
+    # ---------- 菜单 11：小工具 ----------
+    _DEBUG_MODE_DESC = {
+        "main": "方式①（通用）：在 Main 的 mainFunction 里写 $DEBUG=true，"
+                "启动即调试模式（标题界面会变，F9 开调试菜单）。",
+        "keys": "方式②：删掉各处「需要 $DEBUG 才生效」的条件，让它们无条件可用。"
+                "穿墙（Game_Player）、F9 调试菜单（Scene_Map）、"
+                "队伍/暂停/背包里的 Debug 项（PScreen_Party / UI_Party / "
+                "UI_PauseMenu / UI_Bag / UI_PokemonStorage）。"
+                "**自动认版本**：v16/v17 的 `if $DEBUG and Input.press?(…)`、"
+                "v18 起的 `return true if $DEBUG and|&& Input.press?(…)`、"
+                "`… if $DEBUG`、`\"condition\" => proc { … $DEBUG }` 全都认，"
+                "混着写也能正确处理，且只删修饰词、不会产生语法错误。\n"
+                "★ 如果一个都认不出来（作者把这段改没了 / 结构完全不同），"
+                "会弹窗问你要不要**按游戏版本的官方基准**，在对应位置补上"
+                "「去掉 debug 条件」的代码。",
+        "special": "方式③：照着 F9 的样子，在 Scene_Map#update 里加一个 "
+                   "**F6 键**分支 —— 按下 F6 **直接** `$DEBUG = true` 并弹窗提示"
+                   "（不再判断 `!$DEBUG`，按下去就提示）。"
+                   "v16/v17 加独立 if 块，v18 起加 elsif 分支，各版本都认。",
+        "special_menu": "方式④：位置同方式③（Scene_Map#update 里的 F6 键），"
+                        "但**直接打开调试菜单**"
+                        "（`pbFadeOutIn { pbDebugMenu }`，"
+                        "即方式⑥ 的 F6 版）—— 按 F6 不再只是设 $DEBUG，"
+                        "而是立刻把调试菜单弹出来。"
+                        "v16/v17 独立 if 块，v18 起 elsif 分支。",
+        "repel": "方式⑤：除虫喷雾 `pbRepel` 开头注入 —— $DEBUG 不为真就设为真"
+                 "并提示（用一次除虫喷雾即开调试）。",
+        "repel_menu": "方式⑥：同方式⑤的位置（除虫喷雾的 `pbRepel` 开头，"
+                      "v16–v18 在 PItem_ItemEffects、v19+ 在 Item_Effects），"
+                      "但**直接打开调试菜单**（`pbFadeOutIn { pbDebugMenu }`，"
+                      "即 Scene_Map#call_debug 的等效写法），不再等 F9。",
+        "launcher": "方式⑦（调试启动器）：生成 **宝可梦调试启动器.exe**（自带 "
+                    "Python，玩家电脑**不用装 Python**）+ 一份 "
+                    "`_pkmn_debug_launcher.json` 配置，双击 exe 即以调试模式"
+                    "进游戏 —— **不改游戏本体、不动存档**。"
+                    "★ exe 是**所有游戏共用同一份固定文件**，各游戏的差异"
+                    "（游戏 exe 名 / 运行库 / 注入钩子）全写在那个 json 里。"
+                    "适配 v16–v21.1：启动时**运行时看进程实际加载了哪个 dll**，"
+                    "RGSS*.dll（v16–v18）→ 内存补丁；"
+                    "msvcrt-ruby*.dll（mkxp-z，v19–v21.1）→ 原生命令行 "
+                    "`debug` 参数。"
+                    "会自动补齐最小可用 Data/*.dat 与 pbs/*.txt（真数据，"
+                    "不是空文件），避免开调试后触发全量重编译报错。"
+                    "适合脚本被加密打包（单 exe）的游戏；"
+                    "**也是唯一不需要 Data 文件夹的方式**。",
+    }
+
+    def _set_debug_mode_value(self, key):
+        """把内部 key 换算成下拉框显示的文字。"""
+        for k, lab in self._debug_mode_labels:
+            if k == key:
+                self.debug_mode.set(lab)
+                return
+        self.debug_mode.set(self._debug_mode_labels[0][1])
+
+    def _debug_mode_key(self):
+        """下拉框当前选择 → 内部 key。"""
+        lab = self.debug_mode.get()
+        for k, l in self._debug_mode_labels:
+            if l == lab:
+                return k
+        return "main"
+
+    def _on_debug_mode_change(self, _e=None):
+        # 没有 Data 时被锁成 launcher，描述文字由 _dbg_lock_modes 负责，
+        # 这里不要覆盖掉它的警告。
+        if getattr(self, "debug_modes_locked", False):
+            if hasattr(self, "dbg_launcher_btn"):
+                self.dbg_launcher_btn.set_enabled(True)
+            return
+        key = self._debug_mode_key()
+        self.dbg_mode_desc.config(text=self._DEBUG_MODE_DESC.get(key, ""))
+        # 方式⑦是独立按钮，提示去点它
+        if hasattr(self, "dbg_launcher_btn"):
+            on = (key == "launcher")
+            self.dbg_launcher_btn.set_enabled(on)
+
+    def _dbg_pick_exe(self):
+        """选游戏启动程序（exe）；游戏目录由它推出。"""
+        initial = (getattr(self, "debug_folder", None)
+                   or config.Runtime.last_dir
+                   or config.BASE_DIR)
+        if not os.path.isdir(initial):
+            initial = config.BASE_DIR
+        p = filedialog.askopenfilename(
+            title="选择游戏启动程序（Game.exe 之类，只要是 exe 就行）",
+            initialdir=initial,
+            filetypes=[("游戏启动程序", "*.exe"), ("所有文件", "*.*")])
+        if not p:
+            return
+        if not p.lower().endswith(".exe"):
+            if not messagebox.askyesno(
+                    "这不是 exe",
+                    f"你选的是：\n{os.path.basename(p)}\n\n"
+                    "它不是 .exe 文件，一般不是游戏主程序。\n"
+                    "仍要用它所在的目录吗？"):
+                return
+        import game_scripts as GS
+        root, exe_name = GS.exe_root(p)
+        self._dbg_apply_selection(root, exe_path=p, exe_name=exe_name)
+
+    def _dbg_apply_selection(self, root, exe_path=None, exe_name=None):
+        """
+        统一处理「选好游戏了」：校验 → 记状态 → 刷新右侧信息。
+        root 为游戏根目录；exe_path 为选中的启动程序（可为 None，走自动挑）。
+
+        ★ 没有 Data 文件夹也允许选 —— 但那样**只能走「调试启动器」方式**
+          （它不改游戏本体、不读 Data，脚本打包进 exe 的游戏也适用）。
+        """
+        import game_scripts as GS
+        # need_data=False：先放行，拿到 has_data 再决定能用哪些方式
+        ok, why, root, exe_path, has_data = GS.verify_game(
+            root, exe=exe_path, need_data=False)
+        if not ok:
+            self.debug_folder = None
+            self.debug_exe = None
+            self.debug_has_data = False
+            self.dbg_folder_lbl.config(text="未选择")
+            self.dbg_info_lbl.config(text=f"⚠ {why}", fg=C_WARN)
+            messagebox.showwarning("这个选择不太对", why)
+            return
+        self.debug_folder = root
+        self.debug_exe = exe_path
+        self.debug_has_data = has_data
+        config.Runtime.set_dir(root)
+        # 展示：先给启动程序名（主角），再给目录
+        show = []
+        if exe_name:
+            show.append(f"启动程序：{exe_name}")
+        elif exe_path:
+            show.append(f"启动程序：{os.path.basename(exe_path)}")
+        else:
+            show.append("启动程序：（自动识别）")
+        show.append(f"游戏目录：{root}")
+        show.append("Data 文件夹：" + ("有" if has_data else "没有"))
+        # ★ 选到形如 ...\Data\Game.exe 的内层目录时给一句提醒（根目录在上面）
+        payload_hint = ""
+        if GS.looks_like_payload_folder(root):
+            payload_hint = (
+                "\n\n⚠ 这个目录看着是游戏的**内层**目录（没有 Data 子文件夹）。"
+                "真正的游戏根目录很可能是它的**上一层**：\n"
+                f"  {os.path.dirname(os.path.abspath(root))}\n"
+                "建议改选上一层里的游戏启动程序再试。")
+        self.dbg_folder_lbl.config(text="\n".join(show) + payload_hint)
+        if payload_hint:
+            self.dbg_info_lbl.config(
+                text=payload_hint.strip(), fg=C_WARN)
+        self.dbg_check_lbl.config(text="")
+        self.dbg_do_lbl.config(text="")
+        self.dbg_stat.config(text="")
+        if hasattr(self, "dbg_ow_lbl"):
+            self.dbg_ow_lbl.config(text="")
+        # ★ 没有 Data：强制切到「调试启动器」，其它方式全部禁用
+        if not has_data:
+            self._set_debug_mode_value("launcher")
+        self._dbg_lock_modes(not has_data)
+        self._dbg_refresh_folder_info()
+
+    def _dbg_lock_modes(self, locked):
+        """
+        locked=True（没有 Data）时：把开启方式锁成「调试启动器」，
+        下拉框禁用，并给一句醒目提示。
+        """
+        self.debug_modes_locked = bool(locked)
+        cb = getattr(self, "_debug_mode_cb", None)
+        if cb is not None:
+            try:
+                cb.config(state="disabled" if locked else "readonly")
+            except Exception:
+                pass
+        if hasattr(self, "dbg_mode_desc"):
+            if locked:
+                self.dbg_mode_desc.config(
+                    text="⚠ 这个游戏目录里没有 Data 文件夹 —— 只能用"
+                         "「方式⑦ 调试启动器」开调试（它不改游戏本体、"
+                         "不依赖 Data，脚本打包进 exe 的游戏也适用）。"
+                         "其它方式需要改 Data 里的脚本，已禁用。",
+                    fg=C_WARN)
+            else:
+                self.dbg_mode_desc.config(fg=C_HINT)
+                self._on_debug_mode_change()
+        if hasattr(self, "dbg_launcher_btn"):
+            self.dbg_launcher_btn.set_enabled(
+                locked or self._debug_mode_key() == "launcher")
+        # 没 Data 时「开启 DEBUG」主按钮也可以点（它内部会走 launcher），
+        # 但把「还原」留着（万一之前改过 Data）。主按钮始终可用，
+        # 因为 _do_debug_enable 会按当前方式走；这里只保证方式被锁住。
+        if hasattr(self, "dbg_do_btn"):
+            try:
+                self.dbg_do_btn.set_enabled(True)
+            except Exception:
+                pass
+
+    def _dbg_pick_folder(self):
+        """兼容旧入口：直接选目录（不指定 exe）。"""
+        d = filedialog.askdirectory(
+            title="选择游戏根目录（里面有 Data 文件夹和 .exe 启动程序）",
+            initialdir=(config.Runtime.last_dir
+                        if config.Runtime.last_dir
+                        and os.path.isdir(config.Runtime.last_dir)
+                        else config.BASE_DIR))
+        if not d:
+            return
+        self._dbg_apply_selection(d, exe_path=None)
+
+    # ================================================================
+    # 检测报告页（任务4）
+    # ================================================================
+    def _page_dbg_report(self):
+        """
+        报告页：左＝脚本 + 函数列表；右＝三列差异（基准 / 目标 / 状态）。
+        双击某行进详情弹窗，基准作参照、目标可改；右下角「应用已编辑的」写回。
+        """
+        page = self.pages["dbgreport"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+
+        wrap = tk.Frame(page, bg=BG_BASE)
+        wrap.grid(row=0, column=0, sticky="nsew")
+
+        # 顶部标题条
+        head = tk.Frame(wrap, bg=BG_BASE)
+        head.pack(fill="x", pady=(0, 6))
+        GlassButton(head, "← 返回", width=88, height=38, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self.show("debug")).pack(side="left")
+        tk.Label(head, text="检测报告", bg=BG_BASE, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left", padx=(10, 0))
+        self.dbr_title = tk.Label(head, text="", bg=BG_BASE, fg=C_KEY,
+                                  font=FONT_SMALL)
+        self.dbr_title.pack(side="left", padx=(12, 0))
+        GlassButton(head, "应用已编辑的", width=132, height=38, bg=CARD,
+                    primary=True, font=FONT_SMALL,
+                    command=self._apply_report_edits).pack(side="right")
+        GlassButton(head, "重新检测", width=104, height=38, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._reload_report).pack(side="right", padx=8)
+
+        body = tk.Frame(wrap, bg=BG_BASE)
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(0, weight=0, minsize=250)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        # ---- 左：脚本 / 函数树 ----
+        lc = RoundCard(body, radius=14, pad=10, width=250)
+        lc.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        lc.grid_propagate(False)
+        tk.Label(lc.body, text="被修改的函数", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", pady=(0, 4))
+        lw = tk.Frame(lc.body, bg="#FFFFFF")
+        lw.pack(fill="both", expand=True)
+        sb = ttk.Scrollbar(lw, orient="vertical")
+        self.dbr_tree = ttk.Treeview(
+            lw, show="tree", selectmode="browse",
+            yscrollcommand=sb.set)
+        sb.config(command=self.dbr_tree.yview)
+        sb.pack(side="right", fill="y")
+        self.dbr_tree.pack(side="left", fill="both", expand=True)
+        self.dbr_tree.bind("<<TreeviewSelect>>", self._on_report_tree_sel)
+
+        # ---- 右：三列差异 ----
+        rc = RoundCard(body, radius=14, pad=10)
+        rc.grid(row=0, column=1, sticky="nsew")
+        tk.Label(rc.body, text="差异对比", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(rc.body,
+                 text="左列＝基准函数（参照）　中列＝目标函数（你的脚本）　"
+                      "右列＝状态。双击某一行打开详情编辑；改完状态变「已编辑」，"
+                      "点右上角「应用已编辑的」写回游戏脚本。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=620).pack(anchor="w", pady=(2, 6))
+        self.dbr_diff_hint = tk.Label(
+            rc.body, text="", bg=CARD, fg=C_KEY, font=FONT_SMALL)
+        self.dbr_diff_hint.pack(anchor="w", pady=(0, 4))
+
+        dwrap = tk.Frame(rc.body, bg="#FFFFFF")
+        dwrap.pack(fill="both", expand=True)
+        vs = ttk.Scrollbar(dwrap, orient="vertical")
+        # ★ 用带样式的 Treeview：默认主题下 tag 背景色会被覆盖，
+        #   要显式给自定义 style 配 fieldbackground + 行高才看得到高亮。
+        try:
+            _st = ttk.Style()
+            _st.configure("DbgDiff.Treeview",
+                          background="#FFFFFF", fieldbackground="#FFFFFF",
+                          font=FONT_MONO, rowheight=18)
+            _st.map("DbgDiff.Treeview",
+                    background=[("selected", "#D6E4F7")],
+                    foreground=[("selected", "#000000")])
+        except Exception:
+            pass
+        self.dbr_diff = ttk.Treeview(
+            dwrap, columns=("base", "goal", "status"), show="headings",
+            selectmode="browse", yscrollcommand=vs.set,
+            style="DbgDiff.Treeview")
+        vs.config(command=self.dbr_diff.yview)
+        vs.pack(side="right", fill="y")
+        self.dbr_diff.pack(side="left", fill="both", expand=True)
+        self.dbr_diff.heading("base", text="基准函数")
+        self.dbr_diff.heading("goal", text="目标函数")
+        self.dbr_diff.heading("status", text="状态")
+        self.dbr_diff.column("base", width=420, anchor="w")
+        self.dbr_diff.column("goal", width=420, anchor="w")
+        self.dbr_diff.column("status", width=80, anchor="center")
+        self.dbr_diff.bind("<Double-1>", self._on_report_diff_dbl)
+
+        self._dbr_rows = []     # 当前右侧展示的 diff 行索引
+        self._dbr_items = []    # 与 self._dbr_rows 对应的报告条目引用
+
+    def _open_report_page(self, rep, path):
+        """把报告装进报告页并切过去。"""
+        self._report = rep
+        self._report_path = path
+        self.dbr_title.config(
+            text=f"{rep.get('game', '')}　引擎 v{rep.get('baseline', '?')}　"
+                 f"{len(rep.get('items') or [])} 处差异　"
+                 f"（{rep.get('generated', '')}）")
+        # 左侧树：脚本 → 函数
+        for i in self.dbr_tree.get_children():
+            self.dbr_tree.delete(i)
+        by_script = {}
+        for idx, it in enumerate(rep.get("items") or []):
+            by_script.setdefault(it["script"], []).append((idx, it))
+        self._dbr_tree_map = {}
+        for sname in sorted(by_script):
+            rows = by_script[sname]
+            node = self.dbr_tree.insert(
+                "", "end", text=f"{sname}（{len(rows)}）", open=(len(by_script) <= 6))
+            for idx, it in rows:
+                st = "已编辑" if it.get("edited") else "未编辑"
+                leaf = self.dbr_tree.insert(
+                    node, "end",
+                    text=f"{it['func']}　[{st}]",
+                    values=(idx,))
+                self._dbr_tree_map[str(leaf)] = idx
+        self.show("dbgreport")
+
+    def _on_report_tree_sel(self, _e=None):
+        sel = self.dbr_tree.selection()
+        if not sel:
+            return
+        key = str(sel[0])
+        if key in getattr(self, "_dbr_tree_map", {}):
+            idx = self._dbr_tree_map[key]
+            it = (self._report.get("items") or [])[idx]
+            self._show_diff_for(it)
+
+    def _show_diff_for(self, it):
+        """把某条差异按 PyCharm 风格逐行并排展示（基准 vs 目标）。"""
+        try:
+            self.dbr_diff.winfo_exists()
+        except Exception:
+            return          # 报告页已重建/销毁，右栏控件不存在了，直接跳过
+        try:
+            for i in self.dbr_diff.get_children():
+                self.dbr_diff.delete(i)
+        except tk.TclError:
+            return
+        self._dbr_rows = []
+        self._dbr_cur = it
+        base = _split_lines(it.get("base_text"))
+        goal = _split_lines(it.get("goal_text"))
+        pairs = _line_diff_pairs(base, goal)
+        for bl, gl, tag in pairs:
+            st = "已编辑" if it.get("edited") else "未编辑"
+            iid = self.dbr_diff.insert(
+                "", "end", values=(bl, gl, st), tags=(tag,))
+            self._dbr_rows.append(iid)
+        # 差异行上色（显式配 background，避免被主题 fieldbackground 盖住）
+        self.dbr_diff.tag_configure("del", background="#F8D7DA")
+        self.dbr_diff.tag_configure("add", background="#D4F0D4")
+        self.dbr_diff.tag_configure("eq", background="#FFFFFF")
+        self.dbr_diff.tag_configure("chg", background="#FFF0C2")
+        n_diff = sum(1 for _b, _g, t in pairs if t != "eq")
+        if hasattr(self, "dbr_diff_hint"):
+            if n_diff:
+                self.dbr_diff_hint.config(
+                    text=f"共 {len(pairs)} 行，其中 {n_diff} 行有差异"
+                         f"（红=基准独有 / 绿=目标独有 / 黄=两边不同）",
+                    fg=C_KEY)
+            else:
+                self.dbr_diff_hint.config(text="基准与目标逐行一致", fg=C_HINT)
+
+    def _on_report_diff_dbl(self, _e=None):
+        if not getattr(self, "_dbr_cur", None):
+            return
+        self._open_diff_edit(self._dbr_cur)
+
+    def _open_diff_edit(self, it):
+        """双击详情弹窗：基准作参照、目标可改。"""
+        win = tk.Toplevel(self.root)
+        win.title(f"对比编辑 —— {it['script']} → {it['func']}")
+        win.configure(bg=BG_BASE)
+        win.transient(self.root)
+        win.geometry("980x620")
+
+        top = tk.Frame(win, bg=BG_BASE)
+        top.pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(top, text=f"{it['script']} → {it['func']}", bg=BG_BASE,
+                 fg=C_TITLE, font=FONT_TITLE).pack(side="left")
+        self._diff_status_lbl = tk.Label(
+            top, text=("已编辑" if it.get("edited") else "未编辑"),
+            bg=BG_BASE, fg=(C_OK if it.get("edited") else C_KEY),
+            font=FONT_BIG)
+        self._diff_status_lbl.pack(side="right")
+
+        mid = tk.Frame(win, bg=BG_BASE)
+        mid.pack(fill="both", expand=True, padx=12, pady=4)
+        mid.grid_columnconfigure(0, weight=1)
+        mid.grid_columnconfigure(1, weight=1)
+        mid.grid_rowconfigure(1, weight=1)
+
+        tk.Label(mid, text="基准函数（参照，只读）", bg=BG_BASE, fg=C_KEY,
+                 font=FONT_SMALL).grid(row=0, column=0, sticky="w")
+        tk.Label(mid, text="目标函数（可修改）", bg=BG_BASE, fg=C_KEY,
+                 font=FONT_SMALL).grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        lb = tk.Frame(mid, bg="#FFFFFF")
+        lb.grid(row=1, column=0, sticky="nsew")
+        self._diff_base_txt = tk.Text(
+            lb, wrap="none", font=FONT_MONO, bg="#F7F7F7", fg=TEXT,
+            relief="solid", bd=1, state="normal")
+        self._diff_base_txt.pack(fill="both", expand=True)
+
+        lg = tk.Frame(mid, bg="#FFFFFF")
+        lg.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
+        self._diff_goal_txt = tk.Text(
+            lg, wrap="none", font=FONT_MONO, bg="#FFFFFF", fg=TEXT,
+            relief="solid", bd=1, undo=True)
+        self._diff_goal_txt.pack(fill="both", expand=True)
+        self._diff_goal_txt.bind("<KeyRelease>",
+                                 lambda e, i=it: self._mark_edited(i))
+
+        # ★ 逐行 diff 高亮（基准 / 目标各自的差异行上色）
+        self._paint_diff_highlight(
+            self._diff_base_txt, self._diff_goal_txt,
+            it.get("base_text") or "", it.get("goal_text") or "")
+
+        btns = tk.Frame(win, bg=BG_BASE)
+        btns.pack(fill="x", padx=12, pady=(4, 10))
+        GlassButton(btns, "保存（标记已编辑）", width=180, height=40,
+                    primary=True, bg=BG_BASE,
+                    command=lambda: self._save_diff_edit(it, win)).pack(
+            side="left")
+        GlassButton(btns, "取消", width=88, height=40, bg=BG_BASE,
+                    command=win.destroy).pack(side="right")
+        tk.Label(btns,
+                 text="提示：改完点「保存」把这一条标记为「已编辑」，"
+                      "再回到报告页点「应用已编辑的」写回脚本文件。",
+                 bg=BG_BASE, fg=C_HINT, font=FONT_SMALL).pack(
+            side="left", padx=12)
+
+    def _paint_diff_highlight(self, base_txt, goal_txt, base_src, goal_src):
+        """
+        把基准 / 目标两个 Text 按逐行 diff 上色（并插入文本）。
+
+        · 基准框：仅基准有的行 → 红底（del）；两边都不同 → 黄底（chg）。
+        · 目标框：仅目标有的行 → 绿底（add）；两边都不同 → 黄底（chg）。
+        · 相同行不上色。
+
+        ★ 行号不能靠 `index("end-1c")` 反推：`insert("end", line+"\\n")`
+          之后 end 停在下一行的第 0 列，`end-1c` 落在**刚插入的换行符**上，
+          其行号与刚插入那行不一致（差 1），于是 tag_add 加偏/加空。
+          这里显式维护行号计数器，边插边加 tag，最稳。
+        """
+        for t in (base_txt, goal_txt):
+            t.configure(state="normal")
+            t.delete("1.0", "end")
+            t.tag_configure("diff_del", background="#F8D7DA",
+                            foreground="#7A1F26")
+            t.tag_configure("diff_add", background="#D4F0D4",
+                            foreground="#1F5B1F")
+            t.tag_configure("diff_chg", background="#FFF0C2",
+                            foreground="#6B5312")
+
+        base_lines = _split_lines(base_src)
+        goal_lines = _split_lines(goal_src)
+        pairs = _line_diff_pairs(base_lines, goal_lines)
+
+        # ★ 写文本要按「第 n 行 → 行后换行」的方式，**最后一行不留尾换行**，
+        #   否则多出一个空行（且读回 `end-1c` 会多一个 \n）。
+        n_base_written = sum(1 for _b, _g, t in pairs
+                             if t in ("eq", "del", "chg"))
+        n_goal_written = sum(1 for _b, _g, t in pairs
+                             if t in ("eq", "add", "chg"))
+
+        bno = 1     # 基准框即将写入的行号（Text 行号从 1 起）
+        gno = 1     # 目标框即将写入的行号
+        bwritten = 0
+        gwritten = 0
+        for bl, gl, tag in pairs:
+            # 基准框：del 是「仅基准有」；chg 是「两边都有但不同」
+            if tag in ("eq", "del", "chg"):
+                bwritten += 1
+                base_txt.insert("end", (bl or "") +
+                                ("\n" if bwritten < n_base_written else ""))
+                if tag == "del":
+                    base_txt.tag_add("diff_del",
+                                     f"{bno}.0", f"{bno}.end")
+                elif tag == "chg":
+                    base_txt.tag_add("diff_chg",
+                                     f"{bno}.0", f"{bno}.end")
+                bno += 1
+            # 目标框：add 是「仅目标有」；chg 同基准
+            if tag in ("eq", "add", "chg"):
+                gwritten += 1
+                goal_txt.insert("end", (gl or "") +
+                                ("\n" if gwritten < n_goal_written else ""))
+                if tag == "add":
+                    goal_txt.tag_add("diff_add",
+                                     f"{gno}.0", f"{gno}.end")
+                elif tag == "chg":
+                    goal_txt.tag_add("diff_chg",
+                                     f"{gno}.0", f"{gno}.end")
+                gno += 1
+        base_txt.configure(state="disabled")
+
+
+    def _save_diff_edit(self, it, win):
+        try:
+            it["goal_text"] = self._diff_goal_txt.get("1.0", "end-1c")
+        except tk.TclError:
+            return          # 控件已被销毁
+        it["edited"] = True
+        try:
+            win.destroy()
+        except tk.TclError:
+            pass
+        # 刷新右侧与左树（页面可能已切走，两个函数都做了容错）
+        if getattr(self, "_dbr_cur", None) is it:
+            self._show_diff_for(it)
+        self._refresh_report_tree()
+
+    def _refresh_report_tree(self):
+        rep = getattr(self, "_report", None)
+        if not rep:
+            return
+        try:
+            self.dbr_tree.winfo_exists()
+        except Exception:
+            return          # 报告页已销毁
+        try:
+            for i in self.dbr_tree.get_children():
+                self.dbr_tree.delete(i)
+        except tk.TclError:
+            return
+        by_script = {}
+        for idx, it in enumerate(rep.get("items") or []):
+            by_script.setdefault(it["script"], []).append((idx, it))
+        self._dbr_tree_map = {}
+        for sname in sorted(by_script):
+            rows = by_script[sname]
+            node = self.dbr_tree.insert(
+                "", "end", text=f"{sname}（{len(rows)}）",
+                open=(len(by_script) <= 6))
+            for idx, it in rows:
+                st = "已编辑" if it.get("edited") else "未编辑"
+                leaf = self.dbr_tree.insert(
+                    node, "end", text=f"{it['func']}　[{st}]", values=(idx,))
+                self._dbr_tree_map[str(leaf)] = idx
+
+    def _apply_report_edits(self):
+        rep = getattr(self, "_report", None)
+        if not rep:
+            messagebox.showinfo("提示", "还没有打开任何报告。")
+            return
+        edited = [it for it in (rep.get("items") or []) if it.get("edited")]
+        if not edited:
+            messagebox.showinfo("提示", "还没有「已编辑」的条目。")
+            return
+        if not messagebox.askyesno(
+                "应用已编辑的",
+                f"把 {len(edited)} 条已编辑的函数写回游戏脚本？\n"
+                "（写入前会自动备份原文件）"):
+            return
+        self.show("log")
+
+        def work():
+            import engine_tools as ET
+            res = ET.apply_report(
+                rep.get("game_dir"), rep,
+                emit=lambda s: self._emit_log(s))
+            self.q.put(("dbg_apply_report_done", res))
+            return res
+
+        self.run_async(work, label="写回脚本中…", done_label="写回完成")
+
+    def _reload_report(self):
+        """重新跑检测并刷新报告页。"""
+        d = self._dbg_folder_data()      # 报告要读脚本，必须有 Data
+        if not d:
+            return
+        import engine_tools as ET
+        rep, path = ET.build_report(d, emit=lambda s: self._emit_log(s))
+        self._open_report_page(rep, path)
+
+    def _dbg_refresh_folder_info(self):
+        """重新显示右侧的「运行库 / $DEBUG / 编译闸门」状态。"""
+        d = getattr(self, "debug_folder", None)
+        if not d:
+            return
+        exe = getattr(self, "debug_exe", None)
+        try:
+            import engine_tools as ET
+            kind = ET.detect_runtime(d, exe=exe)
+            rl = ET.RUNTIME_LABEL.get(kind, "未知运行库")
+        except Exception:
+            kind, rl = "", "运行库未知"
+        import game_scripts as GS
+        has_data = os.path.isdir(GS.data_dir(d))
+        # ★ 选到内层目录（...\Data\Game.exe）时补一句「根目录在上面」
+        payload = ""
+        if GS.looks_like_payload_folder(d):
+            payload = ("\n⚠ 这像是游戏的**内层**目录，根目录很可能是上一层：\n"
+                       f"  {os.path.dirname(os.path.abspath(d))}")
+        if not has_data:
+            # 没有 Data：谈不上「$DEBUG 写没写 / 编译闸门」，只报运行库
+            self.dbg_info_lbl.config(
+                text=f"⚠ 无 Data 文件夹 → 只能用调试启动器\n"
+                     f"运行库：{rl}\n"
+                     f"（启动器会生成到游戏目录，点它即以调试模式进游戏）"
+                     f"{payload}",
+                fg=C_WARN)
+            return
+        try:
+            import debug_tool as DT
+            st = DT.status(d)
+            dbg_w = ("已写" if st["debug_on"]
+                     else ("只写了一半" if st.get("debug_partial") else "未写"))
+            gd_w = ("已装" if st["guarded"]
+                    else ("只装了一半" if st.get("guarded_partial") else "未装"))
+            ad_w = ("已清除" if st.get("antidebug_fixed")
+                    else ("⚠ 待处理" if st.get("antidebug") else "无"))
+            self.dbg_info_lbl.config(
+                text=f"✔ Essentials {st['version'] or '（读不到）'}\n"
+                     f"运行库：{rl}\n"
+                     f"$DEBUG=true：{dbg_w}\n"
+                     f"编译闸门：{gd_w}\n"
+                     f"反调试代码：{ad_w}",
+                fg=C_KEY)
+        except Exception:
+            self.dbg_info_lbl.config(text=f"运行库：{rl}", fg=C_KEY)
+
+    def _dbg_folder(self, need_data=True):
+        """
+        取当前选中的游戏目录。
+        need_data=True（默认）要求有 Data 文件夹；False 时允许没有
+        （给「调试启动器」用 —— 它不读 Data）。
+        """
+        d = getattr(self, "debug_folder", None)
+        exe = getattr(self, "debug_exe", None)
+        if not d or not os.path.isdir(d):
+            messagebox.showwarning("提示", "请先在右侧选择游戏启动程序（exe）")
+            return None
+        import game_scripts as GS
+        ok, why, _root, _exe, has_data = GS.verify_game(
+            d, exe=exe, need_data=need_data)
+        if not ok:
+            messagebox.showwarning("这个选择不太对", why)
+            return None
+        if not has_data:
+            self.debug_has_data = False        # 顺手同步一下状态
+        return d
+
+    def _dbg_folder_data(self):
+        """
+        「要改脚本」的操作（体检 / 覆盖 / 报告 / 非 launcher 的开启方式）
+        统一走这里：没 Data 就提示只能用调试启动器。
+        """
+        import game_scripts as GS
+        d = getattr(self, "debug_folder", None)
+        if d and not os.path.isdir(GS.data_dir(d)):
+            messagebox.showwarning(
+                "这个游戏没有 Data 文件夹",
+                "当前选的游戏目录里没有 Data 文件夹，无法改动脚本。\n\n"
+                "这类游戏只能用「方式⑦ 调试启动器」开调试 —— "
+                "请把「开启方式」选成 ⑥ 调试启动器，再点「开启 DEBUG」"
+                "或「生成调试启动器」。")
+            self._set_debug_mode_value("launcher")
+            self._dbg_lock_modes(True)
+            return None
+        return self._dbg_folder(need_data=True)
+
+    def _dbg_show_check(self, check, report_path=None):
+        """
+        体检结果：卡片上给一句话结论，日志里也只出**一行总结** —— 明细全部
+        写进检测报告，用户点「检测报告」逐行对比即可，日志不再刷屏。
+        """
+        if not check:
+            return
+        if check.get("reason"):
+            self.dbg_stat.config(text="未体检", fg=C_WARN)
+            self.dbg_check_lbl.config(text=check["reason"], fg=C_WARN)
+            return
+        b = check.get("baseline")
+        if check.get("ok"):
+            self.dbg_stat.config(text=f"✔ 与 v{b} 完全吻合", fg=C_OK)
+        else:
+            smiss = check.get("scripts_missing_n", 0)
+            tail = f" / 脚本缺 {smiss}" if smiss else ""
+            self.dbg_stat.config(
+                text=f"⚠ 改 {check['changed_n']} / 缺 {check['missing_n']}"
+                     f"{tail}",
+                fg=C_WARN)
+        # ★ 日志只留一行总结 + 「已写入检测报告」，不再罗列明细。
+        if report_path is None:
+            import engine_tools as ET
+            try:
+                report_path = ET.find_report(getattr(self, "debug_folder", None))
+            except Exception:
+                report_path = None
+        rp = ""
+        if report_path:
+            # 展示成 comparation/<游戏名>.json 这种更好认的形式
+            bn = os.path.basename(report_path)
+            pd = os.path.basename(os.path.dirname(report_path)) or ""
+            rp = f"{pd}/{bn}" if pd else bn
+        where = f"，明细已写入检测报告 {rp}" if rp else "，明细见「检测报告」"
+        self._emit_log(
+            f"[体检] 基准 v{b}（{check.get('scripts_total', 0)} 个脚本 / "
+            f"{check['total']} 个基本函数）：一致 {check['same']} · "
+            f"被改 {check['changed_n']} · 缺失 {check['missing_n']} · "
+            f"搬家 {check.get('moved_n', 0)} · 新增 {check['added_n']}"
+            f"{where}\n")
+        # 卡片上只留一行提示
+        if check.get("ok"):
+            self.dbg_check_lbl.config(
+                text="✔ 检测通过，明细见「检测报告」", fg=C_OK)
+        else:
+            self.dbg_check_lbl.config(
+                text=f"⚠ 共 {check['changed_n'] + check['missing_n']} 处差异，"
+                     f"点「检测报告」可逐行对比。",
+                fg=C_WARN)
+
+    def _do_debug_scan(self):
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        self.show("log")
+
+        def work():
+            import debug_tool as DT
+            import engine_tools as ET
+            res = DT.scan_only(d, emit=lambda s: self._emit_log(s))
+            # ★ 任务4：检测完把对比报告落盘到 comparation/
+            #   复用 scan_only 的体检结果，避免总结在日志里出两遍。
+            try:
+                _rep, path = ET.build_report(
+                    d, emit=lambda s: self._emit_log(s),
+                    check=res.get("check"))
+                res["report_path"] = path
+            except Exception as e:
+                self._emit_log(f"[报告] ⚠ 保存对比报告失败：{e}\n")
+            self.q.put(("dbg_scan_done", res))
+            return res
+
+        self.run_async(work, label="检测引擎中…", done_label="检测完成")
+
+    def _open_report(self):
+        """任务4：「检测报告」按钮 —— 进全新报告页。"""
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        import engine_tools as ET
+        path = ET.find_report(d)
+        if not path:
+            if not messagebox.askyesno(
+                    "还没有检测报告",
+                    "还没生成这个游戏的对比报告。\n\n"
+                    "要现在就跑一次检测并生成报告吗？"):
+                return
+            self._do_debug_scan()
+            return
+        rep = ET.load_report(path)
+        if not rep:
+            messagebox.showerror("读报告失败", f"无法读取报告文件：\n{path}")
+            return
+        self._open_report_page(rep, path)
+
+    def _do_overwrite_menus(self):
+        """任务3：用基准覆盖 debug 菜单脚本（覆盖前提醒风险）。"""
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        import essentials_base as EB
+        import engine_tools as ET
+        try:
+            ver = EB.detect_version(d)
+        except Exception:
+            ver = ""
+        if not ver:
+            # ★ 脚本里读不出版本号（v16 就没有这个常量）→ 跑一次检测，
+            #   用「按函数指纹认出来」的那份基准。
+            self.show("log")
+            self._emit_log(
+                "[覆盖] 脚本里读不出版本号，正在按函数指纹识别引擎版本…\n")
+
+            def work_ver():
+                try:
+                    chk = EB.compare(d, emit=lambda s: self._emit_log(s))
+                except Exception as e:      # noqa: BLE001
+                    chk = None
+                    self._emit_log(f"[覆盖] ✘ 识别失败：{e}\n")
+                self.q.put(("dbg_overwrite_ver", (d, chk, "menus")))
+                return chk
+
+            self.run_async(work_ver, label="识别引擎版本中…",
+                           done_label="识别完成")
+            return
+        self._do_overwrite_menus_ask(d, ver, "")
+
+    def _do_overwrite_scene_map(self):
+        """任务3：用基准的 Scene_Map 覆盖游戏的「地图更新」。"""
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        import essentials_base as EB
+        try:
+            ver = EB.detect_version(d)
+        except Exception:
+            ver = ""
+        if not ver:
+            self.show("log")
+            self._emit_log(
+                "[覆盖] 脚本里读不出版本号，正在按函数指纹识别引擎版本…\n")
+
+            def work_ver():
+                try:
+                    chk = EB.compare(d, emit=lambda s: self._emit_log(s))
+                except Exception as e:      # noqa: BLE001
+                    chk = None
+                    self._emit_log(f"[覆盖] ✘ 识别失败：{e}\n")
+                self.q.put(("dbg_overwrite_ver", (d, chk, "scene_map")))
+                return chk
+
+            self.run_async(work_ver, label="识别引擎版本中…",
+                           done_label="识别完成")
+            return
+        self._do_overwrite_scene_map_ask(d, ver, "")
+
+    def _do_overwrite_scene_map_ask(self, d, ver, guessed_by):
+        """版本号定了之后：说明 → 提醒风险 → 覆盖 Scene_Map。"""
+        import engine_tools as ET
+        if not ver:
+            messagebox.showwarning(
+                "读不到版本号",
+                "从游戏脚本里读不出 Essentials 版本号，也没能按函数指纹认出"
+                "是哪一版，无法确定用哪份基准覆盖。")
+            return
+        item = ET.scene_map_plan(d, ver)
+        if not item:
+            messagebox.showwarning(
+                "没有对应基准",
+                f"工具里没有内置 v{ver} 的 Scene_Map 脚本，无法覆盖。")
+            return
+        tgt = item.get("target")
+        if tgt:
+            where = ("解包文件 %s" % tgt["key"] if tgt.get("mode") == "file"
+                     else "Scripts.rxdata 第 %s 条（脚本名 Scene_Map）"
+                          % tgt["key"])
+        else:
+            where = "游戏里没找到 Scene_Map（会按基准新建一个）"
+        lines = [
+            f"即将用官方 v{ver} 的 **Scene_Map**（地图场景）整份覆盖游戏里的"
+            "那一份：",
+            f"  · 目标：{where}",
+            f"  · 基准：{os.path.basename(item['src'])}",
+        ]
+        if guessed_by:
+            lines.append(f"（版本号是检测时按指纹认出来的：{guessed_by}）")
+        lines += [
+            "",
+            "它管的是地图上的按键与流程：F9 调试菜单、菜单/战斗/商店的呼出、"
+            "地图转场等。",
+            "",
+            "⚠ 风险提示：",
+            "· 作者对 Scene_Map 做的改动会**全部丢失**（整份替换）；",
+            "· 覆盖前会自动把原文件备份成 .pkmn-overwrite-*.bak，"
+            "出问题可用「还原覆盖」恢复；",
+            "· 这份**不做中文翻译**（Scene_Map 不是菜单文本）；",
+            "· 覆盖后建议再开一次「方式②③④」，那时 $DEBUG 条件就是官方写法，"
+            "一定能认出来。",
+        ]
+        if not messagebox.askyesno("确认覆盖「地图更新」（Scene_Map）？",
+                                   "\n".join(lines)):
+            self._emit_log("[覆盖] 已取消（地图更新）\n")
+            return
+        self.show("log")
+
+        def work():
+            import engine_tools as ET
+            res = ET.overwrite_scene_map(
+                d, ver, emit=lambda s: self._emit_log(s))
+            res["game_dir"] = d
+            self.q.put(("dbg_scene_overwrite_done", res))
+            return res
+
+        self.run_async(work, label="覆盖地图更新（Scene_Map）中…",
+                       done_label="覆盖完成")
+
+    def _ask_baseline_strip(self, r):
+        """
+        任务2：方式②「一个 $DEBUG 条件都没认出来」时的兜底询问。
+
+        「认不出来」= 游戏里那几处「需要 $DEBUG 才生效」的代码被作者改掉 /
+        写法跟官方完全不一样，光靠文本模式匹配定位不到。这时问用户要不要
+        **按游戏版本对应的官方基准**，在读到的那几处**对应位置**补一行
+        「去掉 debug 条件」的代码。
+        """
+        d = r.get("mode_game_dir") or getattr(self, "debug_folder", None)
+        if not d:
+            return
+        ver = (r.get("baseline")
+               or (r.get("check") or {}).get("baseline")
+               or r.get("version") or "")
+        import engine_tools as ET
+        names = "、".join(ET._KEYS_SCRIPTS)
+        if not ver:
+            self._emit_log(
+                "[方式二·兜底] 读不到版本号、也没识别出基准，跳过基准补行\n")
+            return
+        if not messagebox.askyesno(
+                "方式②一处都没认出来",
+                "方式②（删 $DEBUG 条件）在游戏脚本里**一处都没认出来** ——\n"
+                "多半是作者把「… if $DEBUG」那段改掉 / 删掉了，"
+                "光靠文本匹配定位不到位置。\n\n"
+                "要不要**按游戏版本（v%s）对应的官方基准**，在**对应位置**"
+                "补一行「去掉 debug 条件」的代码？\n\n"
+                "· 做法：在官方基准里带 $DEBUG 的那几行所在的**同一个函数、"
+                "同一个位置**（用它后面那行代码当锚点）补进去；\n"
+                "· **只加不删**，游戏里已经有同一句的就跳过；\n"
+                "· 改动前照样自动备份，可以「还原」。\n\n"
+                "涉及脚本：%s" % (ver, names)):
+            self._emit_log("[方式二·兜底] 已取消（不按基准补行）\n")
+            return
+        self.show("log")
+
+        def work():
+            import engine_tools as ET
+            res = ET.add_debug_strip_from_baseline(
+                d, ver, emit=lambda s: self._emit_log(s))
+            res["game_dir"] = d
+            self.q.put(("dbg_strip_baseline_done", res))
+            return res
+
+        self.run_async(work, label="按基准补行中…", done_label="补行完成")
+
+    def _do_overwrite_menus_ask(self, d, ver, guessed_by):
+        """版本号定了之后：列计划 → 提醒风险 → 覆盖。"""
+        import engine_tools as ET
+        if not ver:
+            messagebox.showwarning(
+                "读不到版本号",
+                "从游戏脚本里读不出 Essentials 版本号，也没能按函数指纹认出"
+                "是哪一版，无法确定用哪份基准覆盖。")
+            return
+        plan = ET.overwrite_plan(d, ver)
+        if not plan:
+            messagebox.showwarning(
+                "没有对应基准",
+                f"工具里没有内置 v{ver} 的引擎脚本，无法覆盖。")
+            return
+
+        def _label(p):
+            return f"{p['name']}#{p['func']}" if p.get("func") else p["name"]
+
+        missing = [_label(p) for p in plan if not p["target"]]
+        will_create = [_label(p) for p in plan if not p["target"] and p.get("create")]
+        lines = [f"即将用官方 v{ver} 引擎脚本覆盖游戏里的 "
+                 f"{len(plan)} 处调试相关代码："]
+        if guessed_by:
+            lines.append(f"（版本号是检测时按指纹认出来的：{guessed_by}）")
+        for p in plan:
+            if p.get("kind") == "func":
+                tail = "（只替换该函数）"
+            elif p["target"]:
+                tail = "（整份替换）"
+            elif p.get("create"):
+                tail = ("（游戏里没有 → **按基准新建**，"
+                        "追加进 Scripts.rxdata，排在 Main 之前）")
+            else:
+                tail = "（游戏里没有，也无处可新建，将跳过）"
+            lines.append(f"  · {_label(p)} {tail}")
+        lines.append("")
+        lines.append("⚠ 风险提示：")
+        lines.append("· 标「整份替换」的会把游戏里那份调试脚本换成官方原版，"
+                     "作者对它的改动会丢失；")
+        lines.append("· 标「只替换该函数」的只动那一个函数，脚本其余部分原样保留；")
+        lines.append("· 覆盖前会自动把原文件备份成 .pkmn-overwrite-*.bak，"
+                     "出问题可用「还原覆盖」恢复；")
+        lines.append("· 覆盖时会把菜单名、功能说明等**全部翻译成中文**再写入。")
+        if missing:
+            lines.append(f"· 其中 {len(missing)} 个游戏里找不到："
+                         + "、".join(missing))
+        if not messagebox.askyesno("确认覆盖调试菜单脚本？",
+                                   "\n".join(lines)):
+            self._emit_log("[覆盖] 已取消\n")
+            return
+        self.show("log")
+
+        def work():
+            res = ET.overwrite_engine_scripts(
+                d, ver, translate=True,
+                emit=lambda s: self._emit_log(s), allow_missing=True)
+            self.q.put(("dbg_overwrite_done", res))
+            return res
+
+        self.run_async(work, label="覆盖调试菜单脚本中…", done_label="覆盖完成")
+
+    def _do_overwrite_restore(self):
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        import engine_tools as ET
+        if not messagebox.askyesno(
+                "还原覆盖",
+                "把本工具「覆盖」过的调试菜单脚本还原回覆盖前的样子？"):
+            return
+        self.show("log")
+
+        def work():
+            res = ET.restore_overwrite(d, emit=lambda s: self._emit_log(s))
+            self.q.put(("dbg_overwrite_restore_done", res))
+            return res
+
+        self.run_async(work, label="还原覆盖中…", done_label="还原完成")
+
+    def _do_debug_enable(self):
+        mode = self._debug_mode_key()
+        exe = getattr(self, "debug_exe", None)
+        # ★ 没有 Data 文件夹时：只允许「调试启动器」，其它方式一律拦下
+        import game_scripts as GS
+        root_now = getattr(self, "debug_folder", None)
+        has_data = bool(root_now) and os.path.isdir(GS.data_dir(root_now))
+        if not has_data and mode != "launcher":
+            self._set_debug_mode_value("launcher")
+            self._dbg_lock_modes(True)
+            messagebox.showwarning(
+                "这个游戏没有 Data 文件夹",
+                "当前游戏目录里没有 Data 文件夹，无法改动脚本。\n\n"
+                "已自动切到「方式⑦ 调试启动器」，再点一次「开启 DEBUG」"
+                "即可（它会生成一个启动文件，点它即以调试模式进游戏）。")
+            return
+        d = self._dbg_folder(need_data=(mode != "launcher"))
+        if not d:
+            return
+        self.show("log")
+        force = bool(self.debug_force.get())
+
+        # ---------- 反调试复核：注释之前先把代码摆给用户看 ----------
+        ad_plan = {}
+        if mode != "launcher":
+            import debug_tool as DT
+            try:
+                ad_srcs = DT.find_antidebug_sources(d)
+            except Exception as e:
+                ad_srcs = []
+                self._emit_log(f"[开启] ⚠ 扫描反调试代码失败：{e}\n")
+            n = len(ad_srcs)
+            for i, src in enumerate(ad_srcs, 1):
+                r = AntiDebugDialog.review(self.root, src, i, n)
+                act = r.get("action")
+                if act == "cancel":
+                    self._emit_log(
+                        "[开启] 已取消（反调试复核窗口里点了「取消」）\n")
+                    return
+                if act == "skip":
+                    ad_plan[DT.src_key(src)] = {"action": "skip"}
+                    self._emit_log(
+                        "[开启] · 第 %d/%d 处按你的选择跳过\n" % (i, n))
+                else:
+                    dec = DT.antidebug_decision(
+                        src["text"], src["blocks"], AntiDebugDialog.CTX,
+                        edited=r.get("edited"))
+                    dec["action"] = act
+                    ad_plan[DT.src_key(src)] = dec
+                    self._emit_log(
+                        "[开启] · 第 %d/%d 处：%s\n"
+                        % (i, n, "自动注释" if act == "comment"
+                           else "按你手改的版本"))
+
+        def work():
+            import debug_tool as DT
+            import engine_tools as ET
+            if mode == "launcher":
+                # ★ 方式⑦：生成调试启动器（不改游戏本体）
+                res = ET.make_debug_launcher(
+                    d, version=None, emit=lambda s: self._emit_log(s),
+                    exe=exe)
+            else:
+                res = DT.enable_debug(d, emit=lambda s: self._emit_log(s),
+                                      force=force, antidebug_plan=ad_plan)
+            # ★ 按选择的方式追加对应改动
+            res["mode"] = mode
+            try:
+                if mode == "keys":
+                    res["mode_res"] = ET.patch_remove_debug_conditions(
+                        d, emit=lambda s: self._emit_log(s))
+                elif mode == "special":
+                    res["mode_res"] = ET.patch_special_key(
+                        d, "special", emit=lambda s: self._emit_log(s))
+                elif mode == "special_menu":
+                    res["mode_res"] = ET.patch_special_key(
+                        d, "special_menu", emit=lambda s: self._emit_log(s))
+                elif mode == "repel":
+                    res["mode_res"] = ET.patch_repel(
+                        d, "repel", version=res.get("version"),
+                        emit=lambda s: self._emit_log(s))
+                elif mode == "repel_menu":
+                    res["mode_res"] = ET.patch_repel(
+                        d, "repel_menu", version=res.get("version"),
+                        emit=lambda s: self._emit_log(s))
+            except Exception as e:
+                res["mode_error"] = str(e)
+                self._emit_log(f"[开启] ⚠ 方式执行失败：{e}\n")
+            # ★ 任务2：方式②「一个 $DEBUG 条件都没认出来」→ 交给主线程弹窗
+            #   问用户要不要按版本基准在对应位置补行（见 dbg_enable_done）。
+            if mode == "keys":
+                try:
+                    res["mode_none"] = not bool(
+                        (res.get("mode_res") or {}).get("changed"))
+                except Exception:
+                    res["mode_none"] = False
+                res["mode_game_dir"] = d
+            # ★ 日志精简：体检明细不刷屏，统一写进检测报告；这里顺带把
+            #   报告落盘，好让总结行能指明报告路径。
+            if not res.get("report_path") and getattr(
+                    self, "debug_has_data", True):
+                try:
+                    _rep, path = ET.build_report(
+                        d, emit=lambda s: self._emit_log(s),
+                        check=res.get("check"))
+                    res["report_path"] = path
+                except Exception as e:
+                    self._emit_log(f"[报告] ⚠ 保存对比报告失败：{e}\n")
+            self.q.put(("dbg_enable_done", res))
+            return res
+
+        self.run_async(work, label="开启 DEBUG 中…", done_label="开启完成")
+
+    def _do_make_launcher(self):
+        """方式⑦(测试)：在游戏目录生成调试启动器（点它即以调试模式进游戏）。"""
+        # ★ 启动器不读 Data，没有 Data 也能用
+        d = self._dbg_folder(need_data=False)
+        if not d:
+            return
+        import engine_tools as ET
+        exe = getattr(self, "debug_exe", None)
+        try:
+            kind = ET.detect_runtime(d, exe=exe)
+        except Exception:
+            kind = ""
+        exe_txt = os.path.basename(exe) if exe else "（自动识别）"
+        has_data = os.path.isdir(os.path.join(d, "Data"))
+        has_pbs = os.path.isdir(os.path.join(d, "pbs"))
+        miss = []
+        if not has_data:
+            miss.append("Data 文件夹")
+        if not has_pbs:
+            miss.append("pbs 文件夹")
+        warned = ("\n⚠ 本目录缺少：" + "、".join(miss)
+                  + "，工具会新建，并补一套空占位文件，\n"
+                    "  让调试模式下不触发全量重编译报错。\n") if miss else ""
+        if not messagebox.askyesno(
+                "生成调试启动器（测试功能）？",
+                "在游戏目录生成一个「调试启动器」，点击它即以调试模式进游戏。\n\n"
+                f"· 启动程序：{exe_txt}\n"
+                f"· 游戏目录：{d}\n"
+                f"· 检测到的运行库：{ ET.RUNTIME_LABEL.get(kind, '未知') }\n"
+                "· 不改游戏本体、不动存档，随时可删；\n"
+                "· 生成：调试模式启动.py / 调试模式启动.bat\n"
+                "  （mkxp-z 另有 _pkmn_debug_preload.rb）\n"
+                "· 启动器会运行时看进程加载的 dll 决定打补丁方式：\n"
+                "  · RGSS*.dll        → 内存补丁（v16–v18）\n"
+                "  · msvcrt-ruby*.dll → mkxp-z，改用命令行 `debug` 参数（v19+）\n"
+                "· 会补齐 Data/*.dat 与 pbs/*.txt 空占位文件（不覆盖已有文件）；\n"
+                "· RGSS 引擎需先关掉正在运行的游戏。\n"
+                f"{warned}\n"
+                "继续吗？"):
+            return
+        self.show("log")
+
+        def work():
+            res = ET.make_debug_launcher(
+                d, emit=lambda s: self._emit_log(s), exe=exe)
+            self.q.put(("dbg_launcher_done", res))
+            return res
+
+        self.run_async(work, label="生成调试启动器中…", done_label="生成完成")
+
+    def _do_debug_restore(self):
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        self.show("log")
+
+        def work():
+            import debug_tool as DT
+            res = DT.restore(d, emit=lambda s: self._emit_log(s))
+            self.q.put(("dbg_restore_done", res))
+            return res
+
+        self.run_async(work, label="还原中…", done_label="还原完成")
+
+    def _emit_log(self, text):
+        """把命令行的输出同步到日志页。"""
+        self.q.put(("log", f"{text}\n"))
+
+    # ================================================================
+    # 页面 12：日志
     # ================================================================
     def _page_log(self):
         page = self.pages["log"]

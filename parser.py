@@ -19,15 +19,18 @@ import re
 
 import config
 
+# ★ 区块符只有一种写法，三处（is_block / 区块模式判断）共用同一条正则，
+#   免得以后改了一处忘了另一处。
 BLOCK_RE = re.compile(r'^\s*\[[^\]]*\]\s*$')
 NUM_RE   = re.compile(r'^\s*\d+\s*$')
+BLOCK_MAP_RE = re.compile(r'^\s*\[map\d+\]\s*$', re.IGNORECASE)
 
 
 def is_block(s):  return bool(BLOCK_RE.match(s))
 def is_number(s): return bool(NUM_RE.match(s))
 
 
-def pair_similarity(a, b):
+def pair_similarity(a, b, floor=0.0):
     """
     计算两行的相似度：**相同部分占整句的百分比**。
 
@@ -41,20 +44,26 @@ def pair_similarity(a, b):
       两行明明绝大部分相同，只因差异不在头尾，旧算法只给出 25%，
       于是被误判成「特殊行」而不参与翻译。
       新算法统计的是"整句里有多少字是一样的"，这类行能正确配对。
+
+    floor：只关心「够不够得着这个阈值」时传它 —— 两行长度差得太多时
+           相同部分最多也就是短的那行全长，直接判 0，
+           省掉一次 difflib（它是 O(n·m)，整文件跑下来不便宜）。
     """
     if a == b:
         return 1.0
     if not a or not b:
         return 0.0
 
+    if floor > 0:
+        lo, hi = (len(a), len(b)) if len(a) <= len(b) else (len(b), len(a))
+        if hi == 0 or lo / hi < floor:
+            return 0.0
+
     import difflib
     sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
     matched = sum(bl.size for bl in sm.get_matching_blocks())
     return matched / max(len(a), len(b))
 
-# 区块符模式判断
-_BLOCK_MAP_RE = re.compile(r'^\s*\[map\d+\]\s*$', re.IGNORECASE)
-_BLOCK_ANY_RE = re.compile(r'^\s*\[[^\]]+\]\s*$')
 
 
 def get_block_modes(lines):
@@ -73,9 +82,9 @@ def get_block_modes(lines):
     current = "newline"
     for line in lines:
         s = line.strip()
-        if _BLOCK_MAP_RE.match(s):
+        if BLOCK_MAP_RE.match(s):
             current = "newline"
-        elif _BLOCK_ANY_RE.match(s):
+        elif is_block(s):
             current = "space"
         modes.append(current)
     return modes
@@ -91,10 +100,15 @@ def read_file(path, encoding="utf-8-sig", max_lines=None):
     if max_lines is None:
         max_lines = getattr(config, "MAX_INPUT_LINES", 0)
 
-    with open(path, "r", encoding=encoding) as f:
+    # ★ newline="" 关掉 Python 的「通用换行」：否则 CRLF 在读取时就被归一成
+    #   LF，`"\r\n" in raw` 永远为假 → 写回时整个文件被悄悄改成 LF 行尾。
+    with open(path, "r", encoding=encoding, newline="") as f:
         raw = f.read()
-    newline = "\r\n" if "\r\n" in raw else "\n"
-    lines = raw.split(newline)
+    crlf = raw.count("\r\n")
+    lf = raw.count("\n") - crlf          # 单独的 LF（不算 CRLF 里那个）
+    newline = "\r\n" if crlf >= lf else "\n"
+    # 内部一律按 LF 切，返回的每一行都不带行尾符（与调用方约定一致）
+    lines = raw.replace("\r\n", "\n").split("\n")
 
     try:
         max_lines = int(max_lines)
@@ -180,8 +194,10 @@ def extract_entries(lines):
         sim = 0.0
         pairable = bool(next_s) and not is_block(next_s) and not is_number(next_s)
         if pairable:
-            sim = pair_similarity(s, next_s)
-            if sim >= getattr(config, "PAIR_SIMILARITY_MIN", 0.8):
+            # ★ 把阈值传进去：长度差太多的直接判 0，不用跑 difflib
+            need = getattr(config, "PAIR_SIMILARITY_MIN", 0.8)
+            sim = pair_similarity(s, next_s, floor=need)
+            if sim >= need:
                 # 视为同一组：保留第一行，把第二行替换为对应译文
                 entries.append((i + 1, next_s))
                 i += 2

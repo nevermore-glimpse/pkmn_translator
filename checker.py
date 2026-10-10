@@ -34,6 +34,10 @@ _CTRL_IGNORE = {r'\n'}
 # 英文单词（含西语重音字符）
 _ENGLISH_RE = re.compile(r"[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{3,}")
 
+# ★ HTML 实体：processor 只给了 pattern 字符串，这里编译一次反复用
+#   （检查报告是逐条跑的，每条都 re.sub 一次字符串模式会白走一遍缓存查找）
+_HTML_ENTITY_RE = re.compile(_HTML_ENTITY_PAT)
+
 # 白名单：这些英文不算"未翻译"
 # ★ 比对的是 _ENGLISH_RE 抽出的纯字母词，所以 &quot 要写 "quot" 才命中；
 #   两个都放进去，兼容后续若改用整串匹配的情况。
@@ -171,10 +175,6 @@ def remove_sentence(sentence):
     return False
 
 
-def is_sentence_whitelisted(text):
-    _load_user_whitelist()
-    return (text or "").strip() in _user_sentences
-
 # 占位符匹配
 PLACEHOLDER_RE = re.compile(r'@\s*\d+\s*@|⟦\s*\d+\s*⟧')
 
@@ -190,7 +190,7 @@ def _strip_all_ctrl(text):
     t = text
     t = ANGLE_CMD_RE.sub('', t)
     t = HTML_TAG_RE.sub('', t)
-    t = re.sub(_HTML_ENTITY_PAT, '', t)     # ★ 加 HTML 实体
+    t = _HTML_ENTITY_RE.sub('', t)          # ★ 加 HTML 实体
     t = CTRL_RE.sub('', t)
     t = TAG_RE.sub('', t)
     t = BRACE_RE.sub('', t)
@@ -205,7 +205,7 @@ def _extract_symbols(text):
     ctrls = [c for c in CTRL_RE.findall(text) if c not in _CTRL_IGNORE]
     ctrls += ANGLE_CMD_RE.findall(text)
     ctrls += HTML_TAG_RE.findall(text)
-    ctrls += re.findall(_HTML_ENTITY_PAT, text)   # ★ HTML 实体
+    ctrls += _HTML_ENTITY_RE.findall(text)        # ★ HTML 实体
     return ctrls, TAG_RE.findall(text), BRACE_RE.findall(text)
 
 
@@ -312,8 +312,7 @@ def _apply_manual_edits(hits, src_to_line):
     return changed
 
 
-def check(src_lines, out_lines, entries, special, report_path,
-          extra_hits=None):
+def check(out_lines, entries, special, report_path, extra_hits=None):
     """返回 hits 列表并写入报告。"""
     hits = []
 
@@ -338,6 +337,10 @@ def check(src_lines, out_lines, entries, special, report_path,
             if s:
                 failed_srcs.add(s)
 
+    # ★ 白名单在整个检查期间不变，提到循环外建一次
+    #   （原来每条都新建一次集合，十万条就是十万次）
+    allowed = word_whitelist()
+
     # ---------- 遍历正常条目 ----------
     for line_no, src in entries:
         if line_no >= len(out_lines):
@@ -354,7 +357,6 @@ def check(src_lines, out_lines, entries, special, report_path,
 
         # ★① 疑似未翻译：剥离控制码后仍含英文
         dst_clean = _strip_all_ctrl(dst)
-        allowed = word_whitelist()      # 默认词 + 用户加的词（区分大小写）
         english_words = [
             w for w in _ENGLISH_RE.findall(dst_clean)
             if w not in allowed
