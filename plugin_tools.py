@@ -33,7 +33,11 @@ from logger import get_logger
 log = get_logger("plugin_tools")
 
 # 插件本体（工作区里的）。★ 游戏里的目录名固定是 PLUGIN_DIR_NAME（还原靠它），
-# 但工作区里按 Essentials 版本备了三份：21.1 / 20.1 / 19.1。
+# 工作区里按 Essentials 版本各备一份：
+#   21.1 / 20.1 / 19.1 —— 有插件系统的新引擎（v19 起）
+#   18.1 / 17.2 / 16   —— 没有插件系统的旧引擎（Ruby 1.8 / RGSS1）：
+#                         由 scripts/make_legacy_plugins.py **从官方引擎源码**
+#                         抠出那五个画文字的函数、打中文补丁后生成
 # 版本不同，引擎的 DrawText 实现与可用助手函数不同（v20.1/19.1 没有
 # Color.new_from_rgb，v21.1 没有 rgbToColor / Rgb16ToColor），所以必须分版本。
 PLUGIN_DIR_NAME = "chinese text manager"
@@ -41,8 +45,11 @@ PLUGIN_SRC_DIRS = (
     ("21.1", os.path.join("scripts", "chinese text manager")),
     ("20.1", os.path.join("scripts", "chinese text manager 20.1")),
     ("19.1", os.path.join("scripts", "chinese text manager 19.1")),
-    # ★ 旧版（19.1 之前 / Ruby 1.8 / 没有插件系统）：塞进脚本的最后一个
-    ("legacy", os.path.join("scripts", "chinese text manager legacy")),
+    ("18.1", os.path.join("scripts", "chinese text manager 18.1")),
+    ("17.2", os.path.join("scripts", "chinese text manager 17.2")),
+    ("16", os.path.join("scripts", "chinese text manager 16")),
+    # ★ 认不出型号的老引擎：用 18.1 那份兜底（它同样只用 RGSS 基础 API）
+    ("legacy", os.path.join("scripts", "chinese text manager 18.1")),
 )
 PLUGIN_SRC_DIR = PLUGIN_SRC_DIRS[0][1]        # 默认（21.1），兼容旧调用
 PLUGIN_META_FILE = "meta.txt"
@@ -90,24 +97,62 @@ def pick_plugin_version(game_dir):
     """
     按游戏的 Essentials 版本挑插件变体 → (变体, 游戏里读到的版本字符串)。
 
-      主版本 ≥ 21 → 21.1 ；== 20 → 20.1 ；== 19 → 19.1 ；
-      其余（18.x 及更早、纯 RMXP 游戏）→ legacy（Ruby 1.8 兼容版）
-    ★ 没有插件系统（没有 PluginManager）的也一律用 legacy ——
-      它不依赖插件系统，是直接塞进脚本里的。
+      主版本 ≥ 21 → 21.1 ；== 20 → 20.1 ；== 19 → 19.1 ；== 18 → 18.1
+      16 / 17.2 → 16 / 17.2（这两个版本没有插件系统，靠塞脚本）
+      读不出版本号 → 有插件系统就当新版（用 21.1）；
+                     没有就按函数指纹认基准（16 / 17.2 / 18.1），认不出用 legacy
+
+    ★ 插件系统是 **v18 就有的**（`351117_Plugin_Manager.rb`），不是 v19 才有 ——
+      以前这里按「有没有 PluginManager」二分，把 v18.1 的游戏判成了 19.1 版插件
+      （19.1 用 `Color.new_from_rgb` 之类新 API，在 18.1 引擎上会出错）。
+      所以现在先看版本号，PluginManager 只用来兜「读不出型号」的情况。
     """
     ver = essentials_version(game_dir)
     tup = _version_tuple(ver)
-    if not has_plugin_manager(game_dir):
-        return "legacy", ver
+    pm = has_plugin_manager(game_dir)
     if tup is None:
-        return "21.1", ver                  # 有插件系统但读不出型号：用最新版
+        if pm:
+            return "21.1", ver              # 有插件系统但读不出型号：用最新版
+        return _old_variant(None, game_dir), ver
     if tup[0] >= 21:
         return "21.1", ver
     if tup[0] == 20:
         return "20.1", ver
     if tup[0] == 19:
         return "19.1", ver
-    return "legacy", ver
+    if tup[0] == 18 or pm:
+        return "18.1", ver
+    return _old_variant(tup, game_dir), ver
+
+
+def _old_variant(tup, game_dir):
+    """
+    老引擎（没有插件系统）该用哪份插件 → "16" / "17.2" / "18.1" / "legacy"。
+
+    ★ 认不出版本号时按「函数指纹重合度」挑基准 —— 跟「官方引擎覆盖」用的是
+      同一套（essentials_base.best_baseline）。v16 的脚本里没有版本号常量，
+      老同人作也常读不出来，只靠版本号会一律掉进 legacy。
+    """
+    if tup:
+        if tup[0] >= 18:
+            return "18.1"
+        if tup[0] == 17:
+            return "17.2"
+        if tup[0] == 16:
+            return "16"
+    try:
+        import essentials_base as EB
+        scripts = EB.scan_game_scripts(game_dir)
+        if scripts:
+            auto, ratio = EB.best_baseline(scripts)
+            mapping = {"16": "16", "17": "17.2", "18": "18.1"}
+            if auto in mapping:
+                log.info("老引擎按函数指纹认出 v%s（重合 %.0f%%）→ 用 %s 版插件",
+                         auto, ratio * 100, mapping[auto])
+                return mapping[auto]
+    except Exception as e:                    # noqa: BLE001
+        log.debug("老引擎按指纹认版本失败：%s", e)
+    return "legacy"
 
 
 def install_mode(game_dir):
@@ -661,7 +706,8 @@ def check_compat(game_dir):
     判断这个游戏该用哪个版本的插件、走哪条植入路径。返回 dict：
 
       version         —— 游戏里的 Essentials::VERSION
-      variant         —— 要植入的插件变体（21.1 / 20.1 / 19.1 / legacy）
+      variant         —— 要植入的插件变体
+                         （21.1 / 20.1 / 19.1 / 18.1 / 17.2 / 16 / legacy）
       mode            —— "plugins"（Plugins 目录）或 "scripts"（塞进脚本末尾）
       plugin_manager  —— 有没有插件系统（没有就只能塞脚本）
       missing_apis    —— 插件依赖、但脚本里找不到的引擎 API
@@ -752,11 +798,13 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
           1. 按 Essentials 版本挑插件本体（21.1 / 20.1 / 19.1），
              复制到 <游戏>/Plugins/chinese text manager/；
           2. 选定字体写进 Settings.rb，字体复制到 Fonts/；
+             并把引擎脚本里的字体定义一起改掉（见 engine_tools.patch_engine_font）；
           3. 型号读不出来 / 引擎缺 API 时加一层兼容外壳；
           4. 重新编译 Data/PluginScripts.rxdata（含游戏原有的其它插件）。
 
       ★ 「没有插件系统（v19 之前 / Ruby 1.8）」或「没有 Plugins 目录」→
-         用 legacy / 对应版本的本体，把 Settings.rb + Tools.rb 拼成一个脚本，
+         用 16 / 17.2 / 18.1 里对应那份（认不出型号就用 legacy = 18.1 兜底），
+         把 Settings.rb + Tools.rb 拼成一个脚本，
          **追加到 Scripts.rxdata 的最后一个**（解包游戏则写
          Data/Scripts/zzz_pkmn_chinese_text.rb）。字体一样复制到 Fonts/。
 
@@ -793,6 +841,18 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
         shutil.copyfile(font_file, font_dst)
         say(f"[插件] 字体已复制：Fonts/{os.path.basename(font_file)}")
 
+    # ★ 换字体时把**引擎脚本里的字体定义**一起改掉（见 engine_tools）：
+    #   光改插件 Settings.rb 不够 —— 有些界面/有些版本不跟着走
+    #   （v19 的字体来自 Settings::FONT_OPTIONS，选项里一挑就回去了）。
+    #   改前自动备份，用「还原」可以退回去。
+    engine_font = None
+    try:
+        import engine_tools as ET
+        engine_font = ET.patch_engine_font(game_dir, family, emit=emit)
+    except Exception as e:                    # noqa: BLE001
+        say(f"[字体] ⚠ 引擎脚本里的字体定义没改成（{e}）；"
+            f"插件本身的字体照常生效")
+
     # ---------- 路线 B：塞进脚本的最后一个 ----------
     if mode == "scripts":
         rep = inject_script_plugin(game_dir, src, font_file, family, copied,
@@ -802,7 +862,7 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
         return {"font": family, "font_file": font_file, "copied": copied,
                 "variant": variant, "mode": mode, "files": [],
                 "script": rep, "compat": [], "compat_info": compat,
-                "compile": None}
+                "engine_font": engine_font, "compile": None}
 
     # ---------- 路线 A：Plugins/ + PluginScripts.rxdata ----------
     dst = plugin_dir(game_dir)
@@ -872,7 +932,8 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
         "**不需要**再进游戏编译一次")
     return {"font": family, "font_file": font_file, "copied": copied,
             "variant": variant, "mode": "plugins", "files": written,
-            "compat": compat_files, "compat_info": compat, "compile": rep}
+            "compat": compat_files, "compat_info": compat,
+            "engine_font": engine_font, "compile": rep}
 
 
 def restore_plugin(game_dir, emit=None):
@@ -880,7 +941,8 @@ def restore_plugin(game_dir, emit=None):
     还原插件植入：
       · Plugins/ 下**确认是本工具植入**的那个插件目录（meta.txt 里有标记）；
       · Scripts.rxdata 里本工具追加的那个脚本（或那个 .rb 文件）；
-      · 当初复制进 Fonts 的那份字体（带 `# Copied font:` 标记）。
+      · 当初复制进 Fonts 的那份字体（带 `# Copied font:` 标记）；
+      · 引擎脚本里被本工具改过的字体定义（.pkmn-font-*.bak）。
     """
     def say(msg):
         if emit:
@@ -929,6 +991,15 @@ def restore_plugin(game_dir, emit=None):
 
     if not removed:
         say("[还原] 没有找到本工具植入的插件")
+
+    # ★ 引擎脚本里的字体定义也退回去（当初「加载插件并编译」时改的）
+    try:
+        import engine_tools as ET
+        frest = ET.restore_engine_font(game_dir, emit=emit)
+        removed.extend(frest.get("restored") or [])
+    except Exception as e:                    # noqa: BLE001
+        say(f"[还原] ⚠ 引擎字体定义没还原（{e}）")
+
     say("[还原] 插件已移除 —— 记得再点一次「加载插件并编译」或手动"
         "重编 PluginScripts.rxdata，否则游戏仍会加载已编译进去的那份")
     return {"removed": removed, "scripts": rep}

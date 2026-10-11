@@ -1,0 +1,18 @@
+Name       = 中文文本处理
+Version    = 1.3.8
+Essentials = 16
+Link       = https://bbs.pokefans.cn/threads/20-1-21-11-1-6.223/
+Credits    = 木亦会枯,楠楠楠小鸟
+
+#=====================================================================
+# Change log
+#=====================================================================
+#
+# 1.3.8（Essentials 16 移植版）：
+# - 由「中文文本处理 v21.1」移植；文本换行/字体/偏移功能与 v21.1 版一致
+# - getFormattedText / getFormattedTextFast / getLineBrokenChunks /
+#   getLineBrokenText / pbDrawShadowText 五个函数，**逐行取自官方
+#   Essentials 16 的引擎源码**后再打中文补丁（汉字逐字断行、
+#   Ruby 1.8 按字节切分的坑），所以与目标引擎的行为一致
+# - 生成脚本：scripts/make_legacy_plugins.py（改补丁规则后重跑，别手改）
+#=====================================================================

@@ -8,11 +8,13 @@
   右侧  各功能页面
     · 主页（头像全身照 + 作者姓名 + Bilibili / GitHub 主页链接）—— **不在左侧
       菜单里**，**工具启动时默认就是它**，点左上角头像随时回来
-    · 菜单 2/3/4/5/6/7 右侧带「待操作文件」勾选侧边栏
-    · 菜单 10 右侧带「切换适配」清单侧边栏
-    · 菜单 11 右侧带「游戏根目录」侧边栏
+    · 菜单 2「游戏汉化」＝汉化流程的入口页：右侧列出各步骤，点一项进入对应
+      界面（进去后顶部有「← 返回游戏汉化」回来）；这些子页面本身**不在左侧
+      菜单里**（见 HANHUA_SUBMENUS）
+    · 汉化子页面右侧带「待操作文件」勾选侧边栏
+    · 菜单 3「设置」 4「本地模型服务」右侧带侧边栏（适配清单 / 游戏根目录）
     · 底部常驻状态条（进度 + 取消）
-  菜单 12 为日志页，任务启动后自动跳转过去。
+  菜单 6「日志」为日志页，任务启动后自动跳转过去。
 """
 import os
 import queue
@@ -93,8 +95,8 @@ C_OK      = OK_COLOR      # 成功 / 正常
 
 # llama.cpp 中层那句固定说明 —— 状态行会拼在它后面，两行刚好，
 # 不能塞太多文字，否则中层卡片（高度受挤压）装不下。
-PV_LLAMA_HINT = ("先指好「程序目录」和「模型目录」，启动时会自动 -m 加载"
-                 "选中的 GGUF，并带 --reasoning off 关掉推理。")
+PV_LLAMA_HINT = ("先指好「程序目录」和「模型目录」，启动时自动 -m 加载选中的"
+                 "GGUF（关推理、关只涨不降的历史缓存）。")
 
 # 方框内文字的左右 / 上下留白（按钮按文字大小自适应时用）
 BTN_PAD_X = 22
@@ -102,27 +104,45 @@ BTN_PAD_Y = 16
 
 MENU_ITEMS = [
     ("1", "文本提取与编译"),
-    ("2", "翻译"),
-    ("3", "重翻检查报告"),
-    ("4", "术语更新后重翻"),
-    ("5", "前缀字典"),
-    ("6", "中文润色"),
-    ("7", "换行重排"),
-    ("8", "术语字典"),
-    ("9", "设置"),
-    ("10", "本地模型服务"),
-    ("11", "开启DEBUG"),
-    ("12", "日志"),
+    ("2", "游戏汉化"),
+    ("3", "设置"),
+    ("4", "本地模型服务"),
+    ("5", "开启DEBUG"),
+    ("6", "日志"),
 ]
 
-# ★ "0"（主页）**不进左侧菜单**（用户要求）：只留在这里，供 _build_content
+# ★ 左侧菜单：序号 → 页面键。
+#   "0"（主页）**不进左侧菜单**（用户要求）：只留在这里，供 _build_content
 #   建页面用；进入方式是点左上角头像。
 MENU_KEYS = {
     "0": "home",
-    "1": "intl", "2": "translate", "3": "report", "4": "terms",
-    "5": "prefix", "6": "polish", "7": "reflow", "8": "excel",
-    "9": "settings", "10": "provider", "11": "debug", "12": "log",
+    "1": "intl", "2": "hanhua",
+    "3": "settings", "4": "provider", "5": "debug", "6": "log",
 }
+
+# ★ 被「游戏汉化」统合的子页面：左侧菜单里**没有它们**，
+#   统一从「游戏汉化」页点进去（进去后顶部会出现「← 返回游戏汉化」）。
+#   (页面键, 名称, 一句话说明)
+HANHUA_SUBMENUS = [
+    ("translate", "翻译",
+     "选好文件，把原文翻成目标语言，生成译文与检查报告。"),
+    ("report", "重翻检查报告",
+     "按问题类型筛选，把有问题的句子重新翻一遍。"),
+    ("terms", "术语更新后重翻",
+     "术语表改过之后，只重翻受影响的句子。"),
+    ("prefix", "前缀字典",
+     "按前缀批量替换 / 校对译文。"),
+    ("polish", "中文润色",
+     "对已有译文再润色一遍。"),
+    ("reflow", "换行重排",
+     "把游戏里过长的一行重新断行。"),
+    ("excel", "术语字典 / Excel 转换",
+     "查看并编辑术语字典，或从 Excel 导进术语。"),
+]
+
+# 子页面的键集合 / 键 → 名称（show() 判断该高亮谁、该显示什么标题）
+SUBMENU_KEYS = {k for k, _n, _d in HANHUA_SUBMENUS}
+SUBMENU_TITLES = {k: n for k, n, _d in HANHUA_SUBMENUS}
 
 
 # ================================================================
@@ -139,59 +159,6 @@ def _intl_outs(report):
     if dirs:
         return "、".join(os.path.basename(p) for p in dirs.values())
     return report.get("out") or ""
-
-
-def _split_lines(text):
-    """
-    源码 → 行列表（**先统一行尾为 LF**）。
-
-    ★ 空文本要得到**空列表**，不是 `[""]` —— `"".split("\\n")` 会给出一个
-      空串元素，difflib 就把它当成「有一行空内容」，两边一比全成 replace，
-      于是「基准有、目标没有」被误标成「两边都不同（chg）」，红/绿都不会亮。
-
-    ★ 必须先把 CRLF / CR 归一成 LF：基准（官方源码）是 LF，游戏
-      Scripts.rxdata 里多为 CRLF —— 不归一化时每行末尾都差一个 `\\r`，
-      逐行比对会「整段全红」，明明只改了一个词却像重写了整个函数。
-    """
-    if not text:
-        return []
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    lines = text.split("\n")
-    # ★ 末尾的空行不算「多一行」：很多函数文本以换行结尾，切出来最后一个
-    #   是空串；留着会让对比多出一个「目标独有」的空行（绿底出现在最后）。
-    while lines and lines[-1] == "":
-        lines.pop()
-    return lines
-
-
-def _line_diff_pairs(base_lines, goal_lines):
-    """
-    按 PyCharm 风格把两段代码逐行对齐 → [(基准行, 目标行, tag), ...]。
-
-    tag ∈ {"eq", "del", "add", "chg"}：
-      eq  两边相同；del 仅基准有；add 仅目标有；chg 同行都有但不同。
-    用 difflib.SequenceMatcher 找块，块内配对成行。
-    """
-    import difflib
-    sm = difflib.SequenceMatcher(None, base_lines, goal_lines)
-    out = []
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "equal":
-            for k in range(i2 - i1):
-                out.append((base_lines[i1 + k], goal_lines[j1 + k], "eq"))
-        elif tag == "replace":
-            n = max(i2 - i1, j2 - j1)
-            for k in range(n):
-                bl = base_lines[i1 + k] if i1 + k < i2 else ""
-                gl = goal_lines[j1 + k] if j1 + k < j2 else ""
-                out.append((bl, gl, "chg"))
-        elif tag == "delete":
-            for k in range(i1, i2):
-                out.append((base_lines[k], "", "del"))
-        elif tag == "insert":
-            for k in range(j1, j2):
-                out.append(("", goal_lines[k], "add"))
-    return out
 
 
 def round_rect(canvas, x1, y1, x2, y2, r=14, **kw):
@@ -1138,14 +1105,14 @@ class FilePanel(tk.Frame):
     右侧「待操作文件」侧边栏：单个文件 / 整个文件夹 + 勾选列表。
 
     mode:
-      "source"     —— 菜单 2：源文件，不限格式，只跳过译文与检查报告
-      "report"     —— 菜单 3：只识别 *_translated_report.txt
-      "cache"      —— 菜单 4/6：只识别翻译缓存 *_cache.json
-      "translated" —— 菜单 7：只识别译文 *_translated.txt
-      "dict"       —— 菜单 5：固定用工具目录下的 prefix_dict.json，不给选
+      "source"     —— 翻译页：源文件，不限格式，只跳过译文与检查报告
+      "report"     —— 重翻检查报告页：只识别 *_translated_report.txt
+      "cache"      —— 术语重翻 / 中文润色页：只识别翻译缓存 *_cache.json
+      "translated" —— 换行重排页：只识别译文 *_translated.txt
+      "dict"       —— 前缀字典页：固定用工具目录下的 prefix_dict.json，不给选
     """
 
-    # 菜单 2 需要跳过的后缀
+    # 翻译页需要跳过的后缀
     SKIP_SUFFIX = ("_translated.txt", "_translated_report.txt")
 
     def __init__(self, master, bg=CARD, width=272, mode="source",
@@ -1166,7 +1133,7 @@ class FilePanel(tk.Frame):
         tk.Label(self, text="待操作文件", bg=bg, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 4))
 
-        # ★ "dict" 模式（菜单 5）：字典文件固定，不用给选择按钮
+        # ★ "dict" 模式（前缀字典页）：字典文件固定，不用给选择按钮
         if self.mode != "dict":
             row = tk.Frame(self, bg=bg)
             row.pack(fill="x", padx=10)
@@ -1190,7 +1157,7 @@ class FilePanel(tk.Frame):
                                   font=FONT_BIG)
         self.count_lbl.pack(side="right")
 
-        # ★ 菜单 7：可以直接选游戏根目录（自动扫描里面的 txt 文件）
+        # ★ 换行重排页：可以直接选游戏根目录（自动扫描里面的 txt 文件）
         if allow_game_root:
             row3 = tk.Frame(self, bg=bg)
             row3.pack(fill="x", padx=10, pady=(4, 2))
@@ -1217,7 +1184,7 @@ class FilePanel(tk.Frame):
                               wraplength=max(120, self.panel_w - 62))
         self._hint.pack(anchor="w", padx=6, pady=10)
 
-        # ★ 菜单 5：字典文件固定写在工具目录下，直接列出来
+        # ★ 前缀字典页：字典文件固定写在工具目录下，直接列出来
         if self.mode == "dict":
             try:
                 import prefix_dict as PFD
@@ -1799,7 +1766,7 @@ class App:
         self.sheet_vars = {}       # Excel sheet → BooleanVar
         self.setting_widgets = {}  # key → (widget, typ)
 
-        # 菜单 8「术语字典」视图（与 Excel 转换视图共用一个页面）
+        # 「术语字典」视图（与 Excel 转换视图共用一个页面）
         self.excel_view = None      # Excel 转换视图
         self.termdict_view = None   # 术语字典列表视图
         self.dict_editor = None     # dict_editor.TermDictEditor（首次进入时建）
@@ -1809,7 +1776,7 @@ class App:
         self.dict_visible = []      # 当前可见的原始原文（顺序同列表）
         self.dict_show_limit = DE.VIEW_LIMIT_DEFAULT
 
-        # 菜单 10（本地模型服务）
+        # 本地模型服务（菜单 4）
         self.pv_param_vars = {}    # config key → StringVar
         self._pv_btn_groups = []   # 提供商分段按钮组
         self._pv_models = []       # 当前列表里的模型行
@@ -1945,29 +1912,35 @@ class App:
     def _build_content(self):
         holder = tk.Frame(self.root, bg=BG_BASE)
         holder.grid(row=0, column=1, sticky="nsew", padx=(6, 14), pady=14)
-        holder.grid_rowconfigure(0, weight=1)
+        holder.grid_rowconfigure(0, weight=0)      # 顶部「返回」条
+        holder.grid_rowconfigure(1, weight=1)      # 页面本体
         holder.grid_columnconfigure(0, weight=1)
+        self.content_holder = holder
 
-        for key in MENU_KEYS.values():
+        # ★ 子页面顶部条：只有进「游戏汉化」的子菜单时才出现
+        #   （平时 grid_remove → row0 高度塌成 0，页面仍占满整块区域）
+        self.sub_header = tk.Frame(holder, bg=BG_BASE)
+        self.sub_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        GlassButton(self.sub_header, "← 返回游戏汉化", width=148, height=38,
+                    bg=BG_BASE, font=FONT_SMALL,
+                    command=lambda: self.show("hanhua")).pack(side="left")
+        self.sub_title = tk.Label(self.sub_header, text="", bg=BG_BASE,
+                                  fg=C_TITLE, font=FONT_TITLE)
+        self.sub_title.pack(side="left", padx=(12, 0))
+        self.sub_header.grid_remove()
+
+        for key in list(MENU_KEYS.values()) + list(SUBMENU_KEYS):
             page = tk.Frame(holder, bg=BG_BASE)
-            page.grid(row=0, column=0, sticky="nsew")
+            page.grid(row=1, column=0, sticky="nsew")
             bgc = tk.Canvas(page, highlightthickness=0, bg=BG_BASE)
             bgc.place(x=0, y=0, relwidth=1, relheight=1)
             bgc.bind("<Configure>",
                      lambda e, c=bgc: paint_bg(c, e.width, e.height))
             self.pages[key] = page
 
-        # ★ 任务4：检测报告页（隐藏页，不在左侧菜单里）
-        rp = tk.Frame(holder, bg=BG_BASE)
-        rp.grid(row=0, column=0, sticky="nsew")
-        rbg = tk.Canvas(rp, highlightthickness=0, bg=BG_BASE)
-        rbg.place(x=0, y=0, relwidth=1, relheight=1)
-        rbg.bind("<Configure>",
-                 lambda e, c=rbg: paint_bg(c, e.width, e.height))
-        self.pages["dbgreport"] = rp
-
         self._page_home()
         self._page_intl()
+        self._page_hanhua()
         self._page_translate()
         self._page_report()
         self._page_terms()
@@ -1978,7 +1951,6 @@ class App:
         self._page_settings()
         self._page_provider()
         self._page_debug()
-        self._page_dbg_report()
         self._page_log()
 
     # ---------------- 状态条 ----------------
@@ -2018,8 +1990,12 @@ class App:
             return
         self.current = key
         self.pages[key].tkraise()
+        # ★ 子页面（菜单 2「游戏汉化」统合进来的那些）在左侧没有自己的按钮，
+        #   高亮统一落在「游戏汉化」上，并显示顶部返回条。
+        active = "hanhua" if key in SUBMENU_KEYS else key
         for k, btn in self.menu_btns.items():
-            btn.set_active(k == key)
+            btn.set_active(k == active)
+        self._sync_sub_header(key)
         if key == "terms":
             self._load_term_rows()
         elif key == "prefix":
@@ -2031,9 +2007,21 @@ class App:
         elif key == "log":
             pass
 
+    def _sync_sub_header(self, key):
+        """在「游戏汉化」的子页面里显示顶部返回条，其它页面隐藏。"""
+        try:
+            if key in SUBMENU_KEYS:
+                self.sub_title.config(text=SUBMENU_TITLES.get(key, ""))
+                self.sub_header.grid()
+                self.sub_header.tkraise()
+            else:
+                self.sub_header.grid_remove()
+        except Exception:
+            pass
+
     def _make_file_panel(self, holder, mode, allow_game_root=False,
                          on_game_root=None):
-        """统一创建右侧文件侧边栏，并把菜单 2 的选择同步给其余菜单。"""
+        """统一创建右侧文件侧边栏，并把「翻译」页的选择同步给其它子页面。"""
         fp = FilePanel(holder.body, bg=CARD, mode=mode,
                        on_change=self._sync_file_panels, app=self,
                        allow_game_root=allow_game_root,
@@ -2044,18 +2032,18 @@ class App:
 
     def _sync_file_panels(self, paths):
         """
-        菜单 2（翻译）选中文件后，自动同步到其它菜单。
+        「游戏汉化 → 翻译」页选中文件后，自动同步到其它子页面。
 
         ★ 各菜单认的文件不一样，这里统一做一次换算：
-            菜单 3 → 检查报告 *_translated_report.txt
-            菜单 4/6 → 翻译缓存 *_cache.json
-            菜单 7 → 译文 *_translated.txt
-            菜单 5 → 字典文件固定，不同步
+            重翻检查报告 → 检查报告 *_translated_report.txt
+            术语重翻 / 中文润色 → 翻译缓存 *_cache.json
+            换行重排 → 译文 *_translated.txt
+            前缀字典 → 字典文件固定，不同步
           源文件的换算走 commands.source_of()，所以把缓存 / 译文直接拖进来也能认。
         """
         paths = list(paths or [])
-        # ★ 先统一换回源文件：菜单 4/6 里勾的是缓存、菜单 7 里勾的是译文，
-        #   直接同步过去会把这些文件塞进菜单 2，翻译时会当成文本去读。
+        # ★ 先统一换回源文件：术语重翻 / 润色里勾的是缓存、换行重排里勾的是译文，
+        #   直接同步过去会把这些文件塞进翻译页，翻译时会当成文本去读。
         base = [commands.source_of(p) for p in paths]
         for fp in self.file_panels:
             if fp is None or not fp.winfo_exists():
@@ -2320,18 +2308,8 @@ class App:
                     self.plugin_restore_lbl.config(
                         text=("已还原：" + "、".join(removed)) if removed
                         else "没有找到插件脚本（可能本来就没植入过）")
-                elif kind == "dbg_scan_done":
-                    r = payload or {}
-                    if r.get("ok"):
-                        self._dbg_show_check(r.get("check"),
-                                             r.get("report_path"))
-                    else:
-                        self.dbg_stat.config(text="✘ 检测失败", fg=ERR_COLOR)
-                        self.dbg_check_lbl.config(
-                            text=r.get("reason", ""), fg=ERR_COLOR)
                 elif kind == "dbg_enable_done":
                     r = payload or {}
-                    self._dbg_show_check(r.get("check"), r.get("report_path"))
                     if r.get("mode_error"):
                         # ★ 方式函数抛异常：以前只写进 res["mode_error"]、
                         #   全项目**没有任何地方读它** → 界面上只显示
@@ -2739,7 +2717,7 @@ class App:
         ok_model = res.get("ollama_model", (False, ""))[0]
         msg = res.get("ollama_service", (False, ""))[1]
 
-        # ★ 提示按菜单 10 选的提供商走，不写死 Ollama
+        # ★ 提示按「本地模型服务」里选的提供商走，不写死 Ollama
         label, cur_model = "Ollama", config.MODEL
         try:
             import providers as PV
@@ -2821,6 +2799,50 @@ class App:
         attach_label_copy(link, self, "主页网址")
 
     # ================================================================
+    # 页面 2：游戏汉化（汉化流程的入口页）
+    # ================================================================
+    def _page_hanhua(self):
+        """
+        把原来分散的菜单（翻译 / 重翻检查报告 / 术语更新后重翻 / 前缀字典 /
+        中文润色 / 换行重排 / 术语字典）收进这一个菜单：右侧列出各步骤，
+        点一项就跳到对应界面，界面顶部有「← 返回游戏汉化」可以回来。
+        """
+        page = self.pages["hanhua"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+
+        outer, inner = make_scroll_area(page, bg=BG_BASE)
+        outer.grid(row=0, column=0, sticky="nsew")
+
+        card = RoundCard(inner, radius=18, pad=18, auto_height=True)
+        card.pack(fill="x")
+        body = card.body
+        tk.Label(body, text="游戏汉化", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(body, text="汉化的每一步都在这里，点一项进入对应界面：",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=560).pack(anchor="w",
+                                                      pady=(4, 10))
+
+        grid = tk.Frame(body, bg=CARD)
+        grid.pack(fill="x")
+        grid.grid_columnconfigure(1, weight=1)
+        for i, (key, name, desc) in enumerate(HANHUA_SUBMENUS):
+            GlassButton(grid, f"{i + 1}. {name}", width=228, height=46,
+                        primary=(i == 0), bg=CARD, font=FONT_B,
+                        command=lambda k=key: self.show(k)).grid(
+                row=i, column=0, sticky="w", pady=5)
+            tk.Label(grid, text=desc, bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                     justify="left", wraplength=520).grid(
+                row=i, column=1, sticky="w", padx=(14, 0))
+
+        tk.Label(body,
+                 text="进入某一项后，点左上角「← 返回游戏汉化」回到本页；"
+                      "带右侧文件栏的页面要先选好文件。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=560).pack(anchor="w", pady=(12, 0))
+
+    # ================================================================
     # 页面 1：文本提取与编译
     # ================================================================
     def _page_intl(self):
@@ -2858,10 +2880,8 @@ class App:
         attach_label_copy(self.intl_extract_lbl, self, "提取结果")
         self.intl_extract_hint = tk.Label(
             c1.body,
-            text="等同于在游戏 debug 菜单里执行 Extract Text：读游戏 "
-                 "Data 下已编译的原文表，按分段拆成多个 txt "
-                 "（新版方案是两个 Text_<语言>_core/_game 文件夹，"
-                 "旧版方案是一个 Text_<语言> 文件夹）。已存在时先自动备份。",
+            text="按分段从游戏 Data 里读出已编译的原文表，拆成多个 "
+                 "Text_<语言> 系列 txt（已存在时先备份）。",
             bg=CARD, fg=C_HINT, font=FONT_SMALL,
             justify="left", wraplength=560)
         self.intl_extract_hint.pack(anchor="w", pady=(6, 0))
@@ -2916,9 +2936,8 @@ class App:
         attach_label_copy(self.intl_compile_lbl, self, "编译结果")
         self.intl_compile_hint = tk.Label(
             c2.body,
-            text="等同于在游戏 debug 菜单里执行 Compile Text。\n"
-                 "只编译译文文件（*_translated.txt）；某个源文件没有对应译文时，"
-                 "改编译源文件本身；检查报告 / 润色稿等生成物不参与编译。",
+            text="把译文写回游戏文本（等同于 debug 菜单的 Compile Text）："
+                 "只编译 *_translated.txt，没有对应译文的源文件则编译源文件本身。",
             bg=CARD, fg=C_HINT, font=FONT_SMALL,
             justify="left", wraplength=560)
         self.intl_compile_hint.pack(anchor="w", pady=(6, 0))
@@ -2950,16 +2969,9 @@ class App:
                     primary=True, bg=CARD,
                     command=self._do_plugin_inject).pack(side="right")
         tk.Label(c3.body,
-                 text="把「中文文本处理」插件装进游戏、把选定字体写进插件设置"
-                      "（字体文件复制到游戏 Fonts）—— 不用进游戏、也不用开调试"
-                      "模式。\n"
-                      "★ 会按游戏的 Essentials 版本自动挑插件本体"
-                      "（21.1 / 20.1 / 19.1 / legacy 四份）。\n"
-                      "★ 有 Plugins 目录的游戏：插件放进 Plugins/，并把全部插件"
-                      "一起编译进 Data/PluginScripts.rxdata；\n"
-                      "★ 没有 Plugins 目录（或没有插件系统、跑 Ruby 1.8 的老游戏）："
-                      "把插件拼成一个脚本，插到 Data/Scripts.rxdata 里 Main 的前面"
-                      "（RGSS 读到 Main 就进游戏主循环，挂在 Main 后面的脚本不执行）。",
+                 text="按游戏版本挑对应插件本体（16 / 17.2 / 18.1 / 19.1 / 20.1 / "
+                      "21.1），装进游戏、把字体复制到 Fonts，并把引擎脚本里的"
+                      "字体定义一起改掉（不用进游戏、也不用开调试）。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
 
@@ -2969,8 +2981,7 @@ class App:
                     font=FONT_SMALL,
                     command=self._do_plugin_restore).pack(side="left")
         tk.Label(row_restore,
-                 text="删掉本工具植入的插件目录与当初复制进 Fonts 的字体"
-                      "（游戏自带字体与其它插件不动）",
+                 text="删掉本工具装进游戏的插件与字体",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=420).pack(side="left", padx=10)
         self.plugin_restore_lbl = tk.Label(c3.body, text="", bg=CARD,
@@ -3005,20 +3016,15 @@ class App:
         self.intl_hint_lbl = tk.Label(
             body,
             text="提示：\n"
-                 "· 要选游戏根目录：里面有 Data 文件夹和 .exe 启动程序\n"
-                 "· 适用于 Pokémon Essentials / mkxp / RMXP 游戏\n"
-                 "· 提取出的文本在游戏根目录的 Text_ 文件夹里（每个分段一个 txt）；"
-                 "数组段每 3 行一条（序号/原文/译文），"
-                 "哈希段每 2 行一条（原文/译文）\n"
-                 "· 翻译时**只改每个条目的最后一行**，上一行原文原样留着\n"
-                 "· 编译前会自动备份原来的语言文件\n"
-                 "· 插件只在游戏切到中文语言时生效",
+                 "选游戏根目录（里面有 Data 文件夹和 .exe 启动程序）：提取出的"
+                 "文本落在根目录的 Text_ 系列文件夹，翻译只改每条的译文行，"
+                 "编译前自动备份，插件仅在中文语言下生效。",
             bg=CARD, fg=C_HINT, font=FONT_SMALL,
             justify="left", wraplength=200)
         self.intl_hint_lbl.pack(anchor="w", padx=10, pady=(10, 0))
         attach_label_copy(self.intl_hint_lbl, self, "使用提示")
 
-    # ---------- 菜单 1：小工具 ----------
+    # ---------- 菜单 1（文本提取与编译）：小工具 ----------
     def _intl_pick_folder(self):
         d = filedialog.askdirectory(
             title="选择游戏根目录（里面有 Data 文件夹和 .exe 启动程序）",
@@ -3063,28 +3069,24 @@ class App:
 
             if split:
                 self.intl_extract_hint.config(
-                    text=f"这个游戏把文本分成 core（引擎）和 game（游戏）两份："
-                         f"会导出成 Text_{frag}_core/ 与 Text_{frag}_game/ "
-                         f"两个文件夹，里面**每个分段一个 txt**"
-                         f"（BOM + 说明行 + [段名] + 条目）。"
-                         f"已翻过的部分会带出来作对照。")
+                    text=f"这个游戏分 core（引擎）与 game（游戏）两份，会导出成 "
+                         f"Text_{frag}_core/ 与 Text_{frag}_game/ 两个文件夹"
+                         f"（每个分段一个 txt）。")
                 self.intl_compile_hint.config(
                     text="选 Text_<语言>_core / Text_<语言>_game 两个文件夹"
-                         "（或直接选里面的 txt），会分别编出 "
-                         f"Data/messages_{frag}_core.dat 与 "
-                         f"messages_{frag}_game.dat。覆盖前自动备份。")
+                         "（或里面的 txt），分别编出 "
+                         f"messages_{frag}_core.dat 与 "
+                         f"messages_{frag}_game.dat；覆盖前自动备份。")
                 self.intl_src_lbl.config(
                     text="未选择（默认用提取出来的两个 Text_ 文件夹）")
             else:
                 self.intl_extract_hint.config(
-                    text="等同于在游戏 debug 菜单里执行 Extract Text：读游戏 "
-                         "Data 下已编译的原文表，按分段拆成多个 txt "
-                         "（旧版方案是游戏根目录下的 Text_<语言> 文件夹）。"
-                         "已存在时先自动备份。")
+                    text="读游戏 Data 下已编译的原文表，按分段拆成 "
+                         "Text_<语言> 文件夹里的 txt（已存在时先备份）。")
                 self.intl_compile_hint.config(
-                    text="等同于 Compile Text：可以只选一个 txt，也可以选整个"
-                         "文件夹（里面的 .txt 按文件名顺序合并）。输出位置按"
-                         "游戏 Settings::LANGUAGES 自动定，覆盖前自动备份。")
+                    text="可以只选一个 txt，也可以选整个文件夹（里面的 .txt "
+                         "按文件名顺序合并）；输出位置按游戏 "
+                         "Settings::LANGUAGES 定，覆盖前自动备份。")
                 self.intl_src_lbl.config(
                     text="未选择（默认用提取出来的 Text_ 文件夹）")
         except Exception:
@@ -3641,7 +3643,7 @@ class App:
                 (h.get("detail") or "")[:200],
             ))
             self.report_iid_map[iid] = h
-        total = len(getattr(self, "report_hits", []))
+        total = commands.count_problems(getattr(self, "report_hits", []))
         if kw:
             short = kw if len(kw) <= 12 else kw[:12] + "…"
             self.report_stat.config(
@@ -3833,7 +3835,8 @@ class App:
                   "「译文残留控制码」等类型不参与重翻；"
                   "「应用已编辑」把双击改过的译文写进缓存与译文文件"))
         self.status_var.set(
-            f"检查完成：{len(hits)} 处问题 / {len(result or {})} 个文件")
+            f"检查完成：{commands.count_problems(hits)} 处问题 / "
+            f"{len(result or {})} 个文件")
 
     # ----------------------------------------------------------------
     # 术语冲突：上方术语列表 + 下方命中的句子
@@ -4338,7 +4341,7 @@ class App:
         win.grab_set()
 
     def _report_sources(self):
-        """菜单 3 里选的是检查报告，这里换回真正的源文件。"""
+        """重翻检查报告页选的是检查报告，这里换回真正的源文件。"""
         paths = self.fp_report.ensure()
         srcs = []
         for p in paths:
@@ -5358,7 +5361,8 @@ class App:
                 f"· Plugins/{PT.PLUGIN_DIR_NAME}/（本工具植入的那个）\n"
                 f"· Scripts.rxdata 里本工具插进去的那条脚本（如果是塞脚本的方式，"
                 f"它在 Main 前面）\n"
-                f"· Fonts 里当初复制进去的字体（游戏自带字体不动）\n\n"
+                f"· Fonts 里当初复制进去的字体（游戏自带字体不动）\n"
+                f"· 引擎脚本里被改过的字体定义（还原成游戏原来的字体）\n\n"
                 f"游戏：{d}\n\n确定还原吗？"):
             return
 
@@ -5666,14 +5670,8 @@ class App:
         tk.Label(card.body, text="提示", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
         tk.Label(card.body,
-                 text="· 表头需同时包含所选的两种语言列名\n"
-                      "· 多个工作表会跨表去重\n"
-                      "· 默认追加：已有术语只加不覆盖\n"
-                      "· 新译法与旧译法不同会提示冲突\n"
-                      "· 转换后可在菜单 4 里逐条校对译文\n"
-                      "· 点「全选」右侧的「术语字典」可查看并编辑\n"
-                      "  整个术语字典（含自动提取的术语）\n"
-                      "· 输出文件：term_dict.py",
+                 text="表头要同时含所选的两种语言列名，多个工作表会跨表去重，"
+                      "默认「已有术语只加不覆盖」，新译法与旧译法不同会提示冲突。",
                  bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
                  justify="left").pack(anchor="w", pady=(10, 0))
 
@@ -5776,7 +5774,7 @@ class App:
             if n and not messagebox.askyesno(
                     "确认覆盖",
                     f"term_dict.py 里已有 {n} 条术语，覆盖后只剩本次 Excel 的"
-                    f"内容（菜单 4 里校对过的译法也会丢）。\n\n确定要覆盖吗？"):
+                    f"内容（在「术语字典」里校对过的译法也会丢）。\n\n确定要覆盖吗？"):
                 return
 
         def work():
@@ -5789,7 +5787,7 @@ class App:
         self.run_async(work, label="Excel 转换中…", done_label="转换完成")
 
     # ----------------------------------------------------------------
-    # 术语字典视图（菜单 8 的第二个视图）
+    # 术语字典视图（Excel 转换页的第二个视图）
     # ----------------------------------------------------------------
     def _build_termdict_view(self, page):
         """构建「术语字典」列表视图：查看 / 修改 / 新增 / 删除 / 撤回。"""
@@ -5937,15 +5935,8 @@ class App:
         tk.Label(card.body, text="术语字典", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
         tk.Label(card.body,
-                 text="· 双击原文或译文可直接修改\n"
-                      "· 改完点「保存」才写进 term_dict.py\n"
-                      "· 保存前随时可点「撤回」逐步回退\n"
-                      "· 「一键删除自动术语」清掉 AUTO 块里\n"
-                      "  自动提取的词（保存后生效）；新增的\n"
-                      "  术语写在手工区，不会被动到\n"
-                      "· 保存后菜单 4 会把改动算作新增 / 修改\n"
-                      "  并提示重翻受影响的句子\n"
-                      "· 列表默认最多显示 600 条，用搜索缩小范围",
+                 text="双击改原文/译文，点「保存」写进 term_dict.py、"
+                      "点「撤回」可逐步回退；「一键删除自动术语」只清自动提取的词。",
                  bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
                  justify="left").pack(anchor="w", pady=(10, 0))
         self.dict_file_lbl = tk.Label(
@@ -5966,7 +5957,7 @@ class App:
                 return
             self.dict_checks = set()
         elif not self.dict_editor.is_dirty():
-            # 菜单 4 / Excel 转换可能刚改过 term_dict.py：没有未保存改动时
+            # 术语重翻 / Excel 转换可能刚改过 term_dict.py：没有未保存改动时
             # 悄悄重读一遍；有改动就原样留着（要重读请点「重新载入」）
             try:
                 self.dict_editor.reload()
@@ -6309,7 +6300,7 @@ class App:
                 "保存失败", f"{e}\n\n{config.TERM_FILE}")
             self.q.put(("log", f"术语字典保存失败：{e}\n"))
             return False
-        # 让翻译端立刻用上新字典（★ 不写 snapshot，好让菜单 4 能识别改动）
+        # 让翻译端立刻用上新字典（★ 不写 snapshot，好让「术语更新后重翻」识别改动）
         try:
             PR.load_terms(force=True)
         except Exception:
@@ -7198,7 +7189,7 @@ class App:
         PV.set_prev_provider(old)
         changes = PV.apply_provider(key)
 
-        # 同步菜单 2 / 菜单 9 上的模式与模型显示
+        # 同步翻译页 / 设置页上的模式与模型显示
         self._paint_mode_row()
         self.model_var.set(PV.current_model(key))
         self._detect_models_async()
@@ -7468,6 +7459,8 @@ class App:
         self.debug_modes_locked = False  # ★ 无 Data 时锁成「调试启动器」
         # ★ 用户要求：引擎被改过也**默认继续写入**，所以默认勾上。
         self.debug_force = tk.BooleanVar(value=True)
+        # ★ 自动关闭全量编译：默认勾上（给 Compiler 装编译闸门）。
+        self.debug_guard = tk.BooleanVar(value=True)
         page = self.pages["debug"]
         page.grid_columnconfigure(0, weight=1)
         page.grid_rowconfigure(0, weight=1)
@@ -7477,60 +7470,34 @@ class App:
         outer, inner = make_scroll_area(left, bg=BG_BASE)
         outer.pack(fill="both", expand=True)
 
-        # ---- 上层：引擎体检 ----
+        # ---- 上层：官方引擎覆盖 ----
         c1 = RoundCard(inner, radius=16, pad=16, auto_height=True)
         c1.pack(fill="x", pady=(0, 10))
         head1 = tk.Frame(c1.body, bg=CARD)
         head1.pack(fill="x")
-        tk.Label(head1, text="引擎体检", bg=CARD, fg=C_TITLE,
+        tk.Label(head1, text="官方引擎覆盖", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(side="left")
-        self.dbg_stat = tk.Label(head1, text="", bg=CARD, fg=C_KEY,
-                                 font=FONT_BIG)
-        self.dbg_stat.pack(side="right")
-        attach_label_copy(self.dbg_stat, self, "体检结果")
 
         row1 = tk.Frame(c1.body, bg=CARD)
         row1.pack(fill="x", pady=(8, 0))
-        GlassButton(row1, "开始检测", width=132, height=46, primary=True,
-                    bg=CARD, command=self._do_debug_scan).pack(side="left")
-        # ★ 任务4：检测报告按钮，在「开始检测」右侧
-        GlassButton(row1, "检测报告", width=132, height=46, bg=CARD,
-                    command=self._open_report).pack(side="left", padx=(10, 0))
-        # ★ 任务3：用基准覆盖 debug 菜单脚本
+        # ★ 用官方同版本基准覆盖 debug 菜单脚本
         GlassButton(row1, "用基准覆盖 debug 菜单", width=196, height=46,
-                    bg=CARD,
-                    command=self._do_overwrite_menus).pack(side="left",
-                                                          padx=(10, 0))
-        # ★ 任务3：用基准覆盖「地图更新」（Scene_Map）
+                    primary=True, bg=CARD,
+                    command=self._do_overwrite_menus).pack(side="left")
+        # ★ 用官方同版本基准覆盖「地图更新」（Scene_Map）
         GlassButton(row1, "用基准覆盖地图更新", width=178, height=46,
                     bg=CARD,
                     command=self._do_overwrite_scene_map).pack(side="left",
                                                                padx=(10, 0))
         tk.Label(c1.body,
-                 text="① 检测结果**只在右侧运行日志里展示**（本卡片不再罗列）；"
-                      "检测完可点「检测报告」进报告页逐行对比、编辑并回写。\n"
-                      "② 「用基准覆盖 debug 菜单」＝把官方同版本引擎的调试菜单"
-                      "脚本整份覆盖到游戏里，并把菜单文字换成中文 —— "
-                      "**只动调试菜单那几个脚本，改动前会自动备份**，出问题可"
-                      "用「还原覆盖」恢复。\n"
-                      "③ 「用基准覆盖地图更新」＝把官方同版本引擎的 **Scene_Map**"
-                      "（地图场景：按键处理、F9 调试菜单、转场）整份盖回游戏 —— "
-                      "同人游戏常把它改得面目全非，导致「方式二：删 $DEBUG 条件」"
-                      "一个都认不出来；盖回官方版后方式二/三/四就有干净的落点了。"
-                      "**只替换 Scene_Map 这一个脚本、不做翻译、改动前自动备份**。\n"
-                      "④ 按游戏脚本里的版本号挑官方基准（内置 16 / 17 / 18 / "
-                      "19 / 19.1 / 20 / 20.1 / 21 / 21.1）。基准的形态跟 "
-                      "RMXP 脚本编辑器一样：**脚本名 → 它里面的函数**，"
-                      "按脚本名找到对应的那份，再逐个对函数体指纹："
-                      "一致=没动过、被改=函数体变了、缺失=基准里有游戏里没有、"
-                      "新增=作者自己加的不算问题，Settings 脚本不参与比对。",
+                 text="用官方同版本引擎的脚本整份盖回游戏（覆盖前先备份，"
+                      "可随时用「还原覆盖」恢复）：\n"
+                      "· debug 菜单：调试菜单的那几个脚本，覆盖时把菜单文字"
+                      "换成中文；\n"
+                      "· 地图更新：只替换 Scene_Map 一个脚本、不做翻译 —— "
+                      "方式②③④ 找不到落点时先盖回官方版。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
-        self.dbg_check_lbl = tk.Label(c1.body, text="", bg=CARD, fg=C_KEY,
-                                      font=FONT_SMALL, justify="left",
-                                      wraplength=560)
-        self.dbg_check_lbl.pack(anchor="w", pady=(6, 0))
-        attach_label_copy(self.dbg_check_lbl, self, "检测详情")
         row1b = tk.Frame(c1.body, bg=CARD)
         row1b.pack(fill="x", pady=(6, 0))
         GlassButton(row1b, "还原覆盖", width=108, height=38, bg=CARD,
@@ -7556,12 +7523,6 @@ class App:
             row2, "开启 DEBUG", width=140, height=46, primary=True,
             bg=CARD, command=self._do_debug_enable)
         self.dbg_do_btn.pack(side="left")
-        tk.Checkbutton(
-            row2, text="引擎被改过也继续写入（默认）",
-            variable=self.debug_force, bg=CARD, fg=TEXT,
-            activebackground=CARD, activeforeground=TEXT,
-            selectcolor="#FFFFFF", font=FONT_SMALL,
-            cursor="hand2").pack(side="left", padx=12)
         GlassButton(row2, "还原", width=88, height=40, bg=CARD,
                     font=FONT_SMALL,
                     command=self._do_debug_restore).pack(side="right")
@@ -7570,6 +7531,25 @@ class App:
             row2, "生成调试启动器", width=136, height=40, bg=CARD,
             font=FONT_SMALL, command=self._do_make_launcher)
         self.dbg_launcher_btn.pack(side="right", padx=8)
+
+        # ★ 选项单独一行（跟按钮挤一行会把右边的按钮压扁）
+        row2c = tk.Frame(c2.body, bg=CARD)
+        row2c.pack(fill="x", pady=(6, 0))
+        tk.Checkbutton(
+            row2c, text="引擎被改过也继续写入（默认）",
+            variable=self.debug_force, bg=CARD, fg=TEXT,
+            activebackground=CARD, activeforeground=TEXT,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            cursor="hand2").pack(side="left")
+        # ★ 自动关闭全量编译（默认勾上）：给 Compiler 的 main 装一道闸，
+        #   数据已编译好就直接 return（不删 Data/*.dat、不全量重编译）；
+        #   取消勾选就保持引擎原样（调试启动时会真的全量编译一次）。
+        tk.Checkbutton(
+            row2c, text="自动关闭全量编译（默认）",
+            variable=self.debug_guard, bg=CARD, fg=TEXT,
+            activebackground=CARD, activeforeground=TEXT,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            cursor="hand2").pack(side="left", padx=(18, 0))
 
         # ★ 任务5/任务2：开启方式改下拉框（容纳六种方式）
         row2b = tk.Frame(c2.body, bg=CARD)
@@ -7606,20 +7586,11 @@ class App:
         self.dbg_do_lbl.pack(anchor="w", pady=(6, 0))
         attach_label_copy(self.dbg_do_lbl, self, "开启结果")
         tk.Label(c2.body,
-                 text="另有：① 顺手清掉脚本里的**反调试**代码：在 Scene_Map "
-                      "里检测到 `if $DEBUG … end` 会直接触发处理，检测到 "
-                      "`$DEBUG = false` 直接整行注释；\n"
-                      "　 ★ 检测范围**含插件脚本 `Data/PluginScripts.rxdata`**"
-                      "（v19+ 的插件机制，游戏真正 eval 的就是插件里那份）——"
-                      "插件里除了按插件名，还认「重开 `class Scene_Map`」的文件；"
-                      "其它检测（基准比对 / 方式②③④）不看插件脚本；\n"
-                      "② 按脚本名找到 **Compiler**，给它的 main 装一道闸："
-                      "Data 里已有编译数据时，不再删 Data/*.dat、不再全量重编译"
-                      "（按住 Ctrl 启动仍会真编译一次）；\n"
-                      "③ 改动前先把脚本源文件改名为 .bak，再复制一份来改 —— "
-                      ".bak 里始终是原始文件，「还原」就是把它改回原名；\n"
-                      "④ 方式②「一处都没认出来」时会弹窗问你要不要按版本基准"
-                      "在对应位置补「免 $DEBUG 条件」的代码（见右侧提示）。",
+                 text="另外会自动清掉脚本里的反调试代码（含插件脚本 "
+                      "Data/PluginScripts.rxdata）、给 Compiler 装一道编译闸门"
+                      "（不想装就取消勾选「自动关闭全量编译」）；改动前先备份成 "
+                      ".bak（可随时「还原」）；方式②一个 $DEBUG "
+                      "条件都没认出来时，会问你要不要按官方基准补行。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
 
@@ -7628,16 +7599,10 @@ class App:
         c3.pack(fill="x")
         self.dbg_hint_lbl = tk.Label(
             c3.body,
-            text="· 选「游戏启动程序（exe）」即可，游戏目录会自动用它所在文件夹\n"
-                 "· 没有 Data 文件夹的游戏：只能用**方式⑧ 调试启动器**"
-                 "（它不改本体、不依赖 Data）\n"
+            text="· 没有 Data 文件夹的游戏只能用「方式⑧ 调试启动器」\n"
                  "· 改完 PBS 想重新编译时，按住 Ctrl 启动游戏即可\n"
-                 "· 本工具只动 Main / Compiler / 反调试这三处脚本，别的都不碰\n"
-                 "· 脚本「解包成 Data/Scripts/*.rb」和「压在 Scripts.rxdata 里」"
-                 "两种都有时会**两处都改**，免得改了不生效的那份\n"
-                 "· 备份**只做一次**：同一个文件第一次改动前存一份 "
-                 "<脚本名>.pkmn-debug-<时间>.bak，之后反复开关都复用这一份，"
-                 "不会越堆越多；确认没问题后可以自己删掉",
+                 "· 只动 Main / Compiler / 反调试三处脚本（不勾「自动关闭全量编译」"
+                 "就不动 Compiler），改动前各备份一份 .bak",
             bg=CARD, fg=C_HINT, font=FONT_SMALL,
             justify="left", wraplength=560)
         self.dbg_hint_lbl.pack(anchor="w", pady=(6, 0))
@@ -7668,26 +7633,13 @@ class App:
         attach_label_copy(self.dbg_info_lbl, self, "游戏信息")
         tk.Label(body,
                  text="提示：\n"
-                      "· 选游戏的启动程序（Game.exe 之类，只要是 exe 就行），\n"
-                      "  工具会自动用它所在的文件夹作为游戏目录；\n"
-                      "· 目录里 exe 很多时（Game.exe / Game_new.exe /\n"
-                      "  Game (old).exe …），**你选的这个就是主程序**，\n"
-                      "  不会再被旧版/编辑器抢走；\n"
-                      "· 先「开始检测」，确认引擎没问题再「开启 DEBUG」\n"
-                      "· 检测出「被改 / 缺失」时，多半是作者动过引擎；\n"
-                      "  现在**默认就继续写入**（不再拦你），\n"
-                      "  「引擎被改过也继续写入」已默认勾上；\n"
-                      "· 单文件大 exe（加密打包）用「方式⑧ 调试启动器」，\n"
-                      "  它会**运行时看进程加载的 dll**：\n"
-                      "    · RGSS*.dll        → 内存补丁；\n"
-                      "    · msvcrt-ruby*.dll → mkxp-z，改用原生命令行 "
-                      "`debug` 参数；\n"
-                      "    · 都认不出          → 也用 `debug` 参数再试一次。",
+                      "选游戏的启动程序（exe）即可 —— 你选的这个就是主程序，"
+                      "工具用它所在的文件夹当游戏目录。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=200).pack(anchor="w", padx=10,
                                                       pady=(10, 0))
 
-    # ---------- 菜单 11：小工具 ----------
+    # ---------- 菜单 5（开启DEBUG）：小工具 ----------
     _DEBUG_MODE_DESC = {
         "main": "方式①（通用）：在 Main 的 mainFunction 里写 $DEBUG=true，"
                 "启动即调试模式（标题界面会变，F9 开调试菜单）。"
@@ -7880,9 +7832,8 @@ class App:
         if payload_hint:
             self.dbg_info_lbl.config(
                 text=payload_hint.strip(), fg=C_WARN)
-        self.dbg_check_lbl.config(text="")
+        # ★ 换了游戏目录 → 清掉上一次的开启结果与覆盖结果文字
         self.dbg_do_lbl.config(text="")
-        self.dbg_stat.config(text="")
         if hasattr(self, "dbg_ow_lbl"):
             self.dbg_ow_lbl.config(text="")
         # ★ 没有 Data：强制切到「调试启动器」，其它方式全部禁用
@@ -7943,396 +7894,6 @@ class App:
             return
         self._dbg_apply_selection(d, exe_path=None)
 
-    # ================================================================
-    # 检测报告页（任务4）
-    # ================================================================
-    def _page_dbg_report(self):
-        """
-        报告页：左＝脚本 + 函数列表；右＝三列差异（基准 / 目标 / 状态）。
-        双击某行进详情弹窗，基准作参照、目标可改；右下角「应用已编辑的」写回。
-        """
-        page = self.pages["dbgreport"]
-        page.grid_columnconfigure(0, weight=1)
-        page.grid_rowconfigure(0, weight=1)
-
-        wrap = tk.Frame(page, bg=BG_BASE)
-        wrap.grid(row=0, column=0, sticky="nsew")
-
-        # 顶部标题条
-        head = tk.Frame(wrap, bg=BG_BASE)
-        head.pack(fill="x", pady=(0, 6))
-        GlassButton(head, "← 返回", width=88, height=38, bg=CARD,
-                    font=FONT_SMALL,
-                    command=lambda: self.show("debug")).pack(side="left")
-        tk.Label(head, text="检测报告", bg=BG_BASE, fg=C_TITLE,
-                 font=FONT_TITLE).pack(side="left", padx=(10, 0))
-        self.dbr_title = tk.Label(head, text="", bg=BG_BASE, fg=C_KEY,
-                                  font=FONT_SMALL)
-        self.dbr_title.pack(side="left", padx=(12, 0))
-        GlassButton(head, "应用已编辑的", width=132, height=38, bg=CARD,
-                    primary=True, font=FONT_SMALL,
-                    command=self._apply_report_edits).pack(side="right")
-        GlassButton(head, "重新检测", width=104, height=38, bg=CARD,
-                    font=FONT_SMALL,
-                    command=self._reload_report).pack(side="right", padx=8)
-
-        body = tk.Frame(wrap, bg=BG_BASE)
-        body.pack(fill="both", expand=True)
-        body.grid_columnconfigure(0, weight=0, minsize=250)
-        body.grid_columnconfigure(1, weight=1)
-        body.grid_rowconfigure(0, weight=1)
-
-        # ---- 左：脚本 / 函数树 ----
-        lc = RoundCard(body, radius=14, pad=10, width=250)
-        lc.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        lc.grid_propagate(False)
-        tk.Label(lc.body, text="被修改的函数", bg=CARD, fg=C_TITLE,
-                 font=FONT_TITLE).pack(anchor="w", pady=(0, 4))
-        lw = tk.Frame(lc.body, bg="#FFFFFF")
-        lw.pack(fill="both", expand=True)
-        sb = ttk.Scrollbar(lw, orient="vertical")
-        self.dbr_tree = ttk.Treeview(
-            lw, show="tree", selectmode="browse",
-            yscrollcommand=sb.set)
-        sb.config(command=self.dbr_tree.yview)
-        sb.pack(side="right", fill="y")
-        self.dbr_tree.pack(side="left", fill="both", expand=True)
-        self.dbr_tree.bind("<<TreeviewSelect>>", self._on_report_tree_sel)
-
-        # ---- 右：三列差异 ----
-        rc = RoundCard(body, radius=14, pad=10)
-        rc.grid(row=0, column=1, sticky="nsew")
-        tk.Label(rc.body, text="差异对比", bg=CARD, fg=C_TITLE,
-                 font=FONT_TITLE).pack(anchor="w")
-        tk.Label(rc.body,
-                 text="左列＝基准函数（参照）　中列＝目标函数（你的脚本）　"
-                      "右列＝状态。双击某一行打开详情编辑；改完状态变「已编辑」，"
-                      "点右上角「应用已编辑的」写回游戏脚本。",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
-                 wraplength=620).pack(anchor="w", pady=(2, 6))
-        self.dbr_diff_hint = tk.Label(
-            rc.body, text="", bg=CARD, fg=C_KEY, font=FONT_SMALL)
-        self.dbr_diff_hint.pack(anchor="w", pady=(0, 4))
-
-        dwrap = tk.Frame(rc.body, bg="#FFFFFF")
-        dwrap.pack(fill="both", expand=True)
-        vs = ttk.Scrollbar(dwrap, orient="vertical")
-        # ★ 用带样式的 Treeview：默认主题下 tag 背景色会被覆盖，
-        #   要显式给自定义 style 配 fieldbackground + 行高才看得到高亮。
-        try:
-            _st = ttk.Style()
-            _st.configure("DbgDiff.Treeview",
-                          background="#FFFFFF", fieldbackground="#FFFFFF",
-                          font=FONT_MONO, rowheight=18)
-            _st.map("DbgDiff.Treeview",
-                    background=[("selected", "#D6E4F7")],
-                    foreground=[("selected", "#000000")])
-        except Exception:
-            pass
-        self.dbr_diff = ttk.Treeview(
-            dwrap, columns=("base", "goal", "status"), show="headings",
-            selectmode="browse", yscrollcommand=vs.set,
-            style="DbgDiff.Treeview")
-        vs.config(command=self.dbr_diff.yview)
-        vs.pack(side="right", fill="y")
-        self.dbr_diff.pack(side="left", fill="both", expand=True)
-        self.dbr_diff.heading("base", text="基准函数")
-        self.dbr_diff.heading("goal", text="目标函数")
-        self.dbr_diff.heading("status", text="状态")
-        self.dbr_diff.column("base", width=420, anchor="w")
-        self.dbr_diff.column("goal", width=420, anchor="w")
-        self.dbr_diff.column("status", width=80, anchor="center")
-        self.dbr_diff.bind("<Double-1>", self._on_report_diff_dbl)
-
-        self._dbr_rows = []     # 当前右侧展示的 diff 行索引
-        self._dbr_items = []    # 与 self._dbr_rows 对应的报告条目引用
-
-    def _open_report_page(self, rep, path):
-        """把报告装进报告页并切过去。"""
-        self._report = rep
-        self._report_path = path
-        self.dbr_title.config(
-            text=f"{rep.get('game', '')}　引擎 v{rep.get('baseline', '?')}　"
-                 f"{len(rep.get('items') or [])} 处差异　"
-                 f"（{rep.get('generated', '')}）")
-        # 左侧树：脚本 → 函数
-        for i in self.dbr_tree.get_children():
-            self.dbr_tree.delete(i)
-        by_script = {}
-        for idx, it in enumerate(rep.get("items") or []):
-            by_script.setdefault(it["script"], []).append((idx, it))
-        self._dbr_tree_map = {}
-        for sname in sorted(by_script):
-            rows = by_script[sname]
-            node = self.dbr_tree.insert(
-                "", "end", text=f"{sname}（{len(rows)}）", open=(len(by_script) <= 6))
-            for idx, it in rows:
-                st = "已编辑" if it.get("edited") else "未编辑"
-                leaf = self.dbr_tree.insert(
-                    node, "end",
-                    text=f"{it['func']}　[{st}]",
-                    values=(idx,))
-                self._dbr_tree_map[str(leaf)] = idx
-        self.show("dbgreport")
-
-    def _on_report_tree_sel(self, _e=None):
-        sel = self.dbr_tree.selection()
-        if not sel:
-            return
-        key = str(sel[0])
-        if key in getattr(self, "_dbr_tree_map", {}):
-            idx = self._dbr_tree_map[key]
-            it = (self._report.get("items") or [])[idx]
-            self._show_diff_for(it)
-
-    def _show_diff_for(self, it):
-        """把某条差异按 PyCharm 风格逐行并排展示（基准 vs 目标）。"""
-        try:
-            self.dbr_diff.winfo_exists()
-        except Exception:
-            return          # 报告页已重建/销毁，右栏控件不存在了，直接跳过
-        try:
-            for i in self.dbr_diff.get_children():
-                self.dbr_diff.delete(i)
-        except tk.TclError:
-            return
-        self._dbr_rows = []
-        self._dbr_cur = it
-        base = _split_lines(it.get("base_text"))
-        goal = _split_lines(it.get("goal_text"))
-        pairs = _line_diff_pairs(base, goal)
-        for bl, gl, tag in pairs:
-            st = "已编辑" if it.get("edited") else "未编辑"
-            iid = self.dbr_diff.insert(
-                "", "end", values=(bl, gl, st), tags=(tag,))
-            self._dbr_rows.append(iid)
-        # 差异行上色（显式配 background，避免被主题 fieldbackground 盖住）
-        self.dbr_diff.tag_configure("del", background="#F8D7DA")
-        self.dbr_diff.tag_configure("add", background="#D4F0D4")
-        self.dbr_diff.tag_configure("eq", background="#FFFFFF")
-        self.dbr_diff.tag_configure("chg", background="#FFF0C2")
-        n_diff = sum(1 for _b, _g, t in pairs if t != "eq")
-        if hasattr(self, "dbr_diff_hint"):
-            if n_diff:
-                self.dbr_diff_hint.config(
-                    text=f"共 {len(pairs)} 行，其中 {n_diff} 行有差异"
-                         f"（红=基准独有 / 绿=目标独有 / 黄=两边不同）",
-                    fg=C_KEY)
-            else:
-                self.dbr_diff_hint.config(text="基准与目标逐行一致", fg=C_HINT)
-
-    def _on_report_diff_dbl(self, _e=None):
-        if not getattr(self, "_dbr_cur", None):
-            return
-        self._open_diff_edit(self._dbr_cur)
-
-    def _open_diff_edit(self, it):
-        """双击详情弹窗：基准作参照、目标可改。"""
-        win = tk.Toplevel(self.root)
-        win.title(f"对比编辑 —— {it['script']} → {it['func']}")
-        win.configure(bg=BG_BASE)
-        win.transient(self.root)
-        win.geometry("980x620")
-
-        top = tk.Frame(win, bg=BG_BASE)
-        top.pack(fill="x", padx=12, pady=(10, 4))
-        tk.Label(top, text=f"{it['script']} → {it['func']}", bg=BG_BASE,
-                 fg=C_TITLE, font=FONT_TITLE).pack(side="left")
-        self._diff_status_lbl = tk.Label(
-            top, text=("已编辑" if it.get("edited") else "未编辑"),
-            bg=BG_BASE, fg=(C_OK if it.get("edited") else C_KEY),
-            font=FONT_BIG)
-        self._diff_status_lbl.pack(side="right")
-
-        mid = tk.Frame(win, bg=BG_BASE)
-        mid.pack(fill="both", expand=True, padx=12, pady=4)
-        mid.grid_columnconfigure(0, weight=1)
-        mid.grid_columnconfigure(1, weight=1)
-        mid.grid_rowconfigure(1, weight=1)
-
-        tk.Label(mid, text="基准函数（参照，只读）", bg=BG_BASE, fg=C_KEY,
-                 font=FONT_SMALL).grid(row=0, column=0, sticky="w")
-        tk.Label(mid, text="目标函数（可修改）", bg=BG_BASE, fg=C_KEY,
-                 font=FONT_SMALL).grid(row=0, column=1, sticky="w", padx=(8, 0))
-
-        lb = tk.Frame(mid, bg="#FFFFFF")
-        lb.grid(row=1, column=0, sticky="nsew")
-        self._diff_base_txt = tk.Text(
-            lb, wrap="none", font=FONT_MONO, bg="#F7F7F7", fg=TEXT,
-            relief="solid", bd=1, state="normal")
-        self._diff_base_txt.pack(fill="both", expand=True)
-
-        lg = tk.Frame(mid, bg="#FFFFFF")
-        lg.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
-        self._diff_goal_txt = tk.Text(
-            lg, wrap="none", font=FONT_MONO, bg="#FFFFFF", fg=TEXT,
-            relief="solid", bd=1, undo=True)
-        self._diff_goal_txt.pack(fill="both", expand=True)
-        self._diff_goal_txt.bind("<KeyRelease>",
-                                 lambda e, i=it: self._mark_edited(i))
-
-        # ★ 逐行 diff 高亮（基准 / 目标各自的差异行上色）
-        self._paint_diff_highlight(
-            self._diff_base_txt, self._diff_goal_txt,
-            it.get("base_text") or "", it.get("goal_text") or "")
-
-        btns = tk.Frame(win, bg=BG_BASE)
-        btns.pack(fill="x", padx=12, pady=(4, 10))
-        GlassButton(btns, "保存（标记已编辑）", width=180, height=40,
-                    primary=True, bg=BG_BASE,
-                    command=lambda: self._save_diff_edit(it, win)).pack(
-            side="left")
-        GlassButton(btns, "取消", width=88, height=40, bg=BG_BASE,
-                    command=win.destroy).pack(side="right")
-        tk.Label(btns,
-                 text="提示：改完点「保存」把这一条标记为「已编辑」，"
-                      "再回到报告页点「应用已编辑的」写回脚本文件。",
-                 bg=BG_BASE, fg=C_HINT, font=FONT_SMALL).pack(
-            side="left", padx=12)
-
-    def _paint_diff_highlight(self, base_txt, goal_txt, base_src, goal_src):
-        """
-        把基准 / 目标两个 Text 按逐行 diff 上色（并插入文本）。
-
-        · 基准框：仅基准有的行 → 红底（del）；两边都不同 → 黄底（chg）。
-        · 目标框：仅目标有的行 → 绿底（add）；两边都不同 → 黄底（chg）。
-        · 相同行不上色。
-
-        ★ 行号不能靠 `index("end-1c")` 反推：`insert("end", line+"\\n")`
-          之后 end 停在下一行的第 0 列，`end-1c` 落在**刚插入的换行符**上，
-          其行号与刚插入那行不一致（差 1），于是 tag_add 加偏/加空。
-          这里显式维护行号计数器，边插边加 tag，最稳。
-        """
-        for t in (base_txt, goal_txt):
-            t.configure(state="normal")
-            t.delete("1.0", "end")
-            t.tag_configure("diff_del", background="#F8D7DA",
-                            foreground="#7A1F26")
-            t.tag_configure("diff_add", background="#D4F0D4",
-                            foreground="#1F5B1F")
-            t.tag_configure("diff_chg", background="#FFF0C2",
-                            foreground="#6B5312")
-
-        base_lines = _split_lines(base_src)
-        goal_lines = _split_lines(goal_src)
-        pairs = _line_diff_pairs(base_lines, goal_lines)
-
-        # ★ 写文本要按「第 n 行 → 行后换行」的方式，**最后一行不留尾换行**，
-        #   否则多出一个空行（且读回 `end-1c` 会多一个 \n）。
-        n_base_written = sum(1 for _b, _g, t in pairs
-                             if t in ("eq", "del", "chg"))
-        n_goal_written = sum(1 for _b, _g, t in pairs
-                             if t in ("eq", "add", "chg"))
-
-        bno = 1     # 基准框即将写入的行号（Text 行号从 1 起）
-        gno = 1     # 目标框即将写入的行号
-        bwritten = 0
-        gwritten = 0
-        for bl, gl, tag in pairs:
-            # 基准框：del 是「仅基准有」；chg 是「两边都有但不同」
-            if tag in ("eq", "del", "chg"):
-                bwritten += 1
-                base_txt.insert("end", (bl or "") +
-                                ("\n" if bwritten < n_base_written else ""))
-                if tag == "del":
-                    base_txt.tag_add("diff_del",
-                                     f"{bno}.0", f"{bno}.end")
-                elif tag == "chg":
-                    base_txt.tag_add("diff_chg",
-                                     f"{bno}.0", f"{bno}.end")
-                bno += 1
-            # 目标框：add 是「仅目标有」；chg 同基准
-            if tag in ("eq", "add", "chg"):
-                gwritten += 1
-                goal_txt.insert("end", (gl or "") +
-                                ("\n" if gwritten < n_goal_written else ""))
-                if tag == "add":
-                    goal_txt.tag_add("diff_add",
-                                     f"{gno}.0", f"{gno}.end")
-                elif tag == "chg":
-                    goal_txt.tag_add("diff_chg",
-                                     f"{gno}.0", f"{gno}.end")
-                gno += 1
-        base_txt.configure(state="disabled")
-
-
-    def _save_diff_edit(self, it, win):
-        try:
-            it["goal_text"] = self._diff_goal_txt.get("1.0", "end-1c")
-        except tk.TclError:
-            return          # 控件已被销毁
-        it["edited"] = True
-        try:
-            win.destroy()
-        except tk.TclError:
-            pass
-        # 刷新右侧与左树（页面可能已切走，两个函数都做了容错）
-        if getattr(self, "_dbr_cur", None) is it:
-            self._show_diff_for(it)
-        self._refresh_report_tree()
-
-    def _refresh_report_tree(self):
-        rep = getattr(self, "_report", None)
-        if not rep:
-            return
-        try:
-            self.dbr_tree.winfo_exists()
-        except Exception:
-            return          # 报告页已销毁
-        try:
-            for i in self.dbr_tree.get_children():
-                self.dbr_tree.delete(i)
-        except tk.TclError:
-            return
-        by_script = {}
-        for idx, it in enumerate(rep.get("items") or []):
-            by_script.setdefault(it["script"], []).append((idx, it))
-        self._dbr_tree_map = {}
-        for sname in sorted(by_script):
-            rows = by_script[sname]
-            node = self.dbr_tree.insert(
-                "", "end", text=f"{sname}（{len(rows)}）",
-                open=(len(by_script) <= 6))
-            for idx, it in rows:
-                st = "已编辑" if it.get("edited") else "未编辑"
-                leaf = self.dbr_tree.insert(
-                    node, "end", text=f"{it['func']}　[{st}]", values=(idx,))
-                self._dbr_tree_map[str(leaf)] = idx
-
-    def _apply_report_edits(self):
-        rep = getattr(self, "_report", None)
-        if not rep:
-            messagebox.showinfo("提示", "还没有打开任何报告。")
-            return
-        edited = [it for it in (rep.get("items") or []) if it.get("edited")]
-        if not edited:
-            messagebox.showinfo("提示", "还没有「已编辑」的条目。")
-            return
-        if not messagebox.askyesno(
-                "应用已编辑的",
-                f"把 {len(edited)} 条已编辑的函数写回游戏脚本？\n"
-                "（写入前会自动备份原文件）"):
-            return
-        self.show("log")
-
-        def work():
-            import engine_tools as ET
-            res = ET.apply_report(
-                rep.get("game_dir"), rep,
-                emit=lambda s: self._emit_log(s))
-            self.q.put(("dbg_apply_report_done", res))
-            return res
-
-        self.run_async(work, label="写回脚本中…", done_label="写回完成")
-
-    def _reload_report(self):
-        """重新跑检测并刷新报告页。"""
-        d = self._dbg_folder_data()      # 报告要读脚本，必须有 Data
-        if not d:
-            return
-        import engine_tools as ET
-        rep, path = ET.build_report(d, emit=lambda s: self._emit_log(s))
-        self._open_report_page(rep, path)
 
     def _dbg_refresh_folder_info(self):
         """重新显示右侧的「运行库 / $DEBUG / 编译闸门」状态。"""
@@ -8404,7 +7965,7 @@ class App:
 
     def _dbg_folder_data(self):
         """
-        「要改脚本」的操作（体检 / 覆盖 / 报告 / 非 launcher 的开启方式）
+        「要改脚本」的操作（基准覆盖 / 非 launcher 的开启方式）
         统一走这里：没 Data 就提示只能用调试启动器。
         """
         import game_scripts as GS
@@ -8421,109 +7982,12 @@ class App:
             return None
         return self._dbg_folder(need_data=True)
 
-    def _dbg_show_check(self, check, report_path=None):
-        """
-        体检结果：卡片上给一句话结论，日志里也只出**一行总结** —— 明细全部
-        写进检测报告，用户点「检测报告」逐行对比即可，日志不再刷屏。
-        """
-        if not check:
-            return
-        if check.get("reason"):
-            self.dbg_stat.config(text="未体检", fg=C_WARN)
-            self.dbg_check_lbl.config(text=check["reason"], fg=C_WARN)
-            return
-        b = check.get("baseline")
-        if check.get("ok"):
-            self.dbg_stat.config(text=f"✔ 与 v{b} 完全吻合", fg=C_OK)
-        else:
-            smiss = check.get("scripts_missing_n", 0)
-            tail = f" / 脚本缺 {smiss}" if smiss else ""
-            self.dbg_stat.config(
-                text=f"⚠ 改 {check['changed_n']} / 缺 {check['missing_n']}"
-                     f"{tail}",
-                fg=C_WARN)
-        # ★ 日志只留一行总结 + 「已写入检测报告」，不再罗列明细。
-        if report_path is None:
-            import engine_tools as ET
-            try:
-                report_path = ET.find_report(getattr(self, "debug_folder", None))
-            except Exception:
-                report_path = None
-        rp = ""
-        if report_path:
-            # 展示成 comparation/<游戏名>.json 这种更好认的形式
-            bn = os.path.basename(report_path)
-            pd = os.path.basename(os.path.dirname(report_path)) or ""
-            rp = f"{pd}/{bn}" if pd else bn
-        where = f"，明细已写入检测报告 {rp}" if rp else "，明细见「检测报告」"
-        self._emit_log(
-            f"[体检] 基准 v{b}（{check.get('scripts_total', 0)} 个脚本 / "
-            f"{check['total']} 个基本函数）：一致 {check['same']} · "
-            f"被改 {check['changed_n']} · 缺失 {check['missing_n']} · "
-            f"搬家 {check.get('moved_n', 0)} · 新增 {check['added_n']}"
-            f"{where}\n")
-        # 卡片上只留一行提示
-        if check.get("ok"):
-            self.dbg_check_lbl.config(
-                text="✔ 检测通过，明细见「检测报告」", fg=C_OK)
-        else:
-            self.dbg_check_lbl.config(
-                text=f"⚠ 共 {check['changed_n'] + check['missing_n']} 处差异，"
-                     f"点「检测报告」可逐行对比。",
-                fg=C_WARN)
-
-    def _do_debug_scan(self):
-        d = self._dbg_folder_data()
-        if not d:
-            return
-        self.show("log")
-
-        def work():
-            import debug_tool as DT
-            import engine_tools as ET
-            res = DT.scan_only(d, emit=lambda s: self._emit_log(s))
-            # ★ 任务4：检测完把对比报告落盘到 comparation/
-            #   复用 scan_only 的体检结果，避免总结在日志里出两遍。
-            try:
-                _rep, path = ET.build_report(
-                    d, emit=lambda s: self._emit_log(s),
-                    check=res.get("check"))
-                res["report_path"] = path
-            except Exception as e:
-                self._emit_log(f"[报告] ⚠ 保存对比报告失败：{e}\n")
-            self.q.put(("dbg_scan_done", res))
-            return res
-
-        self.run_async(work, label="检测引擎中…", done_label="检测完成")
-
-    def _open_report(self):
-        """任务4：「检测报告」按钮 —— 进全新报告页。"""
-        d = self._dbg_folder_data()
-        if not d:
-            return
-        import engine_tools as ET
-        path = ET.find_report(d)
-        if not path:
-            if not messagebox.askyesno(
-                    "还没有检测报告",
-                    "还没生成这个游戏的对比报告。\n\n"
-                    "要现在就跑一次检测并生成报告吗？"):
-                return
-            self._do_debug_scan()
-            return
-        rep = ET.load_report(path)
-        if not rep:
-            messagebox.showerror("读报告失败", f"无法读取报告文件：\n{path}")
-            return
-        self._open_report_page(rep, path)
-
     def _do_overwrite_menus(self):
-        """任务3：用基准覆盖 debug 菜单脚本（覆盖前提醒风险）。"""
+        """用基准覆盖 debug 菜单脚本（覆盖前提醒风险）。"""
         d = self._dbg_folder_data()
         if not d:
             return
         import essentials_base as EB
-        import engine_tools as ET
         try:
             ver = EB.detect_version(d)
         except Exception:
@@ -8754,7 +8218,8 @@ class App:
         import engine_tools as ET
         if not messagebox.askyesno(
                 "还原覆盖",
-                "把本工具「覆盖」过的调试菜单脚本还原回覆盖前的样子？"):
+                "把本工具「覆盖」过的脚本（调试菜单 / 地图更新）还原回"
+                "覆盖前的样子？"):
             return
         self.show("log")
 
@@ -8795,6 +8260,7 @@ class App:
             return
         self.show("log")
         force = bool(self.debug_force.get())
+        guard = bool(getattr(self, "debug_guard", tk.BooleanVar(value=True)).get())
 
         # ---------- 反调试复核：注释之前先把代码摆给用户看 ----------
         ad_plan = {}
@@ -8843,6 +8309,8 @@ class App:
                 res = DT.enable_debug(
                     d, emit=lambda s: self._emit_log(s), force=force,
                     antidebug_plan=ad_plan,
+                    # ★ 「自动关闭全量编译」的勾选：不勾就不装编译闸门
+                    guard=guard,
                     # ★ 只有方式①（通用）才往 mainFunction 写 `$DEBUG=true`
                     #   —— 那本来就是方式① 的功能。
                     #   方式②（删条件）的做法本来就是把「需要 $DEBUG 才生效」
@@ -8889,17 +8357,6 @@ class App:
                 except Exception:
                     res["mode_none"] = False
                 res["mode_game_dir"] = d
-            # ★ 日志精简：体检明细不刷屏，统一写进检测报告；这里顺带把
-            #   报告落盘，好让总结行能指明报告路径。
-            if not res.get("report_path") and getattr(
-                    self, "debug_has_data", True):
-                try:
-                    _rep, path = ET.build_report(
-                        d, emit=lambda s: self._emit_log(s),
-                        check=res.get("check"))
-                    res["report_path"] = path
-                except Exception as e:
-                    self._emit_log(f"[报告] ⚠ 保存对比报告失败：{e}\n")
             self.q.put(("dbg_enable_done", res))
             return res
 

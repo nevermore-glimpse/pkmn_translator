@@ -279,6 +279,32 @@ class OllamaClient:
                  "云端API" if self.api_mode else "本地Ollama", proto, self.model)
 
     # ---------- 底层 ----------
+    def _lmstudio_ttl(self):
+        """
+        该不该在请求里带 ttl（LM Studio 专用，秒）；不带返回 0。
+
+        ★ 只给 LM Studio 带：这是它自己的字段（模型空闲多久自动卸载模型），
+          别的 OpenAI 兼容服务不认，带上去纯属添乱。
+        """
+        try:
+            n = int(getattr(config, "LMSTUDIO_TTL", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+        if n <= 0:
+            return 0
+        try:
+            import providers as PV
+            return n if PV.current() == "lmstudio" else 0
+        except Exception:
+            return 0
+
+    def close(self):
+        """关掉 HTTP 连接池（一轮翻译跑完调用，别让长连接/套接字一直挂着）。"""
+        try:
+            self.session.close()
+        except Exception:
+            pass
+
     def _request(self, messages, temperature=None, num_predict=None):
         if self.api_mode:
             return self._request_api(messages, temperature, num_predict)
@@ -338,6 +364,13 @@ class OllamaClient:
         #   content 是空的（表现为"模型无返回"）；加上这个参数后 29 秒→0.8 秒。
         if getattr(config, "NO_REASONING", True):
             payload["reasoning_effort"] = "none"
+        # ★ LM Studio：带上 ttl，模型空闲到点自己从内存卸载。
+        #   LM Studio 的 JIT 加载默认 60 分钟才卸，模型和它的历史 prompt
+        #   缓存会一直占着内存；翻译跑完就还回去，才不会越跑越高。
+        #   （llama.cpp 那边靠启动参数 --cache-ram 0 解决，见 providers.py）
+        ttl = self._lmstudio_ttl()
+        if ttl:
+            payload["ttl"] = ttl
         timeout = getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
 
         resp = self.session.post(url, json=payload, headers=headers,

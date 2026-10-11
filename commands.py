@@ -65,6 +65,10 @@ NEVER_RETRANSLATE_KINDS = {
 #   但可以勾上查看 —— 用户改过的句子都归在这里，方便回头核对。
 MANUAL_KINDS = {"已编辑"}
 
+# ★ 「提示 / 抽查」类型：只是给你看一眼的线索，**不算问题** ——
+#   不计入「共 N 处问题」的汇总，界面上也不显示成红色。
+ADVISORY_KINDS = {"派生命中"}
+
 # 报告里可能出现的问题类型（展示 / 排序用）
 # ★ 「派生命中」是「提示 / 抽查」类：默认不勾选（不显示、默认不重翻），
 #   勾上才显示；它不会抑制该句的其它检查（见 checker.check 的 info 标记）。
@@ -74,6 +78,36 @@ REPORT_KIND_ORDER = [
     "译文残留占位符", "译文残留控制码",
     "符号不匹配", "特殊行", "已编辑", "派生命中",
 ]
+
+# ★ 「共 N 处问题」里的 N 只统计**要处理的问题**：
+#   · 提示 / 抽查类（派生命中）：只是线索，不是问题；
+#   · 手工编辑类（已编辑）：你自己改好的句子，不是问题；
+#   · 需手动类（译文残留控制码 / 特殊行 / 控制码回退）：报告里只有灰色
+#     提示、连勾选框都没有，同样不算问题。
+#   于是这个数正好等于「默认勾选的那几类」的条数 —— 报告标题上的
+#   「显示 X / 共 Y」不会再被几百条提示撑大。
+PROBLEM_KINDS = tuple(
+    k for k in REPORT_KIND_ORDER
+    if k not in NEVER_RETRANSLATE_KINDS
+    and k not in MANUAL_KINDS
+    and k not in ADVISORY_KINDS
+)
+
+
+def count_problems(hits):
+    """
+    数「问题」条数 —— 报告标题那行「共 N 处问题」用它。
+
+    hits 可以传 [(源路径, hit), ...]（GUI 的 report_hits），
+    也可以传 [hit, ...]；只数 PROBLEM_KINDS 里的类型，
+    「派生命中」这类提示**不计入**（758 条提示不该算成 758 处问题）。
+    """
+    n = 0
+    for item in hits or []:
+        h = item[-1] if isinstance(item, (tuple, list)) and item else item
+        if isinstance(h, dict) and h.get("kind") in PROBLEM_KINDS:
+            n += 1
+    return n
 
 
 # ================================================================
@@ -1451,6 +1485,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
                      bi, ok, len(batch_texts), done, total, rate, eta)
             bridge.progress(done, total, f"{done}/{total} 条")
 
+        # ★ 跑完把 HTTP 连接池关掉：长跑翻译时别让长连接一直堆着
+        client.close()
         cache.save(force=True)
 
         if failed:
@@ -1555,7 +1591,8 @@ def _update_snapshot():
 
 def _print_summary(hits, report_path):
     c = Counter(h['kind'] for h in hits)
-    emit(f"  共 {len(hits)} 处问题：")
+    # ★ 「共 N 处问题」不含「派生命中」这类提示（见 count_problems）
+    emit(f"  共 {count_problems(hits)} 处问题：")
     for k in ('翻译失败', '占位符缺失', '术语冲突',
               '疑似未翻译', '疑似异常句',
               '符号不匹配', '译文残留控制码', '译文残留占位符', '特殊行'):
@@ -2501,6 +2538,8 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
         bridge.progress(min(bi * batch_size, total), total,
                         f"润色 {min(bi * batch_size, total)}/{total}")
 
+    # ★ 跑完把 HTTP 连接池关掉（同翻译：别让长连接一直堆着）
+    client.close()
     cache.save(force=True)
 
     translations = {txt: cache.get(txt) for _, txt in entries if cache.get(txt)}
@@ -3373,7 +3412,7 @@ def cmd_provider():
 
 
 def cmd_debug():
-    """菜单 11：开启 DEBUG（检测引擎 → 写 $DEBUG=true → 关掉启动时的全量编译）"""
+    """菜单 11：开启 DEBUG（比对引擎 → 写 $DEBUG=true → 关掉启动时的全量编译）"""
     import filepicker
     import game_scripts as GS
     import debug_tool as DT
@@ -3395,14 +3434,12 @@ def cmd_debug():
         return
     config.Runtime.set_dir(folder)
 
-    raw = input("\n1=只检测 / 2=开启 / 3=还原 [1]: ").strip()
-    if raw == "3":
+    # ★ 「只检测」已去掉：检测报告功能已从工具里删除，这里只留开启 / 还原
+    raw = input("\n1=开启 / 2=还原 [1]: ").strip()
+    if raw == "2":
         DT.restore(folder, emit=emit)
         return
-    if raw == "2":
-        DT.enable_debug(folder, emit=emit, force=False)
-        return
-    DT.scan_only(folder, emit=emit)
+    DT.enable_debug(folder, emit=emit, force=False)
 
 
 def cmd_show_logs():

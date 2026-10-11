@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-本地模型服务提供商（菜单 9）。
+本地模型服务提供商。
 
 统一管理 Ollama / llama.cpp / LM Studio / 自定义 OpenAI 兼容服务：
   · 协议差异：Ollama 走 /api/chat + /api/tags；其余走 OpenAI 兼容 /v1
@@ -50,7 +50,7 @@ PROVIDERS = {
         "home":        "https://ollama.com",
         "summary":     "最省事，模型一条命令拉取，参数每次请求都能带。",
         # ★ 关掉推理/思考的办法（每条请求都带 think=false 就够）
-        "nothink":     "菜单 10 取消勾选「推理模式 think」，请求里会带 think=false。",
+        "nothink":     "在「本地模型服务」里取消勾选「推理模式 think」，请求里会带 think=false。",
         "pull":        "ollama pull {model}",
     },
     "llamacpp": {
@@ -854,7 +854,11 @@ def deploy_command(model, key=None):
                       "做法：启动 llama-server.exe 时用 -m 指定 GGUF 路径。\n"
                       "示例（按你本机路径改）：\n"
                       f"  llama-server.exe -m \"...\\{model}.gguf\" -c 8192 "
-                      "--port 8080 --reasoning off -a " + (model or "my-model"))
+                      "--port 8080 --reasoning off --cache-ram 0 -a "
+                      + (model or "my-model") +
+                      "\n★ --cache-ram 0 要带上：不带的话 llama.cpp 会把"
+                      "历史 prompt 缓存留在内存里（默认能涨到 8GB），长跑时"
+                      "内存只涨不降。")
 
     return None, "自定义服务请在你自己的服务端准备模型，这里无法代劳。"
 
@@ -902,7 +906,7 @@ def run_deploy(model, key=None, emit=None, timeout=7200):
         return False, msg
 
     ok = (proc.returncode == 0)
-    msg = ("部署完成。回到菜单 2 选好文件即可翻译。"
+    msg = ("部署完成。回到「翻译」选好文件即可翻译。"
            if ok else f"命令退出码 {proc.returncode}，部署未成功。")
     emit(msg)
     return ok, msg
@@ -911,6 +915,50 @@ def run_deploy(model, key=None, emit=None, timeout=7200):
 # ================================================================
 # llama.cpp 专用：找程序 / 扫模型 / 拼启动命令
 # ================================================================
+# ★★ 内存只涨不降的元凶（llama.cpp PR #16391 起）：
+#   llama-server 默认开着一个**主机内存里**的「历史 prompt 缓存」
+#   （`--cache-ram`，默认上限 8192 MiB = 8GB）：它会把每个**不同** prompt
+#   算好的 KV 留在 RAM 里，好让你回到同一段对话时省掉 prefill。
+#   对聊天很好，可翻译是「成千上万条各不相同的 prompt」—— 于是这块缓存
+#   一路涨到 8GB 上限，而且**不还给系统**（社区实测低内存机器上约
+#   1GB/分钟，直到 OOM / 被系统换页）。
+#   ★ 翻译根本不需要它：每批共用的 system 前缀是在**同一个 slot 里**复用的
+#     （见 translator.py 顶部的提示词设计），跟历史缓存没关系。
+#   所以下面启动 llama-server 时固定带上 `--cache-ram 0`（关掉它，内存有界）。
+_LLAMA_FLAG_PROBE = {}      # (exe, flag) → 这个 llama-server 认不认这个开关
+
+
+def _llama_server_supports(exe, flag):
+    """
+    这个 llama-server 认不认某个启动开关（跑一次 `--help` 看，结果缓存）。
+
+    ★ 老版本没有 --cache-ram：硬加会被 llama-server 当成未知参数、直接退出，
+      所以必须先探一下再说，不能盲目拼。
+    """
+    key = (os.path.abspath(str(exe or "")), flag)
+    if key in _LLAMA_FLAG_PROBE:
+        return _LLAMA_FLAG_PROBE[key]
+    ok = False
+    if exe and os.path.exists(exe):
+        try:
+            proc = subprocess.run(
+                [exe, "--help"], stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, timeout=15,
+                # 别弹出黑框（GUI 程序里跑控制台程序）
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            text = (proc.stdout or b"").decode("utf-8", "replace")
+            ok = flag in text
+        except Exception as e:                    # noqa: BLE001
+            try:
+                from logger import get_logger
+                get_logger("providers").debug(
+                    "探测 llama-server 开关 %s 失败：%s", flag, e)
+            except Exception:
+                pass
+    _LLAMA_FLAG_PROBE[key] = ok
+    return ok
+
+
 def _fmt_bytes(n):
     try:
         n = float(n)
@@ -1036,11 +1084,11 @@ def llamacpp_args(model_path=None, exe=None):
     exe = exe or find_llama_server()
     if not exe:
         return None, ("未找到 llama-server.exe。\n"
-                      "请在菜单 10 中层把「llama.cpp 目录」指到解压出来的那个文件夹。")
+                      "请在「本地模型服务」中层把「llama.cpp 目录」指到那个文件夹。")
     model = (model_path or getattr(config, "LLAMACPP_MODEL_PATH", "") or "").strip()
     if not model:
         return None, ("还没选模型。\n"
-                      "请在菜单 10 中层的「已安装模型」里选一个 GGUF。")
+                      "请在「本地模型服务」中层的「已安装模型」里选一个 GGUF。")
     if not os.path.exists(model):
         return None, f"模型文件不存在：{model}"
 
@@ -1065,7 +1113,12 @@ def llamacpp_args(model_path=None, exe=None):
         "--no-ui",
         "-a", alias,
     ]
-    return argv, "将启动 llama-server（自动加载该模型并关闭推理模式）"
+    # ★ 关掉「历史 prompt 缓存」（默认 8GB、只涨不降，见本段开头的说明）。
+    #   老版本没有这个开关，探到了才加，免得启动命令直接报错。
+    if _llama_server_supports(exe, "--cache-ram"):
+        argv += ["--cache-ram", "0"]
+    return argv, "将启动 llama-server（自动加载该模型、关闭推理模式、" \
+                 "关掉只涨不降的历史缓存）"
 
 
 def _find_lmstudio_app():
@@ -1229,8 +1282,8 @@ def apply_provider(key, model=None, map_model=True):
 
 def sync_with_mode(mode):
     """
-    菜单 1 / 菜单 8 上的「本地 Ollama ↔ API 服务」切换后同步 PROVIDER，
-    避免那里与菜单 9 的状态打架。
+    「文本提取与编译」/「术语字典」上的「本地 Ollama ↔ API 服务」切换后同步
+    PROVIDER，避免那里与「设置」里的状态打架。
       · 切到 ollama → PROVIDER 归位成 ollama
       · 切到 api    → 若原来在 ollama，PROVIDER 记为 custom（地址沿用现有设置）
     """

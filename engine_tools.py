@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-引擎级工具：基准脚本覆盖、对比报告、多种「开启 DEBUG」方式。
+引擎级工具：基准脚本覆盖、多种「开启 DEBUG」方式。
 
 面向同人游戏的日常需求，三块：
 
@@ -10,10 +10,6 @@
      随工具内置的中文（见 scripts/essentials_src/debug_menu_zh.json）。
      ★ 另有 `overwrite_scene_map()`：「用基准覆盖地图更新」—— 只把
        **Scene_Map** 整份盖回官方版（不翻译），给下面方式②③④铺路。
-
-  ② 对比报告 / 合并编辑
-     体检结果落盘到 <工具目录>/comparation/<游戏名>.json；
-     报告页按「脚本 → 函数」列出基准与目标的差异，可逐行编辑后应用。
 
   ③ 多种开启 DEBUG 方式
      ① 写 Main 的 $DEBUG=true；
@@ -26,7 +22,7 @@
      ⑦ 调试启动器（见 launcher）。
      按引擎版本 / 代码形态自动适配注入位置。
 
-依赖：game_scripts（脚本读）、essentials_base（体检基准）、engine_src、
+依赖：game_scripts（脚本读）、essentials_base（基准比对）、engine_src、
       config。
 """
 import io
@@ -47,8 +43,6 @@ log = get_logger("engine_tools")
 
 # 基准脚本存放目录名（随工具分发）
 SRC_DIR_NAME = os.path.join("scripts", "essentials_src")
-# 对比报告目录（工具目录下）
-REPORT_DIR_NAME = "comparation"
 # 覆盖时的备份标记
 BAK_MARK = ".pkmn-overwrite-"
 
@@ -64,6 +58,168 @@ def debug_menu_rel_files(version):
 def _norm_script_name(name):
     """脚本名归一化：只留小写字母数字（中文名会归一成空串，正好永不匹配）。"""
     return re.sub(r"[^0-9a-z]+", "", str(name).lower())
+
+
+# ================================================================
+# 换字体时同步改「引擎脚本里的字体定义」
+# ================================================================
+# 为什么光改插件不够：
+#   · 插件的 Settings.rb 只换 MessageConfig 里的那几个常量，别的界面不跟着走；
+#   · v19 的字体来自 `Settings::FONT_OPTIONS`，玩家在选项里一挑就回去了；
+#   · 引擎脚本里的那几个常量才是「游戏默认字体」，改了之后各处一起生效。
+#
+#   各版本定义在哪（都取自 scripts/essentials_src/<版本>/ 的官方源码）：
+#     16 / 17 / 17.2   SpriteWindow    FontName / SmallFontName / NarrowFontName
+#     18 / 18.1        MessageConfig   同上
+#     19               Settings        FONT_OPTIONS（选项里的字体列表，改第 1 条）
+#     19.1 ~ 21.1      MessageConfig   FONT_NAME / SMALL_FONT_NAME / NARROW_FONT_NAME
+FONT_BAK_MARK = ".pkmn-font-"
+FONT_OLD_CONSTS = ("FontName", "SmallFontName", "NarrowFontName")
+FONT_NEW_CONSTS = ("FONT_NAME", "SMALL_FONT_NAME", "NARROW_FONT_NAME")
+FONT_RULES = (
+    (("16", "17", "17.2"), "SpriteWindow", FONT_OLD_CONSTS, "MessageConfig"),
+    (("18", "18.1"), "MessageConfig", FONT_OLD_CONSTS, "MessageConfig"),
+    (("19",), "Settings", ("FONT_OPTIONS",), "Settings"),
+    (("19.1", "20", "20.1", "21", "21.1"), "MessageConfig", FONT_NEW_CONSTS,
+     "MessageConfig"),
+)
+
+
+def font_rule(version):
+    """
+    版本号 → (改哪个脚本, 改哪些常量, 该脚本里必须有的模块名)。
+    认不出返回 None。
+    """
+    v = str(version or "").strip()
+    if not v:
+        return None
+    for keys, sname, consts, module in FONT_RULES:
+        if v in keys:
+            return sname, consts, module
+    m = re.match(r"^(\d+)", v)              # 17.0 / 18.2 这种只认主版本
+    if m:
+        for keys, sname, consts, module in FONT_RULES:
+            if any(k.split(".")[0] == m.group(1) for k in keys):
+                return sname, consts, module
+    return None
+
+
+def _font_pat(const):
+    """某个字体常量的匹配式（FONT_OPTIONS 是列表，取第 1 个字符串）。"""
+    if const == "FONT_OPTIONS":
+        return re.compile(r"(FONT_OPTIONS\s*=\s*\[\s*)([\"'])([^\"']*)\2")
+    return re.compile(r"^([ \t]*" + const + r"[ \t]*=[ \t]*)([\"'])([^\"']*)\2",
+                      re.M)
+
+
+def _font_found(text, consts):
+    """这份脚本里定义了哪些字体常量 → [常量名, ...]。"""
+    return [c for c in consts if _font_pat(c).search(text or "")]
+
+
+def _font_sub(text, consts, family):
+    """把字体常量换成 family → (新文本, [改到的常量名])。"""
+    changed = []
+    for c in consts:
+        def _rep(m, _c=c):
+            if m.group(3) == family:
+                return m.group(0)
+            changed.append(_c)
+            return f"{m.group(1)}{m.group(2)}{family}{m.group(2)}"
+        text = _font_pat(c).sub(_rep, text)
+    return text, changed
+
+
+def _font_script(game_dir, sname, consts, module):
+    """
+    找「字体定义」在哪份脚本里 → (脚本 dict, 是否按脚本名找到的)：
+      ① 先按脚本名找（v16/17.2 在 SpriteWindow、v18.1 在 MessageConfig…）；
+      ② 找不到（同人作改了名 / 合并了脚本）就全库扫一遍，认「真的定义了这些
+         常量、而且带对应 module」的那一份 —— 免得改到不相干的同名常量。
+    """
+    tgt = find_game_script(game_dir, sname)
+    if tgt and _font_found(tgt["text"], consts):
+        return tgt, True
+    if module:
+        for mode, key, path, name, text in GS.iter_named_scripts(game_dir,
+                                                               both=True):
+            if f"module {module}" not in text:
+                continue
+            if _font_found(text, consts):
+                return {"mode": mode, "key": key, "path": path,
+                        "name": name, "text": text}, False
+    return tgt, True
+
+
+def patch_engine_font(game_dir, family, version=None, emit=None):
+    """
+    把游戏引擎脚本里的字体定义改成 family（改前先备份，可还原）。
+
+    返回 {"ok", "script", "consts", "backup", "reason", "notes"}；
+    没找到可改的地方时 ok=False + reason，**不写盘**。
+    """
+    def say(msg):
+        if emit:
+            emit(msg)
+
+    if not family:
+        return {"ok": False, "reason": "字体名为空", "notes": []}
+
+    ver = version
+    if ver is None:
+        try:
+            import essentials_base as EB
+            ver = EB.detect_version(game_dir)
+        except Exception:
+            ver = ""
+    rule = font_rule(ver)
+    if not rule:
+        # 版本认不出：两套常量名都试，按内容找
+        rule = ("MessageConfig", FONT_OLD_CONSTS + FONT_NEW_CONSTS,
+                "MessageConfig")
+    sname, consts, module = rule
+    tgt, by_name = _font_script(game_dir, sname, consts, module)
+    if not tgt:
+        reason = f"游戏里找不到定义字体的脚本（{sname}）"
+        say(f"[字体] ⚠ {reason}，只在插件里换字体")
+        return {"ok": False, "reason": reason, "notes": []}
+
+    new_text, changed = _font_sub(tgt["text"], consts, family)
+    if not changed:
+        reason = (f"「{tgt['name']}」里没有 {'/'.join(consts)}，"
+                  f"或已经是「{family}」")
+        say(f"[字体] {reason}（引擎脚本原样不动）")
+        return {"ok": True, "script": tgt["name"], "consts": [],
+                "backup": None, "reason": reason, "notes": []}
+
+    bak = _write_script(tgt, new_text, emit=emit, mark=FONT_BAK_MARK)
+    note = (f"[字体] 已把引擎脚本「{tgt['name']}」里的 "
+            f"{'、'.join(changed)} 改成「{family}」"
+            f"（{'按脚本名' if by_name else '全库扫描'}找到，原文件已备份）")
+    say(note)
+    return {"ok": True, "script": tgt["name"], "consts": changed,
+            "backup": bak, "reason": "", "notes": [note]}
+
+
+def restore_engine_font(game_dir, emit=None):
+    """把本工具改过的引擎字体定义还原回去（只认 .pkmn-font-*.bak）。"""
+    def say(msg):
+        if emit:
+            emit(msg)
+    done = []
+    for bak in sorted(_list_backups(game_dir, mark=FONT_BAK_MARK)):
+        target = bak.split(FONT_BAK_MARK)[0]
+        if not os.path.exists(bak):
+            continue                     # 已经还原过（同一备份只处理一次）
+        try:
+            if os.path.exists(target):
+                os.remove(target)
+            os.rename(bak, target)
+            done.append(os.path.basename(target))
+            say(f"[字体] 已还原 {os.path.basename(target)} 的字体定义")
+        except OSError as e:
+            say(f"[字体] ⚠ 还原 {os.path.basename(target)} 失败：{e}")
+    return {"ok": True, "restored": done}
 
 
 def find_game_script(game_dir, name):
@@ -348,10 +504,10 @@ def overwrite_scene_map(game_dir, version, emit=None, allow_missing=False):
                                     files=files)
 
 
-def _write_script(tgt, text, emit=None):
+def _write_script(tgt, text, emit=None, mark=None):
     """把 text 写进目标脚本（.rb 文件或 rxdata 条目），先备份。"""
     path = tgt["path"]
-    bak = _backup(path, emit=emit)
+    bak = _backup(path, emit=emit, mark=mark)
     if tgt["mode"] == "file":
         with open(path, "rb") as f:
             cur = f.read().decode("utf-8", "replace")
@@ -367,16 +523,17 @@ def _write_script(tgt, text, emit=None):
 _overwritten = {}
 
 
-def _backup(path, emit=None):
-    """备份一次（跨运行复用），与 debug_tool 同风格。"""
-    ap = os.path.abspath(path)
+def _backup(path, emit=None, mark=None):
+    """备份一次（跨运行复用），与 debug_tool 同风格。mark 决定备份标记。"""
+    mark = mark or BAK_MARK
+    ap = (os.path.abspath(path), mark)
     if ap in _overwritten:
         return _overwritten[ap]
-    old = _find_backup(path)
+    old = _find_backup(path, mark=mark)
     if old:
         _overwritten[ap] = old
         return old
-    bak = f"{path}{BAK_MARK}{_stamp()}.bak"
+    bak = f"{path}{mark}{_stamp()}.bak"
     os.rename(path, bak)
     shutil.copyfile(bak, path)
     _overwritten[ap] = bak
@@ -385,9 +542,10 @@ def _backup(path, emit=None):
     return bak
 
 
-def _find_backup(path):
+def _find_backup(path, mark=None):
+    mark = mark or BAK_MARK
     d = os.path.dirname(os.path.abspath(path))
-    pref = os.path.basename(path) + BAK_MARK
+    pref = os.path.basename(path) + mark
     try:
         hits = [os.path.join(d, f) for f in os.listdir(d)
                 if f.startswith(pref) and f.endswith(".bak")]
@@ -411,6 +569,8 @@ def restore_overwrite(game_dir, emit=None):
     done = []
     for bak in sorted(baks):
         target = bak.split(BAK_MARK)[0]
+        if not os.path.exists(bak):
+            continue                     # 已经还原过（同一备份只处理一次）
         try:
             if os.path.exists(target):
                 os.remove(target)
@@ -422,187 +582,39 @@ def restore_overwrite(game_dir, emit=None):
     return {"ok": True, "restored": len(done), "files": done}
 
 
-def _list_backups(game_dir):
-    out = []
+def _list_backups(game_dir, mark=None):
+    """
+    这个游戏里所有的「本工具备份」→ [路径, ...]。
+
+    ★ 必须去重：`Data` 的递归里**已经包含** `Data/Scripts`，两个根各扫一遍会
+      把同一个 .bak 收两次。还原逻辑是「删目标 → 把 .bak 改回原名」，同一个
+      备份被处理两次的第二趟就会「删掉刚还原出来的文件、再改名失败」——
+      也就是**把游戏脚本删掉**（解包成 Data/Scripts/*.rb 的游戏必中）。
+    """
+    mark = mark or BAK_MARK
+    uniq = {}
     for base in (GS.data_dir(game_dir), GS.scripts_dir(game_dir)):
         if not os.path.isdir(base):
             continue
         for dp, _dn, fs in os.walk(base):
             for f in fs:
-                if BAK_MARK in f and f.endswith(".bak"):
-                    out.append(os.path.join(dp, f))
-    return out
+                if mark in f and f.endswith(".bak"):
+                    p = os.path.join(dp, f)
+                    uniq[os.path.abspath(p).lower()] = p
+    return list(uniq.values())
 
 
-# ================================================================
-# ② 对比报告
-# ================================================================
-def report_dir():
-    """报告目录（工具目录下 comparation/，没有则建）。"""
-    d = os.path.join(config.BASE_DIR, REPORT_DIR_NAME)
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
-def report_path(game_dir, version=None):
-    """
-    报告文件名 = **只有游戏名**（不带版本号）。
-
-    ★ 版本号不进文件名：存盘时用的是「基准版本」，而打开时按「游戏自报版本」
-      去拼路径，两者常常对不上（老游戏读不到版本号、近似匹配取的基准又不同），
-      于是「刚生成完却说没有报告」。只留游戏名就永远不会错位。
-    """
-    name = os.path.basename(os.path.normpath(game_dir)) or "game"
-    name = re.sub(r"[\\/:*?\"<>|]+", "_", name)
-    return os.path.join(report_dir(), f"{name}.json")
-
-
-def find_report(game_dir):
-    """
-    找这个游戏的报告文件 → 路径 or None。
-
-    兼容旧的带版本名（`<游戏名>_v<版本>.json`）：没有正好同名的就退回
-    「同游戏名的旧命名」，取最新改动的那个。
-    """
-    exact = report_path(game_dir)
-    if os.path.isfile(exact):
-        return exact
-    name = os.path.basename(os.path.normpath(game_dir)) or "game"
-    name = re.sub(r"[\\/:*?\"<>|]+", "_", name)
-    d = report_dir()
-    cands = []
-    for f in os.listdir(d):
-        if not f.lower().endswith(".json"):
-            continue
-        stem = f[:-5]
-        # `<name>_v16` / `<name>_v21.1` / `<name>_unknown` 都算
-        if stem == name or stem.startswith(name + "_v"):
-            cands.append(os.path.join(d, f))
-    if not cands:
-        return None
-    cands.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return cands[0]
-
-
-def build_report(game_dir, version=None, emit=None, check=None):
-    """
-    跑体检并把结果落盘到 comparation/<游戏名>.json。
-    返回 (报告 dict, 路径)。
-
-    check：可选，已经有体检结果时直接复用（避免同一个检测在日志里报两遍
-    总结）。
-    """
-    import essentials_base as EB
-    def say(msg):
-        if emit:
-            emit(msg)
-    ver = version or EB.detect_version(game_dir)
-    if check is None:
-        check = EB.compare(game_dir, version=ver, emit=emit)
-    bver = check.get("baseline") or ver or "unknown"
-    items = []
-    # 被改 / 缺失 的每个「脚本 → 函数」一条记录（含两边的源码）
-    for sname, fname, got, want in (check.get("changed") or []):
-        items.append(_item(game_dir, bver, sname, fname, got, want,
-                           status="changed"))
-    for sname, fname in (check.get("missing") or []):
-        items.append(_item(game_dir, bver, sname, fname, "", "",
-                           status="missing"))
-    rep = {
-        "game": os.path.basename(os.path.normpath(game_dir)),
-        "game_dir": game_dir,
-        "version": ver,
-        "baseline": bver,
-        "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "summary": {k: check.get(k) for k in
-                    ("total", "same", "changed_n", "missing_n", "moved_n",
-                     "added_n", "scripts_total", "scripts_missing_n")},
-        "items": items,
-    }
-    p = report_path(game_dir, bver)
-    with io.open(p, "w", encoding="utf-8") as f:
-        json.dump(rep, f, ensure_ascii=False, indent=1)
-    # ★ 日志精简：只留一行「已写入报告」，明细进报告页逐行对比。
-    say(f"[报告] 已写入检测报告 → {p}（{len(items)} 条差异，"
-        f"点「检测报告」查看逐行对比）")
-    return rep, p
-
-
+# ---- 通用小工具 ----
 def _norm_eol(text):
     """
     统一行尾为 LF。
 
-    ★ 报告页「逐行对比」必须比内容、不能比行尾 —— 基准（官方源码，LF）
-      与目标（游戏 Scripts.rxdata，多为 CRLF）行尾天然不同，不归一化就会
-      「每一行都算改动」（红/绿/黄全亮），看着像整个函数被重写。
+    ★ 基准（官方源码）是 LF，游戏 Scripts.rxdata 里多为 CRLF —— 拿基准文本
+      做逐行处理之前先归一化，免得每行末尾都差一个 `\\r`。
     """
     if not text:
         return text
     return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _item(game_dir, bver, sname, fname, got, want, status):
-    """构造一条差异记录（含基准/目标源码，供报告页对比）。"""
-    return {
-        "script": sname, "func": fname, "status": status,
-        "edited": False,
-        # ★ 两边都归一化行尾，report 页才只标「真正不同的行」
-        "base_text": _norm_eol(engine_src.func_source(bver, sname, fname) or ""),
-        "goal_text": _norm_eol(_game_func_source(game_dir, sname, fname) or ""),
-        "base_fp": want, "goal_fp": got,
-    }
-
-
-def _game_func_source(game_dir, sname, fname):
-    import essentials_base as EB
-    for _m, _k, _p, name, text in GS.iter_named_scripts(game_dir):
-        if EB._norm(name) != EB._norm(sname):
-            continue
-        src = engine_src.extract_func(text, fname)
-        if src:
-            return src
-    return ""
-
-
-def load_report(path):
-    try:
-        with io.open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        log.warning("读报告 %s 失败：%s", path, e)
-        return None
-
-
-def apply_report(game_dir, rep, emit=None):
-    """
-    把报告里「已编辑」的条目写回游戏脚本。
-    返回 {"ok", "applied": [脚本→函数], "reason"}。
-    """
-    def say(msg):
-        if emit:
-            emit(msg)
-    applied = []
-    for it in rep.get("items", []):
-        if not it.get("edited"):
-            continue
-        sname, fname = it["script"], it["func"]
-        tgt = find_game_script(game_dir, sname)
-        if not tgt:
-            say(f"[报告] ⚠ 找不到脚本「{sname}」，跳过 {fname}")
-            continue
-        new_text = engine_src.replace_func(tgt["text"], fname,
-                                           it.get("goal_text") or "")
-        if new_text is None:
-            say(f"[报告] ⚠ 在「{sname}」里没找到函数 {fname}，跳过")
-            continue
-        try:
-            _write_script(tgt, new_text, emit=emit)
-        except (OSError, RuntimeError) as e:
-            say(f"[报告] ✘ 写入「{sname}」.{fname} 失败：{e}")
-            continue
-        applied.append(f"{sname} → {fname}")
-        say(f"[报告] ✔ 已应用「{sname} → {fname}」")
-    return {"ok": True, "applied": applied}
 
 
 # ================================================================

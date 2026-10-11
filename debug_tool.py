@@ -16,7 +16,7 @@ Data/*.dat**，游戏直接变砖。所以开 DEBUG 的同时必须把这两步�
 
 本模块做的事
 ------------
-  ① 版本识别 + 基本函数体检（见 essentials_base）—— 作者改过引擎就先警告；
+  ① 版本识别 + 基本函数比对（见 essentials_base）—— 作者改过引擎就先警告；
   ② Main 脚本的 `mainFunction` 里插一行 `$DEBUG=true`；
   ③ 清掉脚本里的「反调试」代码：有些同人游戏在 Scene_Map#update 里塞了
      `if $DEBUG → $scene=nil`、`$DEBUG = false`，每帧把 $DEBUG 摁回 false，
@@ -848,11 +848,16 @@ def restore(game_dir, emit=None):
 # 一键开启
 # ================================================================
 def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
-                 write_debug=True):
+                 write_debug=True, guard=True):
     """
-    开启 DEBUG：体检 → 写 $DEBUG=true → 清反调试 → 关掉「删 dat + 全量编译」。
+    开启 DEBUG：比对 → 写 $DEBUG=true → 清反调试 → 关掉「删 dat + 全量编译」。
 
-    force=True 时即使体检发现引擎被改过也照样写（界面上让用户确认过再用）。
+    force=True 时即使比对发现引擎被改过也照样写（界面上让用户确认过再用）。
+
+    guard=False 时**不装编译闸门**（界面上「自动关闭全量编译」取消勾选）：
+      调试模式启动会走 Compiler 的常规流程 —— 数据比 PBS 旧、或缺 dat 时
+      会删 Data/*.dat 并全量重编译。默认 True（勾上）：装一道闸，
+      数据已编译好就直接 return，按住 Ctrl 启动仍然会真编译一次。
 
     antidebug_plan：复核窗口给的决定 —— `{src_key: {"action", "text"}}`
       · action="comment" / "manual"，text 是**改好后的整份脚本文本** → 直接写；
@@ -864,7 +869,7 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
       才生效」的判定删掉；方式⑦（改名调试函数）更不能设 —— 它的整套设计前提
       就是「全程不设 $DEBUG」（反调试里到处是 `exit if $DEBUG`，一设就退游戏）。
       ★ 以前 GUI 对所有非⑧方式都传 True，于是**换方式后 Main 里总会冒出
-      `$DEBUG=true`**，很容易被误判成「还原没生效」。其余步骤（体检 /
+      `$DEBUG=true`**，很容易被误判成「还原没生效」。其余步骤（比对 /
       清反调试 / 关编译）照做。
     返回报告 dict：{"ok", "changed", "version", "baseline", "check", ...}
     """
@@ -888,7 +893,7 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
     say(f"[DEBUG] 游戏根目录：{game_dir}")
     say(f"[DEBUG] Essentials 版本：{ver or '（脚本里读不到版本号）'}")
 
-    # ---------- ① 基本函数体检 ----------
+    # ---------- ① 基本函数比对 ----------
     check = EB.compare(game_dir, version=ver, emit=emit)
     rep["check"] = check
     rep["baseline"] = check.get("baseline")
@@ -911,7 +916,7 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
         # ★ 只有方式①（通用）需要这一步。其余方式一律不写：
         #   · 方式② 删条件的做法本来就是把「需要 $DEBUG 才生效」的判定删掉；
         #   · 方式⑦ 的整套设计前提就是「不设 $DEBUG」（反调试 `exit if $DEBUG`）。
-        #   体检 / 清反调试 / 关重编译照做。
+        #   比对 / 清反调试 / 关重编译照做。
         rep["debug"] = {"targets": [], "skipped": True}
         say("[DEBUG] · 本方式**不写 $DEBUG=true**（需要它请改用方式①「通用」）")
         # 顺手把以前用方式① 留下的那行清掉 —— 它和「不设 $DEBUG」直接矛盾，
@@ -1035,8 +1040,14 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
                 f"（{info['blocks']} 段：`if $DEBUG … end` / `$DEBUG = false`）")
 
     # ---------- ④ 关掉「删 dat + 全量编译」 ----------
-    comps = find_compiler_sources(game_dir)
-    if not comps:
+    comps = [] if not guard else find_compiler_sources(game_dir)
+    if not guard:
+        # ★ 界面上「自动关闭全量编译」没勾：一道闸都不装
+        say("[DEBUG] · 按你的选择：**不装**编译闸门（「自动关闭全量编译」"
+            "没勾）—— 启动时数据比 PBS 旧的话会全量重编译")
+        rep["guard"] = {"added": False, "existed": False, "na": True,
+                        "targets": [], "skipped": True}
+    elif not comps:
         say("[DEBUG] · 这个版本启动时不会自动删 dat / 全量编译，不用处理")
         rep["guard"] = {"added": False, "existed": False, "na": True,
                         "targets": []}
@@ -1077,40 +1088,3 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
     log.info("开启 DEBUG：%s（版本 %s，改动 %s）", game_dir, ver,
              rep["changed"])
     return rep
-
-
-def scan_only(game_dir, emit=None):
-    """只体检、不改任何东西（界面上「开始检测」用）。"""
-    def say(msg):
-        if emit:
-            emit(msg)
-
-    ok, why = GS.check_game_root(game_dir)
-    if not ok:
-        say(f"[检测] ✘ {why}")
-        return {"ok": False, "reason": why}
-    ver = EB.detect_version(game_dir)
-    say(f"[检测] Essentials 版本：{ver or '（脚本里读不到版本号）'}")
-    # 脚本存放形态：两处都有就都会改
-    if os.path.isdir(GS.scripts_dir(game_dir)) and \
-            os.path.isfile(GS.rxdata_path(game_dir)):
-        say("[检测] 脚本两处都有：Data/Scripts/*.rb（解包源码）"
-            " + Data/Scripts.rxdata（运行时读的那份）—— 写入时两处都改")
-    check = EB.compare(game_dir, version=ver, emit=emit)
-    st = status(game_dir)
-    say(f"[检测] mainFunction 里已有 $DEBUG=true：{'是' if st['debug_on'] else '否'}"
-        + ("（只写了一半，两处没同步）" if st.get("debug_partial") else ""))
-    if st["has_compiler"]:
-        say(f"[检测] 已关掉「删 dat + 全量编译」：{'是' if st['guarded'] else '否'}"
-            + ("（只装了一半）" if st.get("guarded_partial") else ""))
-    else:
-        say("[检测] 这个版本启动时不会自动删 dat / 全量编译")
-    if st.get("antidebug"):
-        say("[检测] ⚠ 发现「反调试」代码（$DEBUG = false / $scene=nil）"
-            "—— 它会让开 DEBUG 失效，开启时会自动注释掉")
-    elif st.get("antidebug_fixed"):
-        say("[检测] 反调试代码已被注释掉（本工具处理过）")
-    if os.path.isfile(GS.plugin_rxdata_path(game_dir)):
-        say("[检测] 反调试检测已覆盖 Data/PluginScripts.rxdata 里的插件脚本"
-            "（其它检测不读插件）")
-    return {"ok": True, "version": ver, "check": check, "status": st}

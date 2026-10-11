@@ -1,29 +1,33 @@
 # ==============================================================================
-# [pkmn] 中文文本处理 · 旧版（Essentials 19.1 之前 / Ruby 1.8）版
+# [pkmn] 中文文本处理 · Essentials 18.1 版（旧引擎 / Ruby 1.8 / RGSS1）
 #
 #   由「中文文本处理 v21.1」（作者：木亦会枯、楠楠楠小鸟）移植而来，
 #   功能一致：中文逐字换行、字体替换、文本垂直偏移、地图文本去多余空格。
 #
-#   ★ 这一份是给**没有插件系统**的老游戏用的（RPG Maker XP + RGSS，
-#     Ruby 1.8.1，例如 Pokemon Void / 宝可梦蛋白石 / 绿铀）：
-#     · getFormattedText / getFormattedTextFast / pbDrawShadowText 三个函数
-#       照抄目标引擎源码后再打补丁（用的都是本引擎自己的助手函数
-#       rgbToColor、Rgb16ToColor），不会调用新版专有 API；
-#     · 顶部有 Ruby 1.8 兼容补丁（补 String#ord / String#each_char）；
-#     · 所有「把字符串切成一个个字符」的地方都改走 _pkmn_chars()：
-#       String#scan 配 /./m 是按 $KCODE 切的，RGSS / Ruby 1.8 默认不是 'U'，
-#       汉字会被切成 3 个字节，ischinese? 永远判不出汉字 → 中文换行等于没生效；
-#     · ischinese? 与 _MAPINTL 做了 1.8 适配（见下面各函数上的注释）。
+#   ★ 本文件是**生成物**：脚本 make_legacy_plugins.py 从官方 Essentials 18.1
+#     的引擎源码里把下面这几个函数整份抠出来，再打上中文补丁拼成这一份，
+#     跟目标引擎的实现逐行对齐（不同版本这几个函数体不一样）。
+#     要改请改生成脚本，别手改这里。
 #
-#   ★ 这份脚本没有 Plugins 目录可用，是**直接插进 Scripts.rxdata、排在 Main 前面**
-#     （或者解包成 Data/Scripts/ 时放一个排在 Main 前面的 .rb）。
+#   ★ 这份脚本给**没有插件系统**的老游戏用（RPG Maker XP + RGSS，
+#     Ruby 1.8.1）：它被直接插进 Scripts.rxdata、排在 Main 前面
+#     （解包成 Data/Scripts/ 的游戏就是放一个排在 Main 前面的 .rb）。
 #     —— 必须在 Main 之前：RGSS 从上往下执行脚本、读到 Main 就进游戏主循环，
 #        挂在 Main 后面的脚本永远不会执行。
+#
+#   ★ 中文补丁做了什么：
+#     ① 所有「把字符串切成一个个字符」的地方改走 _pkmn_chars()：
+#        String#scan 配 /./m 是按 $KCODE 切的，RGSS / Ruby 1.8 默认不是 'U'，
+#        汉字会被切成 3 个字节，ischinese? 永远判不出汉字 → 中文换行等于没生效；
+#     ② 换行的断点：原版只在「空格之后的词首」记断点，中文没有空格 → 整行
+#        被当成一个超长词、永不换行；这里让汉字逐字可断，非汉字照旧；
+#     ③ getLineBrokenChunks / getLineBrokenText 的切词改成「连续非汉字算一个
+#        词、汉字一字一词」（颜色码的位置仍按原词对齐）；
+#     ④ pbDrawShadowText 里加整体垂直偏移（值在同目录 Settings.rb 里调）。
 #
 #   ★ 禁止手改本文件 —— 要改插件设置请改同目录的 Settings.rb。
 # ==============================================================================
 
-# ------------------------------------------------------------------------------
 # [pkmn] Ruby 1.8 兼容补丁
 #   旧版 RGSS（RPG Maker XP / 老 Essentials）跑的是 Ruby 1.8.1：
 #     · String#ord        —— 1.8 根本没有（1.9 才加）
@@ -87,72 +91,6 @@ def _pkmn_chars(text)
   return out
 end
 
-def getLineBrokenChunks(bitmap, value, width, dims, plain = false)
-  x = 0
-  y = 0
-  ret = []
-  if dims
-    dims[0] = 0
-    dims[1] = 0
-  end
-  return ret if !bitmap || bitmap.disposed? || width <= 0
-  textmsg = value.clone
-  color = Font.default_color
-  textmsg.each_char do |ch|
-    if ch == "\n"
-      x = 0
-      y += 32
-      next
-    end
-    textSize = bitmap.text_size(ch)
-    textwidth = textSize.width
-    if x > 0 && x + textwidth > width && ch !~ /[[:punct:]]/
-      x = 0
-      y += 32
-    end
-    ret.push([ch, x, y, textwidth, 32, color])
-    x += textwidth
-    dims[0] = x if dims && dims[0] < x
-  end
-  dims[1] = y + 32 if dims
-  ret
-end
-
-def getLineBrokenText(bitmap, value, width, dims)
-  x = 0
-  y = 0
-  textheight = 0
-  ret = []
-  if dims
-    dims[0] = 0
-    dims[1] = 0
-  end
-  return ret if !bitmap || bitmap.disposed? || width <= 0
-
-  textmsg = value.delete(" ").clone
-  ret.push(["", 0, 0, 0, bitmap.text_size("中").height, 0, 0, 0, 0])
-  textmsg.each_line do |line|
-    length = _pkmn_chars(line).length
-    line.each_char do |char|
-      textSize = bitmap.text_size(char)
-      textwidth = textSize.width
-      if x > 0 && x + textwidth >= width - 2
-        ret.push(["", x, y, 0, textheight, 0, 0, 0, 0])
-        x = 0
-        y += textheight.zero? ? bitmap.text_size("国").height : textheight
-        textheight = 0
-      end
-      textheight = [textheight, textSize.height].max
-      ret.push([char, x, y, textwidth, textheight, 0, 0, 0, length])
-      x += textwidth
-      dims[0] = x if dims && dims[0] < x
-    end
-    y += textheight if y > 0
-  end
-  dims[1] = y + textheight if dims
-  ret
-end
-
 def ischinese?(char)
   # ★ 不走 String#ord：Ruby 1.8 没有它，而 1.8 的 char[0] 只给第一个字节。
   #   直接按 UTF-8 解出码点，1.8 / 1.9 以上都准。
@@ -185,11 +123,191 @@ if defined?(MessageTypes) && MessageTypes.respond_to?(:getFromMapHash)
 end
 
 
+
+# ------------------------------------------------------------------------------
+# [pkmn] 不该出现在**行首**的字符（中文标点 / 收尾符号）
+#   作者版的 1.3.8 专门修过「标点跑到行首」—— 换行时如果下一个字是这些，
+#   就让它留在上一行末尾（宁可略微超出宽度）。这里用同一套思路。
+# ------------------------------------------------------------------------------
+PKMN_NO_LINE_START = "，。、；：？！）】》」』”’…—～·,.!?;:)]}"
+
+def _pkmn_line_start_bad?(word)
+  ch = _pkmn_chars(word)[0]
+  return ch != nil && PKMN_NO_LINE_START.include?(ch)
+end
+
+# ------------------------------------------------------------------------------
+# [pkmn] 把一段文本切成「词」（换行用）
+#   连续的非汉字（英文单词 / 数字 / 空格 / 标点）算一个词，汉字**一个字一个词**。
+#   原版按空格切词，中文整行没有空格 → 会被当成一个超长词，永远不换行。
+# ------------------------------------------------------------------------------
+def _pkmn_words(text)
+  return [] if text == nil
+  out = []
+  buf = ""
+  _pkmn_chars(text.to_s).each do |ch|
+    if ischinese?(ch)
+      out.push(buf) if buf != ""
+      buf = ""
+      out.push(ch)
+    else
+      buf += ch
+    end
+  end
+  out.push(buf) if buf != ""
+  return out
+end
+
+# ------------------------------------------------------------------------------
+# [pkmn] 有颜色码时的切词：把每个词再按汉字拆开，颜色码**落在原词的最后一个字**上
+#   —— 这样「从第几个字开始变色」和原版完全一致（原版是画完第 i 个词才换色）。
+#   返回 [新词数组, 新颜色数组]。
+# ------------------------------------------------------------------------------
+def _pkmn_split_words(words, textcols)
+  newwords = []
+  newcols = []
+  for i in 0...words.length
+    parts = _pkmn_words(words[i])
+    parts = [""] if parts.length == 0
+    for j in 0...parts.length
+      newwords.push(parts[j])
+      newcols.push((j == parts.length - 1) ? textcols[i] : nil)
+    end
+  end
+  return [newwords, newcols]
+end
+
+# ---- 来自官方 Essentials 18.1 源码：234028_DrawText.rb ----
+def getLineBrokenChunks(bitmap,value,width,dims,plain=false)
+  x=0
+  y=0
+  textheight=0
+  ret=[]
+  if dims
+    dims[0]=0
+    dims[1]=0
+  end
+  re=/<c=([^>]+)>/
+  reNoMatch=/<c=[^>]+>/
+  return ret if !bitmap || bitmap.disposed? || width<=0
+  textmsg=value.clone
+  color=Font.default_color
+  while (c = textmsg.slice!(/\n|[^ \r\t\f\n\-]*\-+|(\S*([ \r\t\f]?))/)) != nil
+    break if c==""
+    ccheck=c
+    if ccheck=="\n"
+      x=0
+#      y+=(textheight==0) ? bitmap.text_size("X").height : textheight
+      y+=(textheight==0) ? bitmap.text_size("X").height+1 : textheight
+      textheight=0
+      next
+    end
+    if ccheck[/</] && !plain
+      textcols=[]
+      ccheck.scan(re) { textcols.push(rgbToColor($1)) }
+      # ★ 中文补丁：拆开汉字后再把颜色对齐到原词的末字
+      words,textcols=_pkmn_split_words(ccheck.split(reNoMatch), textcols)
+    else
+      textcols=[]
+      # ★ 中文补丁：汉字逐字成词（见 _pkmn_words）
+      words=_pkmn_words(ccheck)
+    end
+    for i in 0...words.length
+      word=words[i]
+      if word && word!=""
+        textSize=bitmap.text_size(word)
+        textwidth=textSize.width
+        # ★ 中文补丁：下一个字是标点就不断行（免得标点跑到行首）
+        if x>0 && x+textwidth>width && !_pkmn_line_start_bad?(word)
+          minTextSize=bitmap.text_size(word.gsub(/\s*/,""))
+          if x>0 && x+minTextSize.width>width
+            x=0
+#            y+=32 # (textheight==0) ? bitmap.text_size("X").height : textheight
+            y+=(textheight==0) ? bitmap.text_size("X").height+1 : textheight
+            textheight=0
+          end
+        end
+#        textheight=32 # [textheight,textSize.height].max
+        textheight=[textheight,textSize.height+1].max
+        ret.push([word,x,y,textwidth,textheight,color])
+        x+=textwidth
+        dims[0]=x if dims && dims[0]<x
+      end
+      if textcols[i]
+        color=textcols[i]
+      end
+    end
+  end
+  dims[1]=y+textheight if dims
+  return ret
+end
+
+# ---- 来自官方 Essentials 18.1 源码：472422_TextEntry.rb ----
+def getLineBrokenText(bitmap,value,width,dims)
+  x=0
+  y=0
+  textheight=0
+  ret=[]
+  if dims
+    dims[0]=0
+    dims[1]=0
+  end
+  line=0
+  position=0
+  column=0
+  return ret if !bitmap || bitmap.disposed? || width<=0
+  textmsg=value.clone
+  ret.push(["",0,0,0,bitmap.text_size("X").height,0,0,0,0])
+  while ((c = textmsg.slice!(/\n|(\S*([ \r\t\f]?))/)) != nil)
+    break if c==""
+    length=_pkmn_chars(c).length
+    ccheck=c
+    if ccheck=="\n"
+      ret.push(["\n",x,y,0,textheight,line,position,column,0])
+      x=0
+      y+=(textheight==0) ? bitmap.text_size("X").height : textheight
+      line+=1
+      textheight=0
+      column=0
+      position+=length
+      ret.push(["",x,y,0,textheight,line,position,column,0])
+      next
+    end
+    # ★ 中文补丁：汉字逐字成词（见 _pkmn_words）
+    words=_pkmn_words(ccheck)
+    for i in 0...words.length
+      word=words[i]
+      if word && word!=""
+        textSize=bitmap.text_size(word)
+        textwidth=textSize.width
+        if x>0 && x+textwidth>=width-2
+          # Zero-length word break
+          ret.push(["",x,y,0,textheight,line,position,column,0])
+          x=0
+          column=0
+          y+=(textheight==0) ? bitmap.text_size("X").height : textheight
+          line+=1
+          textheight=0
+        end
+        textheight=[textheight,textSize.height].max
+        ret.push([word,x,y,textwidth,textheight,line,position,column,length])
+        x+=textwidth
+        dims[0]=x if dims && dims[0]<x
+      end
+    end
+    position+=length
+    column+=length
+  end
+  dims[1]=y+textheight if dims
+  return ret
+end
+
+# ---- 来自官方 Essentials 18.1 源码：234028_DrawText.rb ----
 def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
                      newlineBreaks=true,explicitBreaksOnly=false,
                      collapseAlignments=false)
   dummybitmap=nil
-  if !bitmap || bitmap.disposed? # allows function to be called with nil bitmap
+  if !bitmap || bitmap.disposed?   # allows function to be called with nil bitmap
     dummybitmap=Bitmap.new(1,1)
     bitmap=dummybitmap
     return
@@ -215,11 +333,9 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
     dummybitmap.dispose if dummybitmap
     return ret
   end
-  numchars=0
   x=y=0
   characters=[]
   charactersInternal=[]
-  charsonline=0
   realtext=nil
   realtextStart=""
   if !explicitBreaksOnly && textchunks.join("").length==0
@@ -260,7 +376,7 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
   fontsizestack=[]
   defaultcolors=[oldfont.color.clone,nil]
   if defaultfontname.is_a?(Array)
-    defaultfontname=defaultfontname.find{|i| Font.exist?(i)} || "Arial"
+    defaultfontname=defaultfontname.find { |i| Font.exist?(i) } || "Arial"
   elsif !Font.exist?(defaultfontname)
     defaultfontname="Arial"
   end
@@ -271,7 +387,8 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
   hadspace=false
   hadnonspace=false
   havenl=false
-  position=0; while position<textchars.length
+  position=0
+  while position<textchars.length
     nextline=0
     graphic=nil
     graphicX=0
@@ -412,8 +529,8 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
         graphicHeight=tempgraphic.height
         tempgraphic.dispose
       end
-      width=graphicWidth  # +8  # No padding
-      xStart=0  # 4
+      width=graphicWidth   # +8  # No padding
+      xStart=0   # 4
       yStart=[(lineheight/2)-(graphicHeight/2),0].max
       graphicRect=Rect.new(graphicX,graphicY,graphicWidth,graphicHeight)
     else
@@ -479,11 +596,9 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
       lastword[0] = characters.length
       lastword[1] = x
     end
-    textx=x+xStart # independent of xDst
     texty=(lineheight*y)+yDst+yStart
     colors=getLastColors(colorstack,opacitystack,defaultcolors)
-    oldx=x
-    # Push character, textx will be calculated later
+    # Push character
     if heightDst<0 || texty<yDst+heightDst
       havenl=true if !graphic && isWaitChar(textchars[position])
       extraspace=(!graphic && italiccount>0) ? 2+(width/2) : 2
@@ -521,36 +636,33 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
     end
     position+=1 if !graphic
   end
+  # This code looks at whether the text occupies exactly two lines when
+  # displayed. If it does, it balances the length of each line.
+=begin
   # Count total number of lines
-  numlines=(x==0 && y>0) ? y : y+1
+  numlines = (x==0 && y>0) ? y : y+1
   if numlines==2 && realtext && !realtext[/\n/] && realtext.length>=50
     # Set half to middle of text (known to contain no formatting)
-    half=realtext.length/2
-    leftSearch=0
-    rightSearch=0
+    half = realtext.length/2
+    leftSearch  = 0
+    rightSearch = 0
     # Search left for a space
-    i=half; while i>=0
-      if realtext[i,1][/\s/]||isWaitChar(realtext[i,1])
-        # found a space
-        break
-      end
-      leftSearch+=1
-      i-=1
+    i = half; while i>=0
+      break if realtext[i,1][/\s/]||isWaitChar(realtext[i,1])   # found a space
+      leftSearch += 1
+      i -= 1
     end
-      # Search right for a space
-      i=half; while i<realtext.length
-      if realtext[i,1][/\s/]||isWaitChar(realtext[i,1])
-        # found a space
-        break
-      end
-      rightSearch+=1
-      i+=1
+    # Search right for a space
+    i = half; while i<realtext.length
+      break if realtext[i,1][/\s/]||isWaitChar(realtext[i,1])   # found a space
+      rightSearch += 1
+      i += 1
     end
     # Move half left or right whichever is closer
-    trialHalf=half+((rightSearch<leftSearch) ? rightSearch : -leftSearch)
+    trialHalf = half+((rightSearch<leftSearch) ? rightSearch : -leftSearch)
     if trialHalf!=0 && trialHalf!=realtext.length
       # Insert newline and re-call this function (force newlineBreaksOnly)
-      newText=realtext.clone
+      newText = realtext.clone
       if isWaitChar(newText[trialHalf,1])
         # insert after wait character
         newText.insert(trialHalf+1,"\n")
@@ -559,13 +671,14 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
         newText.insert(trialHalf,"\n")
         newText.gsub!(/\n\s+/,"\n")
       end
-      bitmap.font=oldfont
+      bitmap.font = oldfont
       dummybitmap.dispose if dummybitmap
       return getFormattedText(dummybitmap ? nil : bitmap,xDst,yDst,
          widthDst,heightDst,realtextStart+newText,
          lineheight,true,explicitBreaksOnly)
     end
   end
+=end
   if havenl
     # Eliminate spaces before newlines and pause character
     firstspace=-1
@@ -606,13 +719,13 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
   for i in 0...characters.length
     c=characters[i]
     if i>0 && (charactersInternal[i][0]!=lastalign ||
-       charactersInternal[i][1]!=lasty) 
+       charactersInternal[i][1]!=lasty)
       # Found end of run
       widthblocks.push([runstart,i,lastalign,totalwidth,lasty])
       runstart=i
       totalwidth=0
     end
-    lastalign=charactersInternal[i][0] 
+    lastalign=charactersInternal[i][0]
     lasty=charactersInternal[i][1]
     extraspace=(charactersInternal[i][4]) ? charactersInternal[i][4] : 0
     totalwidth+=c[3]-extraspace
@@ -660,15 +773,12 @@ def getFormattedText(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight=32,
   return characters
 end
 
+# ---- 来自官方 Essentials 18.1 源码：234028_DrawText.rb ----
 def getFormattedTextFast(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight,
                          newlineBreaks=true,explicitBreaksOnly=false)
-  numchars=0
   x=y=0
   characters=[]
-  charactersInternal=[]
   textchunks=[]
-  controls=[]
-  charsonline=0
   textchunks.push(text)
   text=textchunks.join("")
   textchars=_pkmn_chars(text)
@@ -680,30 +790,29 @@ def getFormattedTextFast(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight,
   colorclone=bitmap.font.color
   defaultfontname=bitmap.font.name
   if defaultfontname.is_a?(Array)
-    defaultfontname=defaultfontname.find{|i| Font.exist?(i)} || "Arial"
+    defaultfontname=defaultfontname.find { |i| Font.exist?(i) } || "Arial"
   elsif !Font.exist?(defaultfontname)
     defaultfontname="Arial"
   end
   defaultfontname=defaultfontname.clone
   havenl=false
-  position=0;while position<textchars.length
+  position=0
+  while position<textchars.length
     yStart=0
     xStart=0
     width=isWaitChar(textchars[position]) ? 0 : bitmap.text_size(textchars[position]).width
     if textchars[position]=="\n"
-      if newlineBreaks # treat newline as break
-        if true
-          havenl=true
-          characters.push(["\n",x,y*lineheight+yDst,0,lineheight,false,false,
-             false,colorclone,nil,false,false,"",8,position,nil,0])
-          y+=1
-          x=0
-        end
+      if newlineBreaks   # treat newline as break
+        havenl=true
+        characters.push(["\n",x,y*lineheight+yDst,0,lineheight,false,false,
+           false,colorclone,nil,false,false,"",8,position,nil,0])
+        y+=1
+        x=0
         hadspace=true
         hadnonspace=false
         position+=1
         next
-      else # treat newline as space
+      else   # treat newline as space
         textchars[position]=" "
       end
     end
@@ -724,10 +833,8 @@ def getFormattedTextFast(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight,
       lastword[0] = characters.length
       lastword[1] = x
     end
-    textx=x+xStart # independent of xDst
     texty=(lineheight*y)+yDst+yStart
-    oldx=x
-    # Push character, textx will be calculated later
+    # Push character
     if heightDst<0 || yStart<yDst+heightDst
       havenl=true if isWaitChar(textchars[position])
       characters.push([
@@ -755,50 +862,48 @@ def getFormattedTextFast(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight,
     end
     position+=1
   end
+  # This code looks at whether the text occupies exactly two lines when
+  # displayed. If it does, it balances the length of each line.
+=begin
   # Count total number of lines
-  numlines=(x==0 && y>0) ? y-1 : y
-  realtext=(newlineBreaks) ? text : text.gsub(/\n/," ")
+  numlines = (x==0 && y>0) ? y-1 : y
+  realtext = (newlineBreaks) ? text : text.gsub(/\n/," ")
   if numlines==2 && !explicitBreaksOnly && !realtext[/\n/] && realtext.length>=50
     # Set half to middle of text (known to contain no formatting)
-    half=realtext.length/2
-    leftSearch=0
-    rightSearch=0
+    half = realtext.length/2
+    leftSearch  = 0
+    rightSearch = 0
     # Search left for a space
-    i=half; while i>=0
-      if realtext[i,1][/\s/]||isWaitChar(realtext[i])
-        # found a space
-        break
-      end
-      leftSearch+=1
-      i-=1
+    i = half; while i>=0
+      break if realtext[i,1][/\s/]||isWaitChar(realtext[i])   # found a space
+      leftSearch += 1
+      i -= 1
     end
     # Search right for a space
-    i=half; while i<realtext.length
-      if realtext[i,1][/\s/]||isWaitChar(realtext[i])
-        # found a space
-        break
-      end
-      rightSearch+=1
-      i+=1
+    i = half; while i<realtext.length
+      break if realtext[i,1][/\s/]||isWaitChar(realtext[i])   # found a space
+      rightSearch += 1
+      i += 1
     end
     # Move half left or right whichever is closer
-    trialHalf=half+((leftSearch<rightSearch) ? -leftSearch : rightSearch)
+    trialHalf = half+((leftSearch<rightSearch) ? -leftSearch : rightSearch)
     if trialHalf!=0 && trialHalf!=realtext.length
       # Insert newline and re-call this function (force explicitBreaksOnly)
-      newText=realtext.clone
+      newText = realtext.clone
       newText.insert(trialHalf,"\n")
       return getFormattedTextFast(bitmap,xDst,yDst,
          widthDst,heightDst,newText,lineheight,true,explicitBreaksOnly)
     end
   end
+=end
   # Eliminate spaces before newlines and pause character
   if havenl
     firstspace=-1
     for i in 0...characters.length
       if characters[i][5]!=false # If not a character
         firstspace=-1
-      elsif (characters[i][0]=="\n" || isWaitChar(characters[i][0])) && 
-        firstspace>=0
+      elsif (characters[i][0]=="\n" || isWaitChar(characters[i][0])) &&
+         firstspace>=0
         for j in firstspace...i
           characters[j]=nil
         end
@@ -833,19 +938,20 @@ def getFormattedTextFast(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight,
   return characters
 end
 
+# ---- 来自官方 Essentials 18.1 源码：234028_DrawText.rb ----
 def pbDrawShadowText(bitmap,x,y,width,height,string,baseColor,shadowColor=nil,align=0)
   return if !bitmap || !string
   width=(width<0) ? bitmap.text_size(string).width+4 : width
   height=(height<0) ? bitmap.text_size(string).height+4 : height
-  # ★ 中文文本处理：整体垂直偏移（值在插件 Settings.rb 里调）
+  # ★ 中文文本处理：整体垂直偏移（值在同目录 Settings.rb 里调）
   y = y + Settings::Y_OFFSET_OF_TEXT - Settings::Y_OFFSET_OF_ORDER_CORRCETION
-  if shadowColor
+  if shadowColor && shadowColor.alpha>0
     bitmap.font.color=shadowColor
     bitmap.draw_text(x+2,y,width,height,string,align)
     bitmap.draw_text(x,y+2,width,height,string,align)
     bitmap.draw_text(x+2,y+2,width,height,string,align)
   end
-  if baseColor
+  if baseColor && baseColor.alpha>0
     bitmap.font.color=baseColor
     bitmap.draw_text(x,y,width,height,string,align)
   end

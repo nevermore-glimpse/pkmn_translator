@@ -406,7 +406,7 @@ def compare(game_dir, version=None, emit=None, limit=MAX_REPORT):
     if not ver:
         auto, ratio = best_baseline(cur_scripts)
         if auto:
-            say(f"[检测] 脚本里没有版本号（v16 起才有这个常量），"
+            say(f"[比对] 脚本里没有版本号（v16 起才有这个常量），"
                 f"按函数指纹认出是 v{auto}（重合 {ratio:.0%}）")
             bver, exact = auto, True
     # ★ 版本号读出来了、却和这份基准对不上时，按指纹重合度重挑一份
@@ -419,7 +419,7 @@ def compare(game_dir, version=None, emit=None, limit=MAX_REPORT):
         if not want or hit / float(len(want)) < 0.5:
             auto, ratio = best_baseline(cur_scripts)
             if auto and auto != bver:
-                say(f"[检测] 版本号写的是 {ver}，与基准 v{bver} 对不上"
+                say(f"[比对] 版本号写的是 {ver}，与基准 v{bver} 对不上"
                     f"（只认出 {hit} 个），改按指纹重合度取 v{auto}"
                     f"（{ratio:.0%}）")
                 bver, exact = auto, False
@@ -506,15 +506,23 @@ def compare(game_dir, version=None, emit=None, limit=MAX_REPORT):
 
     tag = "" if exact else ("（指纹完全吻合）" if tight
                             else f"（近似：内置的是 v{bver}）")
-    say(f"[检测] Essentials {ver or '?'} · 基准 v{bver}{tag}："
+    say(f"[比对] Essentials {ver or '?'} · 基准 v{bver}{tag}："
         f"{len(cmp_names)} 个脚本 / {total} 个基本函数")
-    # ★ 日志只出总结，不再逐条罗列明细 —— 明细都写进检测报告，用户点
-    #   「检测报告」就能逐行对比。这里只给一行结论。
-    say(f"[检测] 结论：一致 {same} · 被改 {len(changed)} · 缺失 {len(missing)}"
+    # ★ 只给一行总结 + 被改 / 缺失的函数名（各最多 12 个）——
+    #   检测报告页已删除，日志是唯一的明细来源。
+    say(f"[比对] 结论：一致 {same} · 被改 {len(changed)} · 缺失 {len(missing)}"
         f" · 搬家 {len(moved)}"
         f" · 脚本缺失 {len(scripts_missing)}"
         f" · 新增 {added_funcs + len(scripts_added)}"
         f"（新增是作者自己加的，不算问题）")
+    for label, items, to_name in (
+            ("被改", changed, lambda t: f"{t[0]}.{t[1]}"),
+            ("缺失", missing, lambda t: f"{t[0]}.{t[1]}")):
+        if not items:
+            continue
+        names = "、".join(to_name(t) for t in items[:12])
+        more = f" …另 {len(items) - 12} 个" if len(items) > 12 else ""
+        say(f"[比对] {label}：{names}{more}")
     return rep
 
 
