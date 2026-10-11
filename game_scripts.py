@@ -16,11 +16,42 @@ import time
 import zlib
 
 from rubymarshal.reader import load as _rb_load
+from rubymarshal.writer import Writer as _RbWriter
 from rubymarshal.writer import write as _rb_write
 
 from logger import get_logger
 
 log = get_logger("game_scripts")
+
+
+# ----------------------------------------------------------------
+# ★ 写 rxdata 必须用「不去重」的 Writer（否则写出来的文件读不回来）
+# ----------------------------------------------------------------
+# rubymarshal 默认 Writer 按 `id(obj)` 去重：同一个 Python 对象第二次出现
+# 时写 `TYPE_LINK` 指回第一次的**对象下标**。问题在于它记下标是**进容器
+# 之前**就记的（Ruby 的「占位」规则），而 Reader 遇到指向「还没读完的
+# 占位（None）」的 link 会直接抛
+#     invalid link destination: Object id N is not yet unmarshaled.
+#
+# 实测：PluginScripts.rxdata 里每个插件的**目录名字符串**与元数据
+# `{:name=>…}` 的值**就是同一个 Python 对象**（Reader 对带 ivar 的串
+# 返回 RubyString，元数据里复用的是同一实例）→ 默认 Writer 全写成
+# TYPE_LINK，写完自己都读不回来（2026-10-10 用户报的正是这个）。
+#
+# 这个去重对 rxdata 毫无必要：里面没有自引用结构，重复的串/数组各写
+# 一份即可（体积略增，但 100% 合法）。symbol 另有独立的 symlink 表，
+# 不受影响。所以**所有写回 rxdata 的地方**都改用这个类。
+class _NoLinkWriter(_RbWriter):
+    """禁止 rubymarshal 的对象去重（不写 TYPE_LINK），只保留 symbol 表。"""
+
+    def must_write(self, obj):
+        self.objects[id(obj)] = len(self.objects)
+        return True
+
+
+def _rb_write_safe(fd, obj):
+    """把 obj 写进 fd（rxdata 安全版：不去重，绝不写坏 link）。"""
+    _rb_write(fd, obj, cls=_NoLinkWriter)
 
 RXDATA_NAME = "Scripts.rxdata"
 BACKUP_NAME = "ScriptsBackup.rxdata"
@@ -481,7 +512,7 @@ def write_rxdata_entry(path, index, new_text, expect=None):
     obj[index][2] = zlib.compress(new_text.encode("utf-8"))
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
-        _rb_write(f, obj)
+        _rb_write_safe(f, obj)
     os.replace(tmp, path)
 
 
@@ -520,7 +551,7 @@ def add_rxdata_script(path, title, source, before_title="Main"):
     obj.insert(at, entry)
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
-        _rb_write(f, obj)
+        _rb_write_safe(f, obj)
     os.replace(tmp, path)
     return at
 
@@ -657,7 +688,7 @@ def write_plugin_entry(path, key, new_text, expect=None):
     files[fi][1] = zlib.compress(new_text.encode("utf-8"))
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
-        _rb_write(f, obj)
+        _rb_write_safe(f, obj)
     os.replace(tmp, path)
 
 

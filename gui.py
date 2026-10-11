@@ -2332,7 +2332,14 @@ class App:
                 elif kind == "dbg_enable_done":
                     r = payload or {}
                     self._dbg_show_check(r.get("check"), r.get("report_path"))
-                    if not r.get("ok"):
+                    if r.get("mode_error"):
+                        # ★ 方式函数抛异常：以前只写进 res["mode_error"]、
+                        #   全项目**没有任何地方读它** → 界面上只显示
+                        #   「方式三未命中（None）」，真实原因只在日志里。
+                        self.dbg_do_lbl.config(
+                            text=f"✘ 方式执行失败：{r['mode_error']}",
+                            fg=ERR_COLOR)
+                    elif not r.get("ok"):
                         self.dbg_do_lbl.config(
                             text=f"✘ {r.get('reason') or '失败'}",
                             fg=ERR_COLOR)
@@ -2353,9 +2360,52 @@ class App:
                                  "special": "方式三",
                                  "special_menu": "方式四",
                                  "repel": "方式五",
-                                 "repel_menu": "方式六"}.get(mode, mode)
+                                 "repel_menu": "方式六",
+                                 "rewrite": "方式七",
+                                 "launcher": "方式八"}.get(mode, mode)
                         if mode != "main":
-                            if mres.get("ok"):
+                            if mode == "rewrite":
+                                if mres.get("ok"):
+                                    bits = []
+                                    if mres.get("replaced"):
+                                        bits.append(
+                                            f"顶掉 {mres['replaced']} 个函数")
+                                    if mres.get("renamed"):
+                                        bits.append(
+                                            f"改名 {mres['renamed']} 处调用")
+                                    if mres.get("compat"):
+                                        bits.append(
+                                            f"保留旧名 {mres['compat']} 处")
+                                    if mres.get("stripped"):
+                                        bits.append(
+                                            f"删$DEBUG条件 {mres['stripped']} 处")
+                                    if mres.get("repaired"):
+                                        bits.append(
+                                            f"修回误改名 {mres['repaired']} 处")
+                                    if mres.get("keyed"):
+                                        bits.append("注册 T 键")
+                                    if mres.get("plugin"):
+                                        bits.append("写入插件")
+                                    if (mres.get("rxdata") or {}).get("ok"):
+                                        rx = (mres["rxdata"].get("action")
+                                              == "appended" and "追加进 rxdata"
+                                              or "并入 rxdata")
+                                        bits.append(rx)
+                                    if mres.get("norecompile"):
+                                        bits.append("关闭插件重编译")
+                                    if mres.get("guarded"):
+                                        bits.append(
+                                            f"依赖保护 {mres['guarded']} 处")
+                                    if mres.get("reordered"):
+                                        bits.append(
+                                            f"调插件顺序 {mres['reordered']} 条")
+                                    what.append(f"{mname}已应用"
+                                                + ("（" + "、".join(bits) + "）"
+                                                   if bits else ""))
+                                else:
+                                    what.append(
+                                        f"{mname}未命中（{mres.get('reason')}）")
+                            elif mres.get("ok"):
                                 what.append(f"{mname}已应用")
                             else:
                                 what.append(f"{mname}未命中（{mres.get('reason')}）")
@@ -2559,7 +2609,21 @@ class App:
                     self._append_log("\n[异常] " + payload + "\n")
         except queue.Empty:
             pass
-        self.root.after(90, self._pump)
+        except Exception as e:                          # noqa: BLE001
+            # ★ 单点故障保险：原来只捕 `queue.Empty`，`after` 也在 try 外面
+            #   → 任何一个 handler 抛异常（控件已销毁的 TclError、消息体
+            #   形状不对…）都会让**日志泵永久停摆**：之后所有后台任务的
+            #   done/err 没人消费，`set_busy(False)` 再也不执行，状态条
+            #   永远停在「运行中…」，且 `run_async` 会一直被 busy 拒绝。
+            try:
+                self._append_log(f"\n[界面] 处理消息时出错（已忽略）：{e}\n")
+            except Exception:
+                pass
+        finally:
+            try:
+                self.root.after(90, self._pump)
+            except Exception:
+                pass
 
     def _append_log(self, text):
         try:
@@ -7501,7 +7565,7 @@ class App:
         GlassButton(row2, "还原", width=88, height=40, bg=CARD,
                     font=FONT_SMALL,
                     command=self._do_debug_restore).pack(side="right")
-        # ★ 方式⑦：生成调试启动器（选中方式⑦时可用）
+        # ★ 方式⑧：生成调试启动器（选中方式⑧时可用）
         self.dbg_launcher_btn = GlassButton(
             row2, "生成调试启动器", width=136, height=40, bg=CARD,
             font=FONT_SMALL, command=self._do_make_launcher)
@@ -7520,7 +7584,8 @@ class App:
             ("special_menu", "④ F6 键（按 F6 直接开调试菜单）"),
             ("repel", "⑤ 除虫喷雾（用喷雾即设 $DEBUG）"),
             ("repel_menu", "⑥ 除虫喷雾（用喷雾即开调试菜单）"),
-            ("launcher", "⑦ 调试启动器（生成 exe，双击进调试）"),
+            ("rewrite", "⑦ 改名调试函数（顶掉原函数，按 T 开菜单）"),
+            ("launcher", "⑧ 调试启动器（生成 exe，双击进调试）"),
         ]
         self._debug_mode_cb = ttk.Combobox(
             row2b, textvariable=self.debug_mode, width=42, state="readonly",
@@ -7564,7 +7629,7 @@ class App:
         self.dbg_hint_lbl = tk.Label(
             c3.body,
             text="· 选「游戏启动程序（exe）」即可，游戏目录会自动用它所在文件夹\n"
-                 "· 没有 Data 文件夹的游戏：只能用**方式⑦ 调试启动器**"
+                 "· 没有 Data 文件夹的游戏：只能用**方式⑧ 调试启动器**"
                  "（它不改本体、不依赖 Data）\n"
                  "· 改完 PBS 想重新编译时，按住 Ctrl 启动游戏即可\n"
                  "· 本工具只动 Main / Compiler / 反调试这三处脚本，别的都不碰\n"
@@ -7612,7 +7677,7 @@ class App:
                       "· 检测出「被改 / 缺失」时，多半是作者动过引擎；\n"
                       "  现在**默认就继续写入**（不再拦你），\n"
                       "  「引擎被改过也继续写入」已默认勾上；\n"
-                      "· 单文件大 exe（加密打包）用「方式⑦ 调试启动器」，\n"
+                      "· 单文件大 exe（加密打包）用「方式⑧ 调试启动器」，\n"
                       "  它会**运行时看进程加载的 dll**：\n"
                       "    · RGSS*.dll        → 内存补丁；\n"
                       "    · msvcrt-ruby*.dll → mkxp-z，改用原生命令行 "
@@ -7625,7 +7690,9 @@ class App:
     # ---------- 菜单 11：小工具 ----------
     _DEBUG_MODE_DESC = {
         "main": "方式①（通用）：在 Main 的 mainFunction 里写 $DEBUG=true，"
-                "启动即调试模式（标题界面会变，F9 开调试菜单）。",
+                "启动即调试模式（标题界面会变，F9 开调试菜单）。"
+                "★ 这是**唯一**会开 $DEBUG 的方式；方式②–⑦ 都不会写"
+                "（还会把以前留下的清掉）—— 需要 $DEBUG 时用本方式。",
         "keys": "方式②：删掉各处「需要 $DEBUG 才生效」的条件，让它们无条件可用。"
                 "穿墙（Game_Player）、F9 调试菜单（Scene_Map）、"
                 "队伍/暂停/背包里的 Debug 项（PScreen_Party / UI_Party / "
@@ -7653,7 +7720,51 @@ class App:
                       "v16–v18 在 PItem_ItemEffects、v19+ 在 Item_Effects），"
                       "但**直接打开调试菜单**（`pbFadeOutIn { pbDebugMenu }`，"
                       "即 Scene_Map#call_debug 的等效写法），不再等 F9。",
-        "launcher": "方式⑦（调试启动器）：生成 **宝可梦调试启动器.exe**（自带 "
+        "rewrite": "方式⑦（改名调试函数 · 规避反调试）：给那些**把调试功能做掉**的"
+                   "同人作准备 —— 作者的汉化/防改脚本会重定义 `pbDebugMenu` 为 "
+                   "`exit`、清空 `MenuHandlers` 的 `:debug_menu` 注册项、"
+                   "屏蔽含 debug 的注册、并把 `Scene_Map#update` 改成 "
+                   "`exit if $DEBUG`，还屏蔽 F4–F12。本方式**整套改名**：\n"
+                   "  · 从**官方基准**（Essentials 16–21.1 原版）里抠出每个版本的 "
+                   "debug 菜单函数，**函数名全部改掉**（`pbDebugMenu`→`pbAideWindow`、"
+                   "`pbPokemonDebug`→`pbAidePokemon`、`pbDebugMenuCommands`→"
+                   "`pbAideWindowCommands` … `call_debug`→`call_aide`），"
+                   "**函数体逐字保留官方实现**（菜单项齐全），直接顶掉游戏里的原函数；\n"
+                   "  · 把游戏脚本里所有**旧函数调用点**（含 `alias`、注册表 key "
+                   "`:debug_menu`/`:pokemon_debug_menu`/`:debug` → "
+                   "`:aide_menu`/`:aide_pokemon_menu`/`:aide`）全部改道到新名字；\n"
+                   "    ★ 符号改名带**词边界**：`:debug_calling` 这种「只是以 "
+                   "`:debug` 开头」的符号不会被误改（`attr_accessor "
+                   ":debug_calling` 被改掉的话，游戏一跑图就 "
+                   "`NoMethodError: undefined method 'debug_calling'`）；"
+                   "第 ⓪ 步还会**自动修回**早期版本误改的符号。\n"
+                   "  · UI 里显示的 `\"Debug\"` 选项名统一改成 `\"助手\"`；\n"
+                   "  · ★ **保留原函数名**：改名只发生在定义点，但别的插件/脚本可能"
+                   "还在按旧名调用（`pbDebugMenu`、`pbPokemonDebug`…），旧名消失就是 "
+                   "`NameError`。所以每个改名后的函数**同一作用域**里都补一个同名"
+                   "转发壳（`def pbDebugMenu(*args, &blk) → pbAideWindow(...)`），"
+                   "连 `PokemonDebugMixin.instance_method(:pbPokemonDebug)` 这类"
+                   "反射访问也照旧可用；`call_debug` 同样保留；\n"
+                   "  · **按版本正式注册 T 键**：v16–18 改 `PSystem_Controls.rb`"
+                   "（加 `T = 24` 常量 + `buttonToKey` 里 `when Input::T` → "
+                   "Win32 虚拟键码 `0x54`），v19+ 改 `004_Input.rb`"
+                   "（加 `T = :T`，走 mkxp-z 的 `triggerex?(:T)`）；"
+                   "另在插件里挂 T 键开菜单（T 不在被屏蔽的 F4–F12 里）。\n"
+                   "★ 全程**不设 $DEBUG** —— 反调试有 `exit if $DEBUG`，一设就退游戏。\n"
+                   "★ 重新定义的函数**名字不含 d-e-b-u-g**，不在反调试检测范围内。\n"
+                   "★ 改动**多处都写**：① 独立插件 `Plugins/zzz_pkmn_aide/`；"
+                   "② 游戏脚本 `Scene_Map` 末尾（双保险）；"
+                   "③ **直接编进 `Data/PluginScripts.rxdata`**"
+                   "（v19+ 插件机制真正 eval 的就是它，不依赖目录）；"
+                   "④ **关掉 `PluginManager.needCompiling?`**"
+                   "（rxdata 固定，不再被 `Plugins/` 目录重编译覆盖）。\n"
+                   "★ 顺带修两类「开 $DEBUG 才暴露」的插件坑："
+                   "① 给**依赖别的插件**的调用加 `defined?` 保护"
+                   "（如 `MidbattleHandlers.add` 在 DBK 未加载时会 NameError）；"
+                   "② 把 rxdata 里的**加载顺序摆正**"
+                   "（使用方插件挪到提供方之后）。\n"
+                   "★ 适配 v16–v21.1 全部九版；不改存档、可还原。",
+        "launcher": "方式⑧（调试启动器）：生成 **宝可梦调试启动器.exe**（自带 "
                     "Python，玩家电脑**不用装 Python**）+ 一份 "
                     "`_pkmn_debug_launcher.json` 配置，双击 exe 即以调试模式"
                     "进游戏 —— **不改游戏本体、不动存档**。"
@@ -7694,7 +7805,7 @@ class App:
             return
         key = self._debug_mode_key()
         self.dbg_mode_desc.config(text=self._DEBUG_MODE_DESC.get(key, ""))
-        # 方式⑦是独立按钮，提示去点它
+        # 方式⑧是独立按钮，提示去点它
         if hasattr(self, "dbg_launcher_btn"):
             on = (key == "launcher")
             self.dbg_launcher_btn.set_enabled(on)
@@ -7777,6 +7888,11 @@ class App:
         # ★ 没有 Data：强制切到「调试启动器」，其它方式全部禁用
         if not has_data:
             self._set_debug_mode_value("launcher")
+        elif getattr(self, "debug_modes_locked", False):
+            # ★ 上一次选的是「没有 Data」的游戏 → 方式被锁在⑧；这次有 Data，
+            #   要把下拉框复位回默认，否则「解锁了但值还停在⑧」→ 用户点
+            #   「开启 DEBUG」跑的其实是启动器，而不是他选的脚本改写方式。
+            self._set_debug_mode_value("main")
         self._dbg_lock_modes(not has_data)
         self._dbg_refresh_folder_info()
 
@@ -7796,7 +7912,7 @@ class App:
             if locked:
                 self.dbg_mode_desc.config(
                     text="⚠ 这个游戏目录里没有 Data 文件夹 —— 只能用"
-                         "「方式⑦ 调试启动器」开调试（它不改游戏本体、"
+                         "「方式⑧ 调试启动器」开调试（它不改游戏本体、"
                          "不依赖 Data，脚本打包进 exe 的游戏也适用）。"
                          "其它方式需要改 Data 里的脚本，已禁用。",
                     fg=C_WARN)
@@ -8297,7 +8413,7 @@ class App:
             messagebox.showwarning(
                 "这个游戏没有 Data 文件夹",
                 "当前选的游戏目录里没有 Data 文件夹，无法改动脚本。\n\n"
-                "这类游戏只能用「方式⑦ 调试启动器」开调试 —— "
+                "这类游戏只能用「方式⑧ 调试启动器」开调试 —— "
                 "请把「开启方式」选成 ⑥ 调试启动器，再点「开启 DEBUG」"
                 "或「生成调试启动器」。")
             self._set_debug_mode_value("launcher")
@@ -8655,14 +8771,23 @@ class App:
         # ★ 没有 Data 文件夹时：只允许「调试启动器」，其它方式一律拦下
         import game_scripts as GS
         root_now = getattr(self, "debug_folder", None)
-        has_data = bool(root_now) and os.path.isdir(GS.data_dir(root_now))
+        if not root_now:
+            # ★ 还没选游戏：原因要说准。以前这里 `bool(root_now) and …` 直接
+            #   算成「没有 Data」，用户会以为是游戏缺 Data，其实是没选游戏，
+            #   而且还会顺手把方式永久锁成⑧。
+            messagebox.showwarning(
+                "请先选择游戏",
+                "请先在右侧选择**游戏启动程序（exe）**（或用「选游戏…」按钮）。\n\n"
+                "工具要用它所在文件夹当游戏目录。")
+            return
+        has_data = os.path.isdir(GS.data_dir(root_now))
         if not has_data and mode != "launcher":
             self._set_debug_mode_value("launcher")
             self._dbg_lock_modes(True)
             messagebox.showwarning(
                 "这个游戏没有 Data 文件夹",
                 "当前游戏目录里没有 Data 文件夹，无法改动脚本。\n\n"
-                "已自动切到「方式⑦ 调试启动器」，再点一次「开启 DEBUG」"
+                "已自动切到「方式⑧ 调试启动器」，再点一次「开启 DEBUG」"
                 "即可（它会生成一个启动文件，点它即以调试模式进游戏）。")
             return
         d = self._dbg_folder(need_data=(mode != "launcher"))
@@ -8707,13 +8832,25 @@ class App:
             import debug_tool as DT
             import engine_tools as ET
             if mode == "launcher":
-                # ★ 方式⑦：生成调试启动器（不改游戏本体）
+                # ★ 方式⑧：生成调试启动器（不改游戏本体）
                 res = ET.make_debug_launcher(
                     d, version=None, emit=lambda s: self._emit_log(s),
                     exe=exe)
+                # 启动器成功=真的干了活（生成/更新了文件）；它自己没有
+                # `changed` 字段 → 汇总会误判成「没有需要改动的地方」。
+                res["changed"] = bool(res.get("ok"))
             else:
-                res = DT.enable_debug(d, emit=lambda s: self._emit_log(s),
-                                      force=force, antidebug_plan=ad_plan)
+                res = DT.enable_debug(
+                    d, emit=lambda s: self._emit_log(s), force=force,
+                    antidebug_plan=ad_plan,
+                    # ★ 只有方式①（通用）才往 mainFunction 写 `$DEBUG=true`
+                    #   —— 那本来就是方式① 的功能。
+                    #   方式②（删条件）的做法本来就是把「需要 $DEBUG 才生效」
+                    #   的判定**删掉**，再写一个 $DEBUG=true 属于画蛇添足；
+                    #   方式⑦ 更不能设 —— 反调试里有 `exit if $DEBUG`。
+                    #   以前这里是「所有非⑧方式一律写」，换方式后 Main 里
+                    #   总会冒出 $DEBUG=true，让人以为「还原没生效」。
+                    write_debug=(mode == "main"))
             # ★ 按选择的方式追加对应改动
             res["mode"] = mode
             try:
@@ -8733,6 +8870,12 @@ class App:
                 elif mode == "repel_menu":
                     res["mode_res"] = ET.patch_repel(
                         d, "repel_menu", version=res.get("version"),
+                        emit=lambda s: self._emit_log(s))
+                elif mode == "rewrite":
+                    # ★ 方式⑦：改名调试函数（基准函数改名后顶掉原函数）
+                    #   + 全库调用点改名 + 按版本注册 T 键（规避反调试；不设 $DEBUG）
+                    res["mode_res"] = ET.patch_rewrite_debug_func(
+                        d, version=res.get("version"),
                         emit=lambda s: self._emit_log(s))
             except Exception as e:
                 res["mode_error"] = str(e)
@@ -8763,7 +8906,7 @@ class App:
         self.run_async(work, label="开启 DEBUG 中…", done_label="开启完成")
 
     def _do_make_launcher(self):
-        """方式⑦(测试)：在游戏目录生成调试启动器（点它即以调试模式进游戏）。"""
+        """方式⑧(测试)：在游戏目录生成调试启动器（点它即以调试模式进游戏）。"""
         # ★ 启动器不读 Data，没有 Data 也能用
         d = self._dbg_folder(need_data=False)
         if not d:

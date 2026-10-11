@@ -116,11 +116,12 @@ def _flat_src_file(version, script):
 
 def script_src_path(version, script):
     """某版本里某个官方脚本的绝对路径（v19+ 走索引，v16–v18 走平铺目录）。"""
-    if str(version) in _LEGACY_FLAT:
-        p = _flat_src_file(version, script)
+    v = norm_ver(version)                     # ★ 17.2 → 17（见 `_ver_dir`）
+    if str(v) in _LEGACY_FLAT:
+        p = _flat_src_file(v, script)
         if p:
             return p
-    return _script_path(version, script)
+    return _script_path(v, script)
 
 
 def script_rel_path(version, script):
@@ -173,7 +174,17 @@ def _vkey(t):
 
 
 def _ver_dir(version):
-    return os.path.join(src_root(), str(version))
+    """
+    某版本的基准目录（**先把版本号归一化**）。
+
+    ★ 这里必须是归一化的：**所有**路径查找的最终出口。游戏报上来的版本号
+      常带小版本（17.1 / 17.2 / 16.2 / 18.3 / 20.2…），而内置基准只有
+      `essentials_src/<主版本>/`。不归一化就会去找一个不存在的目录 →
+      `engine_files()` 返回空 → `overwrite_plan()` 返回空 →
+      「没有内置 v17.2 的引擎脚本，无法覆盖」。实测 17.1/17.2/16.2/18.3/20.2
+      全部 `engine_files()` = 0 个文件。
+    """
+    return os.path.join(src_root(), str(norm_ver(version)))
 
 
 def debug_menu_files(version):

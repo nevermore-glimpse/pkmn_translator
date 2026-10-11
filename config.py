@@ -19,13 +19,20 @@ SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def resource_path(name):
     """
-    定位随程序分发的资源文件（字体 / 图标 / 头像）。
+    定位随程序分发的资源（文件或目录均可）。
+
+    ★ name 传相对路径时用os.path.join 拼，如
+      resource_path(os.path.join("scripts", "essentials_src"))
 
     查找顺序：
-      ① 打包后：exe 所在目录（用户可直接放旁边替换）
-      ② 打包后：PyInstaller 单文件解包目录 sys._MEIPASS
+      ① 打包后：exe 所在目录（外置资源放这里 / 用户可直接放旁边替换）
+      ② 打包后：PyInstaller 单文件解包目录 sys._MEIPASS（--add-data 内置的资源）
       ③ 源码目录（开发时）
     都不存在时返回 ①，方便上层给出准确报错。
+
+    ★ 打包策略：体积小的资源（字体/图片/图标/指南）用 --add-data 内置；
+      体积大的scripts/ 不内置，改由打包脚本拷到 dist 与 exe 同级，
+      走① 命中即可。这样 exe 启动时不必解压几十 MB 到 %TEMP%。
     """
     cands = []
     if getattr(sys, 'frozen', False):
@@ -40,10 +47,20 @@ def resource_path(name):
     return cands[0]
 
 
+def resource_dir(name):
+    """定位随程序分发的**目录**。找不到时返回 None（区别于 resource_path 会兜底返回）。"""
+    for c in (os.path.join(BASE_DIR, name),
+              os.path.join(getattr(sys, '_MEIPASS', '') or '', name) if getattr(sys, 'frozen', False) else '',
+              os.path.join(SRC_DIR, name)):
+        if c and os.path.isdir(c):
+            return c
+    return None
+
+
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.5.0"
+VERSION     = "1.5.1"
 APP_NAME    = "宝可梦同人游戏翻译工具"
 APP_TITLE   = f"{APP_NAME}v{VERSION}"
 
@@ -51,7 +68,12 @@ AUTHOR_NAME     = "玛俐大小姐想让我告白"
 AUTHOR_GITHUB   = "https://github.com/nevermore-glimpse"
 AUTHOR_BILIBILI = ("https://space.bilibili.com/3546602748775226"
                    "?spm_id_from=333.1007.0.0")
-AVATAR_FILE     = os.path.join(BASE_DIR, "玛俐大小姐.jpg")
+# ★ 主页大图 + 全局头像。必须走 resource_path：打包时用
+#   --add-data "玛俐大小姐.jpg;." 打进 exe，运行时会解包到 sys._MEIPASS。
+#   直接拼 BASE_DIR 的话，onefile 模式下 exe 旁边没有这张图就永远读不到。
+#   查找顺序仍是「exe 同目录 → _MEIPASS 解包目录 → 源码目录」，
+#   所以玩家想换图，把 jpg 丢到 exe 旁边就能覆盖。
+AVATAR_FILE     = resource_path("玛俐大小姐.jpg")
 
 # ---------- 字体 ----------
 # 随程序分发的字体文件。打包后会被解包到 sys._MEIPASS；
@@ -77,7 +99,9 @@ CONFLICT_FILE = os.path.join(BASE_DIR, "term_conflicts.json")
 PLACEHOLDER_FILE = os.path.join(BASE_DIR, "placeholder_missing.json")
 REPORT_DIR   = os.path.join(BASE_DIR, "reports")
 EXCEL_FILE   = os.path.join(BASE_DIR, "术语表（Glossary）.xlsx")
-ICON_FILE    = os.path.join(BASE_DIR, "start.ico")
+# ★ 窗口标题栏图标。--icon=start.ico 只是把图标烧进 exe 文件头，
+#   运行时 self.root.iconbitmap() 仍要读真实文件，所以也要 resource_path。
+ICON_FILE    = resource_path("start.ico")
 
 # ★ 输入文件最多读多少行（含模拟/测试用的翻译文件）。
 #   0 或负数 = 不限制。

@@ -250,6 +250,14 @@ def read_meta(plugin_dir_path, emit=None):
                 for v in data:
                     if v:
                         meta["scripts"].append(v)
+            elif prop == "ESSENTIALS":
+                # ★ 游戏 readMeta 对 ESSENTIALS **累加成数组**（不是取第一个值）：
+                #     `meta[:essentials] = [] if !meta[:essentials]`
+                #     `data.each { |ver| meta[:essentials].push(ver) }`
+                #   取第一个值会写成 RubyString → 游戏 `meta[:essentials].include?`
+                #   永远 false → 每次启动都警告「may not be compatible」。
+                meta.setdefault("essentials", [])
+                meta["essentials"].extend(data)
             elif prop == "CREDITS":
                 meta["credits"] = data
             elif prop in ("LINK", "WEBSITE"):
@@ -462,9 +470,51 @@ def compile_plugins(game_dir, emit=None, backup=True, out_path=None):
         shutil.copyfile(out, bak)
         say(f"[插件] 原 PluginScripts.rxdata 已备份："
             f"{os.path.basename(bak)}")
+
+    # ★★ 保留「只在 rxdata、不在 Plugins/ 里」的插件
+    # ── 这份文件是**整包替换**：光靠 Plugins/ 目录重建会丢掉那些「没有
+    #    解包目录的插件」。实测踩过：Pokemon_Revival_CH3_CHS 的
+    #    `汉化和其他自定义组件集合`（72 脚本，反调试就藏在它的
+    #    000_Config.rb 里）和 `Auto Multi Save` 只存在于 rxdata，
+    #    Plugins/ 里根本没有 → 重编一次就被整个删掉。
+    #    所以这里把「Plugins/ 里没有、但原 rxdata 里有」的插件**原样搬过来**
+    #    （源码是 zlib 压缩字节，直接照抄，不解压不改动）。
+    keep_set = set()
+    kept_orphans = []
+    if out_path is None and os.path.isfile(out):
+        have = {d[0] for d in scripts}          # 已编译的插件名（bytes）
+        try:
+            with open(out, "rb") as f:
+                old = _rb_load(f)
+        except Exception as e:                  # noqa: BLE001
+            old = None
+            say(f"[插件] ⚠ 原 {PLUGIN_SCRIPTS_NAME} 读不出来（{e}），"
+                f"本次不做保留，直接整包重写")
+        if isinstance(old, list):
+            for e in old:
+                if not (isinstance(e, (list, tuple)) and len(e) >= 3):
+                    continue
+                nm = _to_bytes(e[0])
+                if nm in have or nm in keep_set:
+                    continue
+                files = e[2]
+                if not isinstance(files, (list, tuple)):
+                    continue
+                dat = [nm, _to_bytes(e[1]), []]
+                for scr in files:
+                    if isinstance(scr, (list, tuple)) and len(scr) >= 2:
+                        dat[2].append([_to_bytes(scr[0]), _to_bytes(scr[1])])
+                scripts.append(dat)
+                keep_set.add(nm)
+                kept_orphans.append(nm.decode("utf-8", "replace"))
+            if kept_orphans:
+                say(f"[插件] 保留原 rxdata 里 {len(kept_orphans)} 个"
+                    f"「Plugins/ 目录里没有」的插件："
+                    f"{'、'.join(kept_orphans)}")
+
     tmp = out + ".tmp"
     with open(tmp, "wb") as f:
-        _rb_write(f, scripts)
+        GS._rb_write_safe(f, scripts)
     os.replace(tmp, out)
 
     total = sum(len(d[2]) for d in scripts)
@@ -472,12 +522,13 @@ def compile_plugins(game_dir, emit=None, backup=True, out_path=None):
         f"Data/{PLUGIN_SCRIPTS_NAME}（{os.path.getsize(out):,} 字节）")
     for d in scripts:
         mark = "　←　本工具植入" if d[0] == _to_bytes(PLUGIN_DIR_NAME) else ""
+        tail = "　←　保留自原 rxdata" if _to_bytes(d[0]) in keep_set else ""
         say(f"[插件]   · {d[0].decode('utf-8', 'replace')}"
-            f"（{len(d[2])} 个脚本）{mark}")
+            f"（{len(d[2])} 个脚本）{mark}{tail}")
     log.info("编译插件：%s → %d 个插件 / %d 个脚本",
              game_dir, len(scripts), total)
     return {"out": out, "backup": bak, "plugins": len(scripts),
-            "scripts": total,
+            "scripts": total, "kept_orphans": kept_orphans,
             "names": [d[0].decode("utf-8", "replace") for d in scripts]}
 
 
@@ -1126,7 +1177,7 @@ def _inject_into_scripts(mode, path, body, say):
     shutil.copyfile(path, bak)
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
-        _rb_write(f, kept)
+        GS._rb_write_safe(f, kept)
     os.replace(tmp, path)
     say(f"[插件] 已写进 {os.path.basename(path)}（共 {len(kept)} 个脚本，"
         f"原文件已备份：{os.path.basename(bak)}）")
@@ -1256,7 +1307,7 @@ def remove_script_plugin(game_dir, emit=None):
         shutil.copyfile(path, bak)
         tmp = path + ".tmp"
         with open(tmp, "wb") as f:
-            _rb_write(f, kept)
+            GS._rb_write_safe(f, kept)
         os.replace(tmp, path)
         removed.append(f"{os.path.basename(path)} 里的 {n} 个脚本")
         dropped += n

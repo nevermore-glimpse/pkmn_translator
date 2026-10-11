@@ -223,6 +223,56 @@ def patch_main_function(text):
     return "\n".join(new_lines), {"added": True, "existed": False}
 
 
+def remove_debug_from_main(game_dir, emit=None):
+    """
+    把 Main 的 `mainFunction` 里 `$DEBUG = true` 那行**删掉**。返回 {"removed", "targets"}。
+
+    ★ 什么时候用：用户选了「不设 $DEBUG」的方式（②–⑦），但之前用方式① 写过，
+      换方式后那行还留在 Main 里 —— 它和用户的选择直接矛盾，而且方式⑦ 会被
+      反调试的 `exit if $DEBUG` 每帧踢出游戏。
+    ★ 只删**紧跟 `def mainFunction` 的那几行内、且值为 true** 的一行：
+      这正是 `patch_main_function` 插入的位置和内容 → 能精确对应「是我们插的」，
+      不会碰到脚本里其它地方写 `$DEBUG` 的代码，也不会碰 `$DEBUG = false`。
+    """
+    def say(msg):
+        if emit:
+            emit(msg)
+
+    rep = {"removed": 0, "targets": []}
+    try:
+        mains = find_main_sources(game_dir)
+    except (OSError, RuntimeError) as e:
+        say(f"[DEBUG] ⚠ 找 Main 脚本失败：{e}")
+        return rep
+    for src in mains:
+        lines = src["text"].split("\n")
+        m = _MAIN_FUNC_RE.search(src["text"])
+        if not m:
+            continue
+        i = src["text"].count("\n", 0, m.start())
+        hit = -1
+        for j in range(i, min(i + 4, len(lines))):
+            if _DEBUG_SET_RE.search(lines[j]):
+                hit = j
+                break
+        if hit < 0:
+            continue
+        new_text = "\n".join(lines[:hit] + lines[hit + 1:])
+        try:
+            _write_text(src["mode"], src["path"], src["key"], new_text,
+                        old_text=src["text"], emit=emit)
+        except (OSError, RuntimeError) as e:
+            say(f"[DEBUG] ⚠ 移除 {DEBUG_LINE} 失败（{_where(src)}）：{e}")
+            continue
+        rep["removed"] += 1
+        rep["targets"].append({"mode": src["mode"], "where": str(src["key"])})
+        say(f"[DEBUG] ✔ 已移除 {_where(src)} mainFunction 里残留的 "
+            f"{DEBUG_LINE}（本方式不需要它）")
+    if not rep["removed"]:
+        say("[DEBUG] · Main 里本来就没有多余的 $DEBUG=true，不用清理")
+    return rep
+
+
 # ================================================================
 # Compiler 脚本：去掉「删 dat + 全量编译」
 # ================================================================
@@ -797,7 +847,8 @@ def restore(game_dir, emit=None):
 # ================================================================
 # 一键开启
 # ================================================================
-def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None):
+def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
+                 write_debug=True):
     """
     开启 DEBUG：体检 → 写 $DEBUG=true → 清反调试 → 关掉「删 dat + 全量编译」。
 
@@ -807,6 +858,14 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None):
       · action="comment" / "manual"，text 是**改好后的整份脚本文本** → 直接写；
       · action="skip" → 这一处不动（用户跳过了 / 加进白名单了）。
       没给（None）就按老规矩：发现即自动注释。
+
+    ★★ write_debug=False：**不往 mainFunction 写 `$DEBUG=true`**。
+      只有方式①（通用）需要这一步。方式②（删条件）本来就是把「需要 $DEBUG
+      才生效」的判定删掉；方式⑦（改名调试函数）更不能设 —— 它的整套设计前提
+      就是「全程不设 $DEBUG」（反调试里到处是 `exit if $DEBUG`，一设就退游戏）。
+      ★ 以前 GUI 对所有非⑧方式都传 True，于是**换方式后 Main 里总会冒出
+      `$DEBUG=true`**，很容易被误判成「还原没生效」。其余步骤（体检 /
+      清反调试 / 关编译）照做。
     返回报告 dict：{"ok", "changed", "version", "baseline", "check", ...}
     """
     def say(msg):
@@ -848,36 +907,54 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None):
             say("[DEBUG] · 你已勾选「仍要继续」，照常执行")
 
     # ---------- ② mainFunction 里写 $DEBUG=true ----------
-    mains = find_main_sources(game_dir)
-    if not mains:
-        rep["reason"] = "脚本里没找到 `def mainFunction`，没法写 $DEBUG=true"
-        say(f"[DEBUG] ✘ {rep['reason']}")
-        return rep
-    rep["debug"] = {"targets": []}
-    if len(mains) > 1:
-        say(f"[DEBUG] Main 有 {len(mains)} 处（解包 .rb 与 Scripts.rxdata "
-            "并存），两处都写，免得改了不生效的那份")
-    for src in mains:
-        new_text, info = patch_main_function(src["text"])
-        where = _where(src)
-        rec = {"mode": src["mode"], "where": str(src["key"]),
-               "added": info["added"], "existed": info["existed"],
-               "written": False}
-        rep["debug"]["targets"].append(rec)
-        if not info["added"]:
-            say(f"[DEBUG] · {where} 的 mainFunction 里已经有 {DEBUG_LINE}，跳过")
-            continue
+    if not write_debug:
+        # ★ 只有方式①（通用）需要这一步。其余方式一律不写：
+        #   · 方式② 删条件的做法本来就是把「需要 $DEBUG 才生效」的判定删掉；
+        #   · 方式⑦ 的整套设计前提就是「不设 $DEBUG」（反调试 `exit if $DEBUG`）。
+        #   体检 / 清反调试 / 关重编译照做。
+        rep["debug"] = {"targets": [], "skipped": True}
+        say("[DEBUG] · 本方式**不写 $DEBUG=true**（需要它请改用方式①「通用」）")
+        # 顺手把以前用方式① 留下的那行清掉 —— 它和「不设 $DEBUG」直接矛盾，
+        # 而且方式⑦ 会被反调试的 `exit if $DEBUG` 每帧踢出游戏。
         try:
-            bak = _write_text(src["mode"], src["path"], src["key"], new_text,
-                              old_text=src["text"], emit=emit)
+            rep["debug"]["removed"] = remove_debug_from_main(
+                game_dir, emit=emit)["removed"]
+            if rep["debug"]["removed"]:
+                rep["changed"] = True
         except (OSError, RuntimeError) as e:
-            rep["reason"] = f"写入 {DEBUG_LINE} 失败（{where}）：{e}"
+            say(f"[DEBUG] ⚠ 清理残留 {DEBUG_LINE} 失败：{e}")
+    else:
+        mains = find_main_sources(game_dir)
+        if not mains:
+            rep["reason"] = "脚本里没找到 `def mainFunction`，没法写 $DEBUG=true"
             say(f"[DEBUG] ✘ {rep['reason']}")
             return rep
-        _note_backup(rep, bak)
-        rep["changed"] = True
-        rec["written"] = True
-        say(f"[DEBUG] ✔ 已在 mainFunction 里写入 {DEBUG_LINE}（{where}）")
+        rep["debug"] = {"targets": []}
+        if len(mains) > 1:
+            say(f"[DEBUG] Main 有 {len(mains)} 处（解包 .rb 与 Scripts.rxdata "
+                "并存），两处都写，免得改了不生效的那份")
+        for src in mains:
+            new_text, info = patch_main_function(src["text"])
+            where = _where(src)
+            rec = {"mode": src["mode"], "where": str(src["key"]),
+                   "added": info["added"], "existed": info["existed"],
+                   "written": False}
+            rep["debug"]["targets"].append(rec)
+            if not info["added"]:
+                say(f"[DEBUG] · {where} 的 mainFunction 里已经有 {DEBUG_LINE}，"
+                    "跳过")
+                continue
+            try:
+                bak = _write_text(src["mode"], src["path"], src["key"],
+                                  new_text, old_text=src["text"], emit=emit)
+            except (OSError, RuntimeError) as e:
+                rep["reason"] = f"写入 {DEBUG_LINE} 失败（{where}）：{e}"
+                say(f"[DEBUG] ✘ {rep['reason']}")
+                return rep
+            _note_backup(rep, bak)
+            rep["changed"] = True
+            rec["written"] = True
+            say(f"[DEBUG] ✔ 已在 mainFunction 里写入 {DEBUG_LINE}（{where}）")
 
     # ---------- ③ 清掉「反调试」（Scene_Map 里把 $DEBUG 摁死那一段） ----------
     ad_srcs = find_antidebug_sources(game_dir)
