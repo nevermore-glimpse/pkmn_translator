@@ -60,7 +60,7 @@ def resource_dir(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.5.2"
+VERSION     = "1.6.0"
 APP_NAME    = "宝可梦同人游戏翻译工具"
 APP_TITLE   = f"{APP_NAME}v{VERSION}"
 
@@ -119,6 +119,11 @@ class Runtime:
     placeholder_file = PLACEHOLDER_FILE  # ★ 占位符缺失记录（与缓存同源）
     last_dir    = BASE_DIR      # ★ 最近一次浏览的目录（GUI 用）
     plugin_font = ""            # ★ 植入中文插件时用户自选的字体（空=内置萝莉体）
+    # ★ 存档编辑（菜单 6）：这两项**分开**记 ——
+    #   多数汉化版/移植版的存档不在游戏目录里（常见于 AppData），
+    #   所以「读 .dat / PBS 的游戏根目录」和「存档所在文件夹」要能各自选。
+    game_root   = ""            # 游戏根目录（读 .dat / PBS 用）
+    save_files  = []            # 已选存档文件列表（用户手选，可跨会话记住）
 
     @classmethod
     def reset(cls):
@@ -129,6 +134,8 @@ class Runtime:
         cls.placeholder_file = PLACEHOLDER_FILE
         cls.last_dir    = BASE_DIR
         cls.plugin_font = ""
+        cls.game_root   = ""
+        cls.save_files  = []
 
     @classmethod
     def set_input(cls, path):
@@ -147,6 +154,16 @@ class Runtime:
             cls.last_dir = path
 
     @classmethod
+    def set_game_root(cls, path):
+        cls.game_root = path if (path and os.path.isdir(path)) else ""
+        cls.save()
+
+    @classmethod
+    def set_save_files(cls, paths):
+        cls.save_files = [p for p in (paths or []) if p and os.path.isfile(p)]
+        cls.save()
+
+    @classmethod
     def save(cls):
         """把当前输入路径 / 最近目录持久化到 .runtime.json"""
         import json
@@ -155,7 +172,9 @@ class Runtime:
                       "w", encoding="utf-8") as f:
                 json.dump({"input_file": cls.input_file,
                            "last_dir":   cls.last_dir,
-                           "plugin_font": cls.plugin_font}, f,
+                           "plugin_font": cls.plugin_font,
+                           "game_root":  cls.game_root,
+                           "save_files": cls.save_files}, f,
                           ensure_ascii=False)
         except Exception:
             pass
@@ -179,6 +198,13 @@ class Runtime:
             pf = d.get("plugin_font")
             if pf and os.path.isfile(pf):
                 cls.plugin_font = pf
+            gr = d.get("game_root")
+            if gr and os.path.isdir(gr):
+                cls.game_root = gr
+            sfl = d.get("save_files")
+            if isinstance(sfl, list):
+                cls.save_files = [p for p in sfl if isinstance(p, str)
+                                  and os.path.isfile(p)]
         except Exception:
             pass
 

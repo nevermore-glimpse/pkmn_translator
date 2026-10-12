@@ -11,10 +11,14 @@
     · 菜单 2「游戏汉化」＝汉化流程的入口页：右侧列出各步骤，点一项进入对应
       界面（进去后顶部有「← 返回游戏汉化」回来）；这些子页面本身**不在左侧
       菜单里**（见 HANHUA_SUBMENUS）
-    · 汉化子页面右侧带「待操作文件」勾选侧边栏
+    · 菜单 6「存档编辑」＝存档修改的入口页：右侧选游戏存档，中间列出 5 个编辑
+      界面（主角 / 同行宝可梦 / 背包 / PC 盒子 / 开关变量），同样点进去编辑，
+      顶部有「← 返回存档编辑」（见 SAVE_SUBMENUS）
+    · 汉化子页面右侧带「待操作文件」勾选侧边栏；存档编辑各页右侧带「选择游戏
+      存档」侧边栏
     · 菜单 3「设置」 4「本地模型服务」右侧带侧边栏（适配清单 / 游戏根目录）
     · 底部常驻状态条（进度 + 取消）
-  菜单 6「日志」为日志页，任务启动后自动跳转过去。
+  菜单 7「日志」为日志页，任务启动后自动跳转过去。
 """
 import os
 import queue
@@ -24,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import webbrowser
 from collections import Counter
@@ -40,6 +45,7 @@ import env_check
 import prefix_dict as PFD
 import processor as PR
 import providers as PV
+import save_tools as ST
 import settings
 import term_sync as TS
 
@@ -108,7 +114,8 @@ MENU_ITEMS = [
     ("3", "设置"),
     ("4", "本地模型服务"),
     ("5", "开启DEBUG"),
-    ("6", "日志"),
+    ("6", "存档编辑"),
+    ("7", "日志"),
 ]
 
 # ★ 左侧菜单：序号 → 页面键。
@@ -117,7 +124,8 @@ MENU_ITEMS = [
 MENU_KEYS = {
     "0": "home",
     "1": "intl", "2": "hanhua",
-    "3": "settings", "4": "provider", "5": "debug", "6": "log",
+    "3": "settings", "4": "provider", "5": "debug",
+    "6": "saveedit", "7": "log",
 }
 
 # ★ 被「游戏汉化」统合的子页面：左侧菜单里**没有它们**，
@@ -140,9 +148,41 @@ HANHUA_SUBMENUS = [
      "查看并编辑术语字典，或从 Excel 导进术语。"),
 ]
 
-# 子页面的键集合 / 键 → 名称（show() 判断该高亮谁、该显示什么标题）
-SUBMENU_KEYS = {k for k, _n, _d in HANHUA_SUBMENUS}
-SUBMENU_TITLES = {k: n for k, n, _d in HANHUA_SUBMENUS}
+# ★ 同样的套路：「存档编辑」统合的 5 个编辑界面
+#   (页面键, 名称, 一句话说明)
+SAVE_SUBMENUS = [
+    ("save_trainer", "主角编辑",
+     "名字、金钱、徽章、图鉴与形态图鉴、服装、训练家类型等通用字段。"),
+    ("save_party", "同行宝可梦编辑",
+     "昵称、种族、个体值／努力值、性格、特性、当前 HP、招式、携带道具、"
+     "状态、亲密度、异色、捕获用球、孵蛋步数、形态、勋章 —— "
+     "改完自动重算六项能力值。"),
+    ("save_bag", "背包编辑",
+     "各口袋的道具与数量，以及「登记道具」。"),
+    ("save_box", "PC 盒子编辑",
+     "24 个箱子里的宝可梦：编辑、删除、改名、移入队伍。"),
+]
+
+# 子页面的键集合 / 键 → 上级页面 / 键 → 名称
+#   （show() 靠 SUBMENU_PARENT 决定左侧高亮谁、顶部返回条写什么）
+SUBMENU_PARENT = {}
+SUBMENU_TITLES = {}
+for _k, _n, _d in HANHUA_SUBMENUS:
+    SUBMENU_PARENT[_k] = "hanhua"
+    SUBMENU_TITLES[_k] = _n
+for _k, _n, _d in SAVE_SUBMENUS:
+    SUBMENU_PARENT[_k] = "saveedit"
+    SUBMENU_TITLES[_k] = _n
+SUBMENU_KEYS = set(SUBMENU_PARENT)
+
+# 「存档编辑」的 5 个子页面（供 show() 判断该刷新哪个编辑界面）
+SAVE_SUBMENUS_KEYS = {k for k, _n, _d in SAVE_SUBMENUS}
+
+# 上级页面 → 顶部返回条的文字
+BACK_TEXTS = {
+    "hanhua": "← 返回游戏汉化",
+    "saveedit": "← 返回存档编辑",
+}
 
 
 # ================================================================
@@ -678,7 +718,11 @@ class Avatar(tk.Canvas):
 def make_scroll_area(parent, bg=CARD):
     """返回 (outer_frame, inner_frame)，带滚动条与滚轮支持。"""
     outer = tk.Frame(parent, bg=bg)
-    canvas = tk.Canvas(outer, bg=bg, highlightthickness=0)
+    # ★ Tk Canvas 不给 width/height 时默认请求 378x265，会把外层容器
+    #   （右侧栏只有 310 宽）的「请求宽度」顶爆 →  fill="x" 的子控件按
+    #   请求宽度排版、超出容器右边被裁。所有调用处都是 fill+expand，给个
+    #   小尺寸不影响显示（RoundCard 里也是这么绕的）。
+    canvas = tk.Canvas(outer, bg=bg, highlightthickness=0, width=10, height=10)
     sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
     inner = tk.Frame(canvas, bg=bg)
 
@@ -1734,6 +1778,917 @@ class AntiDebugDialog(tk.Toplevel):
 
 
 # ================================================================
+# 存档编辑：公共小控件与侧边栏
+# ================================================================
+STATUS_CHOICES = [(name, idx) for idx, name in sorted(ST.STATUS_NAMES.items())]
+SHINY_CHOICES = [("按个体 ID 自动判定", "auto"),
+                 ("一定异色（闪光）", "yes"),
+                 ("一定不异色", "no")]
+
+# 六项能力值的中文名（顺序与 ST.STAT_IVARS 一致）
+EV_LABELS = list(ST.STAT_KEYS)
+
+
+def sfmt(v) -> str:
+    """把任意值显示成短字符串（None 显示为 —）。"""
+    if v is None:
+        return "—"
+    if isinstance(v, bool):
+        return "是" if v else "否"
+    return str(v)
+
+
+class SearchCombo(ttk.Combobox):
+    """
+    可搜索下拉框：pairs = [(显示名, 值)]，边打字边过滤（显示名里带 #编号，好搜）。
+
+    ★ 值可能是 int（编号）也可能是字符串（异色那种），所以不要用 Combobox
+      自带的 get() 取值 —— 统一走 value_of()。
+    """
+
+    def __init__(self, master, pairs=None, width=30, font=None, value=None):
+        self.pairs: list = []
+        self._labels: list = []
+        self._map: dict = {}
+        ttk.Combobox.__init__(self, master, width=width, values=[],
+                              font=font or FONT_SMALL)
+        self.set_pairs(pairs or [], keep=False)
+        self.bind("<KeyRelease>", self._on_key)
+        if value is not None:
+            self.set_value(value)
+
+    # -- 数据 --------------------------------------------------------------
+    def set_pairs(self, pairs, keep: bool = True):
+        old = self.value_of() if keep else None
+        self.pairs = list(pairs or [])
+        self._labels = [str(p[0]) for p in self.pairs]
+        self._map = {str(p[0]): p[1] for p in self.pairs}
+        self["values"] = self._labels
+        if old is not None:
+            self.set_value(old)
+
+    def set_value(self, value):
+        """按值选中对应项；找不到就显示 (＃值)。"""
+        for label, v in self.pairs:
+            if v == value and type(v) is type(value) and value is not None:
+                self.set(str(label))
+                return
+        for label, v in self.pairs:
+            if v == value:
+                self.set(str(label))
+                return
+        self.set("" if value is None else f"（#{value}）")
+
+    def value_of(self):
+        """当前选中项的值；认不出来（没选 / 打了半个名字）返回 None。"""
+        txt = self.get().strip()
+        if txt in self._map:
+            return self._map[txt]
+        if txt.lstrip("-").isdigit():
+            return int(txt)
+        return None
+
+    # -- 过滤 --------------------------------------------------------------
+    def _on_key(self, e=None):
+        if e is not None and e.keysym in ("Up", "Down", "Return", "Escape",
+                                          "Tab", "Left", "Right", "Home",
+                                          "End", "Prior", "Next"):
+            return
+        txt = self.get().strip().lower()
+        if not txt:
+            self["values"] = self._labels
+            return
+        hits = [s for s in self._labels if txt in s.lower()]
+        self["values"] = hits[:300] if hits else ["（没有匹配项）"]
+
+
+def _lbl(parent, text, **kw):
+    kw.setdefault("bg", CARD)
+    kw.setdefault("fg", TEXT_DIM)
+    kw.setdefault("font", FONT_SMALL)
+    kw.setdefault("anchor", "w")
+    return tk.Label(parent, text=text, **kw)
+
+
+def _hint(parent, text, **kw):
+    kw.setdefault("bg", CARD)
+    kw.setdefault("fg", C_HINT)
+    kw.setdefault("font", FONT_SMALL)
+    kw.setdefault("justify", "left")
+    kw.setdefault("anchor", "w")
+    return tk.Label(parent, text=text, **kw)
+
+
+def _entry(parent, var, width=14):
+    return ttk.Entry(parent, textvariable=var, width=width, font=FONT_SMALL)
+
+
+def bind_autowrap(label, pad=8, minimum=80):
+    """
+    让 Label 的 wraplength 跟着它的**实际宽度**走。
+
+    固定值（如 wraplength=760）在宽窗里够用，窗口一窄就整行冲出控件边界、
+    被卡片/窗口边缘裁掉。绑了 <Configure> 之后，控件多宽就换行到多宽。
+    """
+    def _on_cfg(e):
+        w = max(minimum, e.width - pad)
+        try:
+            if label.cget("wraplength") != w:
+                label.configure(wraplength=w)
+        except Exception:
+            pass
+    label.bind("<Configure>", _on_cfg)
+    return label
+
+
+def btn_grid(parent, specs, columns=2, bg=None, width=118, height=33):
+    r"""
+    把一排按钮排成网格。
+
+    ★ 侧边栏旁边那列本来就窄（存档页左边只有 250~290px），一行硬塞 3 个按钮
+      会被裁掉（用户反馈过「按钮被挤没了」）。固定列数就不会。
+    specs = [(文字, 回调), ...]
+    """
+    bg = bg or CARD
+    grid = tk.Frame(parent, bg=bg)
+    for i, (text, cmd) in enumerate(specs):
+        GlassButton(grid, text, width=width, height=height, bg=bg,
+                    font=FONT_SMALL, command=cmd).grid(
+            row=i // columns, column=i % columns, sticky="w",
+            padx=(0, 6), pady=3)
+    return grid
+
+
+class SavePanel(tk.Frame):
+    """
+    右侧「选择游戏存档」侧边栏。
+
+    ★ 两件事分开：
+        ① 游戏根目录 —— **只当数据源**（读 .dat / PBS，决定名字/种族值/成长曲线）
+        ② 存档选择   —— **完全由用户手选存档文件**（各作品命名五花八门：
+           Game.rxdata / 1.rxdata / Auto 1.rxdata / 文件 A.rxdata / Partida 1.rxdata…，
+           位置也各不相同，常见于 %APPDATA%\\Roaming\\<游戏名>\\，所以不做目录扫描、
+           也不猜，直接让用户点文件）。
+      两条信息都会记进 .runtime.json，下次打开自动带回。
+    """
+
+    def __init__(self, master, bg=CARD, width=340, app=None):
+        tk.Frame.__init__(self, master, bg=bg, width=width)
+        self.bg = bg
+        self.app = app
+        self.panel_w = width
+        self.root_dir = config.Runtime.game_root or ""
+        self.files: list = list(config.Runtime.save_files or [])
+        self.current = None
+        self.rows: dict = {}
+
+        tk.Label(self, text="选择游戏存档", bg=bg, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 2))
+        tk.Label(self, text="「游戏数据」和「存档文件」分开选 —— 很多游戏的存档"
+                            "在 AppData 里、文件名也各不相同。",
+                 bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=width - 40).pack(anchor="w", padx=10, pady=(0, 6))
+
+        # ---- ① 游戏根目录（读数据用） ----
+        tk.Label(self, text="① 游戏数据（读 .dat / PBS）", bg=bg, fg=C_TITLE,
+                 font=FONT_B).pack(anchor="w", padx=10)
+        r1 = tk.Frame(self, bg=bg)
+        r1.pack(fill="x", padx=10, pady=(2, 0))
+        GlassButton(r1, "选游戏根目录", width=124, height=34, bg=bg,
+                    font=FONT_SMALL,
+                    command=self.pick_root).pack(side="left")
+        self.root_lbl = tk.Label(self, text="", bg=bg, fg=C_HINT,
+                                 font=FONT_SMALL, anchor="w", justify="left",
+                                 wraplength=width - 40)
+        self.root_lbl.pack(fill="x", padx=10, pady=(2, 6))
+
+        # ---- ② 存档选择 ----
+        tk.Label(self, text="② 存档选择", bg=bg, fg=C_TITLE,
+                 font=FONT_B).pack(anchor="w", padx=10)
+        r2 = tk.Frame(self, bg=bg)
+        r2.pack(fill="x", padx=10, pady=(2, 2))
+        GlassButton(r2, "选择存档文件", width=140, height=36, bg=bg,
+                    font=FONT_B,
+                    command=self.pick_file).pack(side="left")
+        self.count_lbl = tk.Label(r2, text="", bg=bg, fg=C_KEY, font=FONT_BIG)
+        self.count_lbl.pack(side="left", padx=(10, 0))
+
+        outer, inner = make_scroll_area(self, bg=bg)
+        outer.pack(fill="both", expand=True, padx=6, pady=(2, 4))
+        self.list_inner = inner
+        self._hint = tk.Label(
+            inner,
+            text="点「选择存档文件」挑一个 .rxdata\n"
+                 "（可以一次选多个；列表里点一下切换）\n\n"
+                 "存档一般在游戏目录里，或在\n"
+                 "%APPDATA%\\Roaming\\<游戏名>\\ 这类位置。",
+            bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
+            wraplength=max(120, width - 62))
+        self._hint.pack(anchor="w", padx=6, pady=10)
+
+        # ---- 底部：存档信息 + 保存按钮 ----
+        # ★ 单独一帧、side="bottom" 钉在面板底边。原来按顺序 pack，面板
+        #   稍微矮一点（或列表变高）整行按钮就被挤出面板、被卡片裁掉——
+        #   用户截图里「保存到存档／还原备份」整个看不见（991 高的窗口）。
+        foot = tk.Frame(self, bg=bg)
+        foot.pack(side="bottom", fill="x")
+
+        tk.Frame(foot, bg=CARD_BORDER, height=1).pack(fill="x", padx=10,
+                                                      pady=6)
+
+        self.title_lbl = tk.Label(foot, text="还没有选择存档", bg=bg, fg=TEXT,
+                                  font=FONT_B, anchor="w", justify="left",
+                                  wraplength=width - 40)
+        bind_autowrap(self.title_lbl, pad=4)
+        self.title_lbl.pack(fill="x", padx=10)
+        self.info_lbl = tk.Label(foot, text="", bg=bg, fg=TEXT_DIM,
+                                 font=FONT_SMALL, anchor="w", justify="left",
+                                 wraplength=width - 40)
+        bind_autowrap(self.info_lbl, pad=4)
+        self.info_lbl.pack(fill="x", padx=10, pady=(2, 0))
+        self.dirty_lbl = tk.Label(foot, text="", bg=bg, fg=C_WARN,
+                                  font=FONT_SMALL, anchor="w", justify="left",
+                                  wraplength=width - 40)
+        bind_autowrap(self.dirty_lbl, pad=4)
+        self.dirty_lbl.pack(fill="x", padx=10)
+
+        btnrow = tk.Frame(foot, bg=bg)
+        btnrow.pack(fill="x", padx=10, pady=(6, 6))
+        self.save_btn = GlassButton(btnrow, "保存到存档", width=136, height=38,
+                                    primary=True, bg=bg, font=FONT_B,
+                                    command=self._save)
+        self.save_btn.pack(side="left")
+        GlassButton(btnrow, "还原备份", width=100, height=38, bg=bg,
+                    font=FONT_SMALL, command=self._restore).pack(side="left",
+                                                                 padx=6)
+
+        self._sync_labels()
+        self._render_list()
+
+    # ---------- ① 游戏根目录 ----------
+    def _initial(self):
+        d = config.Runtime.last_dir
+        return d if d and os.path.isdir(d) else config.BASE_DIR
+
+    def pick_root(self):
+        folder = filedialog.askdirectory(
+            title="选择游戏根目录（有 Data / Game.ini 的那一层）",
+            initialdir=self.root_dir or self._initial())
+        if folder:
+            config.Runtime.set_dir(folder)
+            self.set_root(folder)
+
+    def set_root(self, folder, auto_add_saves: bool = True):
+        """
+        设定游戏根目录（数据源）。
+
+        顺手看一眼它自己的 `Data/Savestates` —— 有些游戏的存档就在那里，
+        列表为空时自动带进来，省得再点一次。
+        """
+        self.root_dir = folder or ""
+        config.Runtime.set_game_root(self.root_dir)
+        if auto_add_saves and self.root_dir and not self.files:
+            found = ST.savestate_files(self.root_dir)
+            if found:
+                self.files = list(found)
+                config.Runtime.set_save_files(self.files)
+        self._sync_labels()
+        self._render_list()
+
+    # ---------- ② 存档选择 ----------
+    def pick_file(self):
+        paths = filedialog.askopenfilenames(
+            title="选择存档文件（可多选；*.rxdata）",
+            initialdir=(os.path.dirname(self.files[0]) if self.files
+                        else self._initial()),
+            filetypes=[("存档", "*.rxdata"), ("所有文件", "*.*")])
+        if not paths:
+            return
+        paths = list(paths)
+        config.Runtime.set_dir(os.path.dirname(paths[0]))
+        added = [p for p in paths if p not in self.files]
+        self.files.extend(added)
+        config.Runtime.set_save_files(self.files)
+        # ① 没选的话，试着从存档位置往上认出游戏目录
+        if not self.root_dir:
+            guess = ST.guess_game_root(paths[0])
+            if guess and os.path.isdir(os.path.join(guess, "Data")):
+                self.root_dir = guess
+                config.Runtime.set_game_root(guess)
+        self._sync_labels()
+        self._render_list()
+        self._select(added[0] if added else paths[0])
+
+    def remove_file(self, path):
+        if path in self.files:
+            self.files.remove(path)
+            config.Runtime.set_save_files(self.files)
+        if self.current == path:
+            self.current = None
+        self._sync_labels()
+        self._render_list()
+        if self.files:
+            self._select(self.files[0])
+
+    # ---------- 列表 ----------
+    def _sync_labels(self):
+        if self.root_dir:
+            ok = os.path.isdir(os.path.join(self.root_dir, "Data"))
+            title = ST.game_title(self.root_dir)
+            self.root_lbl.config(
+                text=f"{os.path.basename(self.root_dir)}"
+                     + (f"（{title}）" if title else "")
+                     + ("　Data ✓" if ok else "　⚠ 这层没有 Data 目录"),
+                fg=C_HINT if ok else C_WARN)
+        else:
+            self.root_lbl.config(
+                text="未选择 —— 会按存档位置往上找。\n"
+                     "（想让名字/种族值显示准确就选一下）", fg=C_HINT)
+        self.count_lbl.config(text=f"已选 {len(self.files)} 个" if self.files
+                              else "")
+
+    def _render_list(self):
+        for w in self.list_inner.winfo_children():
+            if w is not self._hint:
+                w.destroy()
+        self.rows = {}
+        if not self.files:
+            self._hint.pack(anchor="w", padx=6, pady=10)
+            return
+        self._hint.pack_forget()
+        for p in self.files:
+            self._make_row(p).pack(fill="x", padx=4, pady=2)
+
+    def _make_row(self, path):
+        name = os.path.basename(path)
+        folder = os.path.dirname(path)
+        parts = folder.replace("/", os.sep).split(os.sep)
+        short = os.sep.join(parts[-2:]) if len(parts) > 2 else folder
+        try:
+            size = os.path.getsize(path)
+            stamp = time.strftime("%m-%d %H:%M",
+                                  time.localtime(os.path.getmtime(path)))
+            sub = f"{short} · {size // 1024} KB · {stamp}"
+        except OSError:
+            sub = short
+        box = tk.Frame(self.list_inner, bg=CARD_ALT, cursor="hand2")
+        # ★ fill="x" + wraplength 跟实际宽度走：固定值在面板一窄时会把
+        #   路径行末几个字裁掉
+        lab = tk.Label(box, text=name, bg=CARD_ALT, fg=TEXT, font=FONT_SMALL,
+                       anchor="w", justify="left",
+                       wraplength=max(120, self.panel_w - 88))
+        bind_autowrap(lab, pad=4, minimum=100)
+        lab.pack(fill="x", padx=8, pady=(4, 0))
+        sub_lab = tk.Label(box, text=sub, bg=CARD_ALT, fg=C_HINT,
+                           font=(FONT_FAMILY, max(8, FONT_SIZES["small"] - 1)),
+                           anchor="w", justify="left",
+                           wraplength=max(120, self.panel_w - 88))
+        bind_autowrap(sub_lab, pad=4, minimum=100)
+        sub_lab.pack(fill="x", padx=8, pady=(0, 4))
+        for w in (box, lab, sub_lab):
+            w.bind("<Button-1>", lambda e, pp=path: self._select(pp))
+            w.bind("<Button-3>", lambda e, pp=path: self._row_menu(e, pp))
+        self.rows[path] = (box, lab, sub_lab)
+        self._paint_row(path)
+        return box
+
+    def _row_menu(self, event, path):
+        """右键：复制路径 / 从列表移除。"""
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="复制完整路径",
+                         command=lambda: clipboard_set(self, path))
+        menu.add_command(label="从列表移除",
+                         command=lambda: self.remove_file(path))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _paint_row(self, path):
+        row = self.rows.get(path)
+        if not row:
+            return
+        fill = ACCENT_SOFT if path == self.current else CARD_ALT
+        fg = ACCENT_DEEP if path == self.current else TEXT
+        box, lab, sub_lab = row
+        try:
+            box.configure(bg=fill)
+            lab.configure(bg=fill, fg=fg)
+            sub_lab.configure(bg=fill)
+        except Exception:
+            pass
+
+    def _select(self, path):
+        self.sync_selection(path)
+        if self.app:
+            # ★ 只把「游戏根目录」当数据源 —— 存档可能在 AppData 里
+            self.app.select_save(path, root=self.root_dir or None)
+
+    def sync_selection(self, path):
+        """只更新高亮，不触发加载（其它侧边栏同步时用）。"""
+        old, self.current = self.current, path
+        for p in (old, path):
+            if p:
+                self._paint_row(p)
+
+    # ---------- 概览 ----------
+    def set_info(self, sv, dirty=None):
+        if sv is None:
+            self.title_lbl.config(text="还没有选择存档")
+            self.info_lbl.config(text="")
+            return
+        tr = sv.g("$Trainer").ivars
+        party = [p for p in (tr.get("@party") or []) if not sv.empty_slot(p)]
+        bag = sv.g("$PokemonBag").ivars.get("@pockets") or []
+        items = sum(len(p) for p in bag if isinstance(p, list))
+        boxes = list(sv.boxes())
+        in_box = sum(len([p for p in (b.ivars.get("@pokemon") or [])
+                          if not sv.empty_slot(p)]) for b in boxes)
+        badges = sum(1 for b in (tr.get("@badges") or []) if b)
+        self.title_lbl.config(text=os.path.basename(sv.path))
+        self.info_lbl.config(text=(
+            f"存档格式：{sv.fmt}{'（v19+）' if sv.fmt == 'hash' else '（v16~v18）'}\n"
+            f"主角：{sfmt(tr.get('@name'))}    ID：{sfmt(tr.get('@id'))}\n"
+            f"金钱：{sfmt(tr.get('@money'))}    徽章：{badges}\n"
+            f"同行：{len(party)} 只    箱子：{in_box} 只（{len(boxes)} 箱）\n"
+            f"背包：{items} 种    名称来源：{sv.data.source}"))
+        self.set_dirty(dirty)
+        self._sync_labels()
+
+    def set_dirty(self, dirty):
+        if dirty is None:
+            return
+        self.dirty_lbl.config(text="● 有未保存的修改" if dirty else "已同步到文件")
+
+    # ---------- 写回 / 还原 ----------
+    def _save(self):
+        if self.app:
+            self.app.write_save()
+
+    def _restore(self):
+        path = self.current
+        if not path:
+            messagebox.showinfo("提示", "先选一份存档。", parent=self)
+            return
+        bak = path + ".bak"
+        if not os.path.isfile(bak):
+            messagebox.showinfo(
+                "没有备份",
+                "这份存档还没有备份。\n第一次点「保存到存档」时会自动生成 "
+                f"{os.path.basename(bak)}。", parent=self)
+            return
+        if not messagebox.askyesno(
+                "还原备份",
+                f"要用备份覆盖当前存档吗？\n\n备份：{os.path.basename(bak)}\n"
+                f"目标：{os.path.basename(path)}\n\n"
+                "当前存档里已保存的修改会全部丢失。", parent=self):
+            return
+        try:
+            shutil.copyfile(bak, path)
+        except OSError as e:
+            messagebox.showerror("还原失败", str(e), parent=self)
+            return
+        if self.app:
+            self.app.select_save(path, force=True, root=self.root_dir or None)
+        messagebox.showinfo("已还原", "备份已覆盖存档，已重新读取。", parent=self)
+
+
+class PokemonForm:
+    """
+    宝可梦编辑表单（同行队伍与 PC 盒子共用）。
+
+    字段联动：改种族会刷新「可用特性 / 形态」提示；点「应用修改」时把各字段
+    一次性写回，**最后统一重算六项能力值**（IV/EV/性格/等级/种族/形态的联动
+    都在 save_tools 里，界面只负责收集输入）。
+    """
+
+    def __init__(self, parent, app, compact=False):
+        self.app = app
+        self.pm = None
+        self.where = ""
+        self.totalhp = 0
+        self.frame = tk.Frame(parent, bg=CARD)
+        self.vars = {}
+        self._build(compact)
+
+    # ---------- 取值 ----------
+    def _var(self, key, default=""):
+        v = tk.StringVar(value=default)
+        self.vars[key] = v
+        return v
+
+    def _get_int(self, key, default=None, lo=None, hi=None):
+        try:
+            n = int(str(self.vars[key].get()).strip())
+        except (KeyError, TypeError, ValueError):
+            return default
+        if lo is not None:
+            n = max(lo, n)
+        if hi is not None:
+            n = min(hi, n)
+        return n
+
+    # ---------- 建界面 ----------
+    def _build(self, compact):
+        f = self.frame
+        top = tk.Frame(f, bg=CARD)
+        top.pack(fill="x")
+        self.title_lbl = tk.Label(top, text="（先选中一只宝可梦）", bg=CARD,
+                                  fg=C_TITLE, font=FONT_TITLE)
+        self.title_lbl.pack(side="left")
+        # ★ quick_lbl 单独一行：原来和标题挤在同一行，标题一长（长种族名 /
+        #   「第 40 箱 · 第 12 格」）左边的标题就被压扁看不见
+        self.quick_lbl = tk.Label(top, text="", bg=CARD, fg=C_KEY, font=FONT_B,
+                                  anchor="w", justify="left")
+        self.quick_lbl.pack(fill="x")
+        bind_autowrap(self.quick_lbl, pad=4, minimum=120)
+
+        outer, inner = make_scroll_area(f, bg=CARD)
+        outer.pack(fill="both", expand=True, pady=(6, 0))
+        g = inner
+
+        # --- 基本 ---
+        sec = tk.Frame(g, bg=CARD)
+        sec.pack(fill="x", pady=(0, 6))
+        r = tk.Frame(sec, bg=CARD)
+        r.pack(fill="x", pady=2)
+        _lbl(r, "昵称", width=7).pack(side="left")
+        _entry(r, self._var("nick"), 14).pack(side="left")
+        _lbl(r, "种族", width=7).pack(side="left", padx=(12, 0))
+        self.sp_combo = SearchCombo(r, [], width=20)
+        self.sp_combo.pack(side="left")
+        self.sp_combo.bind("<<ComboboxSelected>>",
+                           lambda e: self._refresh_species())
+        self.sp_combo.bind("<FocusOut>", lambda e: self._refresh_species())
+
+        r2 = tk.Frame(sec, bg=CARD)
+        r2.pack(fill="x", pady=2)
+        _lbl(r2, "等级", width=8).pack(side="left")
+        _entry(r2, self._var("level"), 6).pack(side="left")
+        _lbl(r2, "经验", width=8).pack(side="left", padx=(12, 0))
+        _entry(r2, self._var("exp"), 10).pack(side="left")
+        _lbl(r2, "形态", width=8).pack(side="left", padx=(12, 0))
+        _entry(r2, self._var("form"), 6).pack(side="left")
+        # ★ 可用形态提示单独一行：塞在 r2 里会把整行顶宽（形态表长时
+        #   后面的字段全被裁掉），独立一行让它自己换行
+        self.form_hint = _hint(sec, "", wraplength=400)
+        bind_autowrap(self.form_hint, pad=4, minimum=120)
+        self.form_hint.pack(anchor="w")
+
+        r3 = tk.Frame(sec, bg=CARD)
+        r3.pack(fill="x", pady=2)
+        _lbl(r3, "性格", width=8).pack(side="left")
+        self.nat_combo = SearchCombo(
+            r3, [(f"{n}（{ST.NATURES_EN[i]}）", i)
+                 for i, n in enumerate(ST.NATURES)], width=16)
+        self._nat_base = list(self.nat_combo.pairs)
+        self.nat_combo.pack(side="left")
+        _lbl(r3, "特性", width=8).pack(side="left", padx=(12, 0))
+        self.ab_combo = SearchCombo(r3, [], width=16)
+        self.ab_combo.pack(side="left")
+
+        r4 = tk.Frame(sec, bg=CARD)
+        r4.pack(fill="x", pady=2)
+        _lbl(r4, "当前 HP", width=8).pack(side="left")
+        _entry(r4, self._var("hp"), 6).pack(side="left")
+        self.hp_lbl = _hint(r4, "")
+        self.hp_lbl.pack(side="left", padx=(4, 0))
+        GlassButton(r4, "回满", width=64, height=30, bg=CARD, font=FONT_SMALL,
+                    command=self._fill_hp).pack(side="left", padx=(10, 0))
+        _lbl(r4, "状态", width=8).pack(side="left", padx=(12, 0))
+        self.st_combo = SearchCombo(r4, STATUS_CHOICES, width=12)
+        self.st_combo.pack(side="left")
+
+        # --- 个体值 / 努力值 ---
+        box = tk.Frame(g, bg=CARD_ALT)
+        box.pack(fill="x", pady=(4, 6))
+        _lbl(box, "个体值 IV（0–31）", bg=CARD_ALT, fg=C_TITLE).pack(
+            anchor="w", padx=8, pady=(6, 2))
+        ivrow = tk.Frame(box, bg=CARD_ALT)
+        ivrow.pack(fill="x", padx=8)
+        for i, name in enumerate(EV_LABELS):
+            col = tk.Frame(ivrow, bg=CARD_ALT)
+            col.pack(side="left", padx=(0, 8))
+            _lbl(col, name, bg=CARD_ALT, anchor="center").pack()
+            _entry(col, self._var(f"iv{i}"), 4).pack()
+        btn = tk.Frame(ivrow, bg=CARD_ALT)
+        btn.pack(side="left", padx=(10, 0))
+        for text, val in (("全 31", 31), ("全 0", 0)):
+            GlassButton(btn, text, width=70, height=30, bg=CARD_ALT,
+                        font=FONT_SMALL,
+                        command=lambda v=val: self._set_all("iv", v)).pack(
+                side="left", padx=2)
+
+        _lbl(box, "努力值 EV（0–252，总和 ≤510）", bg=CARD_ALT,
+             fg=C_TITLE).pack(anchor="w", padx=8, pady=(8, 2))
+        evrow = tk.Frame(box, bg=CARD_ALT)
+        evrow.pack(fill="x", padx=8)
+        for i, name in enumerate(EV_LABELS):
+            col = tk.Frame(evrow, bg=CARD_ALT)
+            col.pack(side="left", padx=(0, 8))
+            _lbl(col, name, bg=CARD_ALT, anchor="center").pack()
+            _entry(col, self._var(f"ev{i}"), 4).pack()
+        ebtn = tk.Frame(evrow, bg=CARD_ALT)
+        ebtn.pack(side="left", padx=(10, 0))
+        GlassButton(ebtn, "清空", width=64, height=30, bg=CARD_ALT,
+                    font=FONT_SMALL,
+                    command=lambda: self._set_all("ev", 0)).pack(side="left")
+        self.ev_lbl = _lbl(ebtn, "", bg=CARD_ALT, fg=C_KEY)
+        self.ev_lbl.pack(side="left", padx=(8, 0))
+        for i in range(6):
+            self.vars[f"ev{i}"].trace_add(
+                "write", lambda *a: self._update_ev_sum())
+        tk.Frame(box, bg=CARD_ALT, height=6).pack()
+
+        # --- 招式 ---
+        mv = tk.Frame(g, bg=CARD)
+        mv.pack(fill="x", pady=(2, 6))
+        _lbl(mv, "招式（最多 4 个；PP 留空表示用招式默认 PP）").pack(anchor="w")
+        self.move_combos = []
+        for i in range(4):
+            rr = tk.Frame(mv, bg=CARD)
+            rr.pack(fill="x", pady=2)
+            _lbl(rr, f"招式 {i + 1}", width=8).pack(side="left")
+            cb = SearchCombo(rr, [], width=26)
+            cb.pack(side="left")
+            _lbl(rr, "PP", width=4).pack(side="left", padx=(10, 0))
+            _entry(rr, self._var(f"mpp{i}"), 6).pack(side="left")
+            self.move_combos.append(cb)
+
+        # --- 其它 ---
+        ot = tk.Frame(g, bg=CARD)
+        ot.pack(fill="x", pady=(2, 4))
+        r5 = tk.Frame(ot, bg=CARD)
+        r5.pack(fill="x", pady=2)
+        _lbl(r5, "携带道具", width=8).pack(side="left")
+        self.item_combo = SearchCombo(r5, [], width=16)
+        self.item_combo.pack(side="left", padx=(0, 14))
+        _lbl(r5, "捕获用球", width=8).pack(side="left")
+        self.ball_combo = SearchCombo(r5, [], width=16)
+        self.ball_combo.pack(side="left")
+
+        r6 = tk.Frame(ot, bg=CARD)
+        r6.pack(fill="x", pady=2)
+        _lbl(r6, "亲密度", width=8).pack(side="left")
+        _entry(r6, self._var("happy"), 8).pack(side="left", padx=(0, 14))
+        _lbl(r6, "孵蛋步数", width=8).pack(side="left")
+        _entry(r6, self._var("eggsteps"), 10).pack(side="left")
+
+        r7 = tk.Frame(ot, bg=CARD)
+        r7.pack(fill="x", pady=2)
+        _lbl(r7, "异色", width=8).pack(side="left")
+        self.shiny_combo = SearchCombo(r7, SHINY_CHOICES, width=16)
+        self.shiny_combo.pack(side="left", padx=(0, 14))
+        _lbl(r7, "勋章", width=8).pack(side="left")
+        _entry(r7, self._var("ribbons"), 17).pack(side="left")
+
+        r8 = tk.Frame(ot, bg=CARD)
+        r8.pack(fill="x", pady=2)
+        _lbl(r8, "初训家", width=7).pack(side="left")
+        _entry(r8, self._var("ot"), 10).pack(side="left", padx=(0, 8))
+        _lbl(r8, "训练家 ID", width=7).pack(side="left")
+        _entry(r8, self._var("tid"), 8).pack(side="left", padx=(0, 8))
+        _lbl(r8, "个体 ID", width=7).pack(side="left")
+        _entry(r8, self._var("pid"), 8).pack(side="left")
+
+        # --- 底部 ---
+        foot = tk.Frame(f, bg=CARD)
+        foot.pack(fill="x", pady=(6, 0))
+        # ★ wraplength 跟实际宽度走：固定 760 在窄窗里会整行冲出边界被裁
+        self.stat_lbl = tk.Label(foot, text="", bg=CARD, fg=TEXT_DIM,
+                                 font=FONT_SMALL, justify="left", anchor="w",
+                                 wraplength=760)
+        bind_autowrap(self.stat_lbl, pad=8, minimum=200)
+        self.stat_lbl.pack(fill="x")
+        act = tk.Frame(foot, bg=CARD)
+        act.pack(fill="x", pady=(4, 0))
+        self.apply_btn = GlassButton(act, "应用修改", width=120, height=38,
+                                     primary=True, bg=CARD, font=FONT_B,
+                                     command=self.apply)
+        self.apply_btn.pack(side="left")
+        self.apply_btn.set_enabled(False)
+
+    # ---------- 小联动 ----------
+    def _set_all(self, kind, value):
+        for i in range(6):
+            self.vars[f"{kind}{i}"].set(str(value))
+        self._update_ev_sum()
+
+    def _update_ev_sum(self):
+        total = sum(self._get_int(f"ev{i}", 0) or 0 for i in range(6))
+        self.ev_lbl.config(
+            text=f"总和 {total}" + ("（超出 510！）" if total > 510 else ""),
+            fg=ERR_COLOR if total > 510 else C_KEY)
+
+    def _fill_hp(self):
+        self.vars["hp"].set(str(self.totalhp or 0))
+
+    def _refresh_species(self):
+        """种族/形态变了 → 刷新可用特性与形态提示。"""
+        sv = self.app.current_save()
+        sid = self.sp_combo.value_of()
+        if sv is None or sid is None:
+            return
+        form = self._get_int("form", 0) or 0
+        self.ab_combo.set_pairs(sv.data.ability_options(sid, form), keep=False)
+        forms = sv.data.forms_of(sid)
+        if forms:
+            self.form_hint.config(text=f"可用形态：{', '.join(map(str, forms[:12]))}",
+                                  fg=C_HINT)
+        else:
+            self.form_hint.config(text="形态表未记录，按数字填（0 = 基础形态）",
+                                  fg=C_HINT)
+
+    # ---------- 载入 / 应用 ----------
+    def load(self, pm, where=""):
+        """
+        把一只宝可梦读进表单。
+
+        ★ 一律走 `sv.read_pokemon()`（格式无关）—— v19+ 的 @species 是 Symbol、
+          @iv 是 Hash、道具是 Symbol，直接翻 ivar 会读出乱码。
+        """
+        sv = self.app.current_save()
+        self.pm, self.where = pm, where
+        if sv is None or pm is None:
+            self.clear()
+            return
+        d = sv.data
+        r = sv.read_pokemon(pm)
+        sid = r["species"]
+        self.title_lbl.config(text=f"{where}：{d.species(sid)}")
+        self.sp_combo.set_pairs([(f"{n}（#{i}）", i) for n, i in d.species_list()],
+                                keep=False)
+        self.sp_combo.set_value(sid)
+        # 性格显示名跟着术语表走
+        self.nat_combo.set_pairs(d.nature_options(), keep=False)
+        self._refresh_species()
+
+        self.vars["nick"].set(str(r.get("name") or ""))
+        self.vars["level"].set(str(r["level"]))
+        self.vars["exp"].set(str(r["exp"]))
+        self.vars["form"].set(str(r.get("form") or 0))
+        self.nat_combo.set_value(r["nature"])
+        self.ab_combo.set_value(r["ability_flag"])
+        for i in range(6):
+            self.vars[f"iv{i}"].set(str(r["ivs"][i]))
+            self.vars[f"ev{i}"].set(str(r["evs"][i]))
+        self._update_ev_sum()
+        self.totalhp = r.get("totalhp") or 0
+        self.vars["hp"].set(str(r.get("hp") or 0))
+        self.st_combo.set_value(r["status"])
+
+        items = [("（无）", 0)] + [(f"{n}（#{i}）", i) for n, i in d.item_list()]
+        self.item_combo.set_pairs(items, keep=False)
+        self.ball_combo.set_pairs([("（未知）", 0)] +
+                                  [(f"{n}（#{i}）", i) for n, i in d.item_list()],
+                                  keep=False)
+        self.item_combo.set_value(r.get("item") or 0)
+        self.ball_combo.set_value(r.get("ball") or 0)
+
+        self.vars["happy"].set(str(r.get("happiness") or 0))
+        self.vars["eggsteps"].set(str(r.get("eggsteps") or 0))
+        sf = r.get("shiny")
+        self.shiny_combo.set_value("auto" if sf is None
+                                   else ("yes" if sf else "no"))
+        rb = r.get("ribbons")
+        if isinstance(rb, list):
+            txt = ",".join(str(x) for x in rb)
+        else:
+            txt = "" if rb is None else str(rb)
+        self.vars["ribbons"].set(txt)
+        self.vars["ot"].set(str(r.get("ot") or ""))
+        self.vars["tid"].set(str(r.get("ot_id") or 0))
+        self.vars["pid"].set(str(r.get("pid") or 0))
+
+        moves = [("（空）", 0)] + [(f"{n}（#{i}）", i) for n, i in d.move_list()]
+        arr = r["moves"]
+        for i in range(4):
+            self.move_combos[i].set_pairs(moves, keep=False)
+            if i < len(arr) and arr[i][0]:
+                self.move_combos[i].set_value(arr[i][0])
+                self.vars[f"mpp{i}"].set(str(arr[i][1] or ""))
+            else:
+                self.move_combos[i].set_value(0)
+                self.vars[f"mpp{i}"].set("")
+
+        self.apply_btn.set_enabled(True)
+        # 「当前 HP」输入框里已经有当前值，这里只显示上限，省下的宽度
+        # 给同一行的「状态」下拉
+        self.hp_lbl.config(text=f"/ {self.totalhp}")
+        self._show_stats(pm)
+
+
+
+    def clear(self):
+        self.pm = None
+        self.totalhp = 0
+        self.title_lbl.config(text="（先选中一只宝可梦）")
+        self.quick_lbl.config(text="")
+        self.stat_lbl.config(text="")
+        self.hp_lbl.config(text="")
+        self.apply_btn.set_enabled(False)
+
+    def _show_stats(self, pm):
+        sv = self.app.current_save()
+        if sv is None:
+            return
+        d = sv.pokemon(pm)
+        stored = [d["能力值"][k] for k in EV_LABELS]
+        self.quick_lbl.config(
+            text="  ".join(f"{EV_LABELS[i]} {sfmt(stored[i])}"
+                           for i in range(6)))
+        sid = d["全国图鉴编号"]
+        form = d.get("形态") or 0
+        self.stat_lbl.config(
+            text=("六项能力值（由种族/等级/IV/EV/性格算出）："
+                  + "  ".join(f"{EV_LABELS[i]} {sfmt(stored[i])}"
+                              for i in range(6))
+                  + f"\nHP {d['HP']}"
+                  + ("" if d.get("能力值已缓存", True)
+                     else "    （这份存档不缓存能力值，数值是现算的）")
+                  + f"    种族值 {sv.data.base_stats(sid, form)}"
+                  + f"    种族 {sv.data.species(sid)}"
+                  + (f"（形态 {form}）" if form else "")
+                  + f"    属性 {sv.data.type_names_of(sid, form)}"))
+
+    def apply(self):
+        sv = self.app.current_save()
+        pm = self.pm
+        if sv is None or pm is None:
+            messagebox.showinfo("提示", "先选中一只宝可梦。", parent=self.frame)
+            return
+        sid = self.sp_combo.value_of()
+        if sid is None:
+            # ★ 没有物种表（source == "none"）时下拉是空的，别报错 ——
+            #   保留这只原本的种族，其它字段照常写入。
+            if sv.data.source == "none":
+                sid = sv.read_pokemon(pm)["species"]
+            else:
+                messagebox.showwarning(
+                    "种族没选好",
+                    "「种族」要从下拉列表里选一项（可打字搜索）。",
+                    parent=self.frame)
+                return
+        ev_sum = sum(self._get_int(f"ev{i}", 0) or 0 for i in range(6))
+        if ev_sum > 510 and not messagebox.askyesno(
+                "努力值超出上限",
+                f"努力值总和 {ev_sum}，超过游戏的 510 上限。\n"
+                "游戏里超出部分会被裁掉，实际数值可能与此处不一致。\n仍要写入吗？",
+                parent=self.frame):
+            return
+        try:
+            sv.set_pokemon(pm, "种族", sid, recalc=False)
+            sv.set_pokemon(pm, "形态", self._get_int("form", 0, 0), recalc=False)
+            sv.set_pokemon(pm, "昵称", self.vars["nick"].get())
+            sv.set_pokemon(pm, "等级", self._get_int("level", 1, 1, 100),
+                           recalc=False)
+            sv.set_pokemon(pm, "个体值",
+                           [self._get_int(f"iv{i}", 0, 0, 31) for i in range(6)],
+                           recalc=False)
+            sv.set_pokemon(pm, "努力值",
+                           [self._get_int(f"ev{i}", 0, 0, 255) for i in range(6)],
+                           recalc=False)
+            nat = self.nat_combo.value_of()
+            if nat is not None:
+                sv.set_pokemon(pm, "性格", nat, recalc=False)
+            ab = self.ab_combo.value_of()
+            if ab is not None:
+                sv.set_pokemon(pm, "特性", ab, recalc=False)
+            sv.set_moves(pm, [(self.move_combos[i].value_of() or 0,
+                               self.vars[f"mpp{i}"].get().strip() or None)
+                              for i in range(4)])
+            sv.set_pokemon(pm, "携带道具", self.item_combo.value_of() or 0)
+            sv.set_pokemon(pm, "捕获用球", self.ball_combo.value_of() or 0)
+            sv.set_pokemon(pm, "亲密度", self._get_int("happy", 0, 0, 255),
+                           recalc=False)
+            sv.set_pokemon(pm, "孵蛋步数", self._get_int("eggsteps", 0, 0),
+                           recalc=False)
+            sv.set_pokemon(pm, "状态", self.st_combo.value_of() or 0)
+            sf = self.shiny_combo.value_of()
+            sv.set_pokemon(pm, "异色",
+                           None if sf in (None, "auto") else (sf == "yes"))
+            sv.set_pokemon(pm, "勋章", self.vars["ribbons"].get())
+            sv.set_pokemon(pm, "初训家", self.vars["ot"].get())
+            sv.set_pokemon(pm, "训练家ID", self._get_int("tid", 0, 0),
+                           recalc=False)
+            sv.set_pokemon(pm, "个体ID", self._get_int("pid", 0, 0),
+                           recalc=False)
+            # ★ 前面都关掉了自动重算，这里统一算一次六项能力值
+            sv.recalc_pokemon(pm)
+            hp = self._get_int("hp", None)
+            if hp is not None:
+                sv.set_pokemon(pm, "当前HP", hp)
+        except Exception as e:
+            messagebox.showerror("写入失败", str(e), parent=self.frame)
+            return
+        self.app.mark_dirty()
+        self.app.refresh_save_lists()
+        self.load(pm, self.where)
+        self.stat_lbl.config(
+            text=self.stat_lbl.cget("text") + "      ✔ 已按新数值重算能力值")
+
+
+# ================================================================
 # 主应用
 # ================================================================
 class App:
@@ -1747,6 +2702,12 @@ class App:
         self.file_panels = []
         self._mode_btn_groups = []
         self.current = None
+
+        # 存档编辑（菜单 6）
+        self.save_panels = []      # 各页右侧的「选择游戏存档」侧边栏
+        self.save_path = None      # 当前选中的存档
+        self.save_obj = None       # 当前存档的 SaveFile（全局共用一份）
+        self.save_dirty = False    # 有未保存的修改
 
         self.src_var = tk.StringVar(value=config.SOURCE_LANG)
         self.tgt_var = tk.StringVar(value=config.TARGET_LANG)
@@ -1921,9 +2882,10 @@ class App:
         #   （平时 grid_remove → row0 高度塌成 0，页面仍占满整块区域）
         self.sub_header = tk.Frame(holder, bg=BG_BASE)
         self.sub_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        GlassButton(self.sub_header, "← 返回游戏汉化", width=148, height=38,
-                    bg=BG_BASE, font=FONT_SMALL,
-                    command=lambda: self.show("hanhua")).pack(side="left")
+        self.sub_back = GlassButton(self.sub_header, "← 返回", width=148,
+                                    height=38, bg=BG_BASE, font=FONT_SMALL,
+                                    command=self._on_sub_back)
+        self.sub_back.pack(side="left")
         self.sub_title = tk.Label(self.sub_header, text="", bg=BG_BASE,
                                   fg=C_TITLE, font=FONT_TITLE)
         self.sub_title.pack(side="left", padx=(12, 0))
@@ -1951,6 +2913,11 @@ class App:
         self._page_settings()
         self._page_provider()
         self._page_debug()
+        self._page_saveedit()
+        self._page_save_trainer()
+        self._page_save_party()
+        self._page_save_bag()
+        self._page_save_box()
         self._page_log()
 
     # ---------------- 状态条 ----------------
@@ -1990,9 +2957,9 @@ class App:
             return
         self.current = key
         self.pages[key].tkraise()
-        # ★ 子页面（菜单 2「游戏汉化」统合进来的那些）在左侧没有自己的按钮，
-        #   高亮统一落在「游戏汉化」上，并显示顶部返回条。
-        active = "hanhua" if key in SUBMENU_KEYS else key
+        # ★ 子页面（被「游戏汉化」/「存档编辑」统合进来的那些）在左侧没有自己的
+        #   按钮，高亮统一落在上级菜单上，并显示顶部返回条。
+        active = SUBMENU_PARENT.get(key, key)
         for k, btn in self.menu_btns.items():
             btn.set_active(k == active)
         self._sync_sub_header(key)
@@ -2004,14 +2971,25 @@ class App:
             self._load_reflow_blocks()
         elif key == "provider":
             self._pv_refresh()
+        elif key == "saveedit":
+            self._refresh_save_overview()
+        elif key in SAVE_SUBMENUS_KEYS:
+            self._refresh_save_page(key)
         elif key == "log":
             pass
 
+    def _on_sub_back(self):
+        """顶部「← 返回」条：回到当前子页面的上级页面。"""
+        self.show(SUBMENU_PARENT.get(self.current, "home"))
+
     def _sync_sub_header(self, key):
-        """在「游戏汉化」的子页面里显示顶部返回条，其它页面隐藏。"""
+        """在子页面里显示顶部返回条（文字按上级页面变），其它页面隐藏。"""
         try:
             if key in SUBMENU_KEYS:
+                parent = SUBMENU_PARENT.get(key, "hanhua")
                 self.sub_title.config(text=SUBMENU_TITLES.get(key, ""))
+                self.sub_back.config(text=BACK_TEXTS.get(
+                    parent, "← 返回" + SUBMENU_TITLES.get(parent, "")))
                 self.sub_header.grid()
                 self.sub_header.tkraise()
             else:
@@ -8169,7 +9147,6 @@ class App:
             return f"{p['name']}#{p['func']}" if p.get("func") else p["name"]
 
         missing = [_label(p) for p in plan if not p["target"]]
-        will_create = [_label(p) for p in plan if not p["target"] and p.get("create")]
         lines = [f"即将用官方 v{ver} 引擎脚本覆盖游戏里的 "
                  f"{len(plan)} 处调试相关代码："]
         if guessed_by:
@@ -8513,6 +9490,973 @@ class App:
                 subprocess.Popen(["xdg-open", path])
         except Exception as e:
             messagebox.showerror("打开失败", f"{e}")
+
+
+    # ================================================================
+    # 存档编辑（菜单 6）
+    #   一个入口页 + 5 个编辑子页面；右侧统一是「选择游戏存档」侧边栏。
+    #   全局共用一份 SaveFile（self.save_obj），改完点「保存到存档」写回。
+    # ================================================================
+    def current_save(self):
+        return self.save_obj
+
+    def select_save(self, path, force=False, root=None):
+        """选中一份存档（各页面共用同一个内存对象）。"""
+        try:
+            sv = ST.open_save(path, game_root=root or None, force=force)
+        except Exception as e:
+            messagebox.showerror("打开存档失败", f"{path}\n\n{e}")
+            return
+        self.save_path = path
+        self.save_obj = sv
+        self.save_dirty = False
+        for p in list(self.save_panels):
+            try:
+                if p.winfo_exists():
+                    p.sync_selection(path)
+                    p.set_info(sv, self.save_dirty)
+            except Exception:
+                pass
+        self._reload_save_views()
+        try:
+            self.status_var.set(
+                f"已选择存档：{os.path.basename(path)}"
+                f"（{len(sv.objects)} 个数据块，名称来源 {sv.data.source}）")
+        except Exception:
+            pass
+
+    def mark_dirty(self):
+        self.save_dirty = True
+        for p in list(self.save_panels):
+            try:
+                p.set_dirty(True)
+            except Exception:
+                pass
+
+    def write_save(self):
+        sv = self.save_obj
+        if sv is None:
+            messagebox.showinfo("还没有选择存档", "先在右侧选一份游戏存档。")
+            return
+        bak = sv.path + ".bak"
+        tip = "" if os.path.exists(bak) else \
+            f"\n\n（第一次保存会先生成备份 {os.path.basename(bak)}）"
+        if not messagebox.askyesno(
+                "保存到存档",
+                f"写入这个文件：\n{sv.path}{tip}\n\n要在游戏里看到效果，"
+                "需要回游戏重新「读档」（继续游戏不会重读）。确定写入吗？"):
+            return
+        try:
+            sv.write()
+        except Exception as e:
+            messagebox.showerror("写入失败", f"{e}")
+            return
+        self.save_dirty = False
+        for p in list(self.save_panels):
+            try:
+                p.set_info(sv, False)
+            except Exception:
+                pass
+        messagebox.showinfo("已保存", f"已写入 {os.path.basename(sv.path)}。")
+
+    def _reload_save_views(self):
+        if self.current == "saveedit":
+            self._refresh_save_overview()
+        elif self.current in SAVE_SUBMENUS_KEYS:
+            self._refresh_save_page(self.current)
+
+    def refresh_save_lists(self):
+        """改完数据后刷新当前页（列表 + 表单都按新值重读，选中行保持）。"""
+        if self.current == "save_party":
+            self._refresh_save_party()
+        elif self.current == "save_box":
+            self._refresh_save_box()
+        elif self.current == "save_bag":
+            self._refresh_save_bag()
+        elif self.current == "save_trainer":
+            self._refresh_save_trainer()
+
+    def _refresh_save_page(self, key, force=False):
+        """切到/刷新某个编辑子页面。"""
+        fn = getattr(self, f"_refresh_{key}", None)
+        if fn:
+            try:
+                fn()
+            except Exception as e:
+                messagebox.showerror("读取存档失败", f"{e}")
+
+    # ---------- 页面骨架 ----------
+    def _save_page_shell(self, key, panel_width=340):
+        """「内容 + 右侧存档侧边栏」的页面骨架。"""
+        page = self.pages[key]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_columnconfigure(1, weight=0)
+        page.grid_rowconfigure(0, weight=1)
+        left = tk.Frame(page, bg=BG_BASE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        holder = tk.Frame(page, bg=BG_BASE, width=panel_width)
+        holder.grid(row=0, column=1, sticky="nsew")
+        holder.pack_propagate(False)
+        card = RoundCard(holder, radius=16, pad=12)
+        card.pack(fill="both", expand=True)
+        panel = SavePanel(card.body, bg=CARD, app=self)
+        panel.pack(fill="both", expand=True)
+        self.save_panels.append(panel)
+        return left, panel
+
+    def _save_toolbar(self, parent, key):
+        """编辑页顶部：重新载入 / 保存 + 状态文字。"""
+        row = tk.Frame(parent, bg=BG_BASE)
+        row.pack(fill="x", pady=(0, 8))
+        GlassButton(row, "重新载入", width=104, height=38, bg=BG_BASE,
+                    font=FONT_SMALL,
+                    command=lambda k=key: self._refresh_save_page(k)).pack(
+            side="left")
+        GlassButton(row, "保存到存档", width=124, height=38, primary=True,
+                    bg=BG_BASE, font=FONT_B,
+                    command=self.write_save).pack(side="left", padx=6)
+        lbl = tk.Label(row, text="", bg=BG_BASE, fg=C_HINT, font=FONT_SMALL,
+                       anchor="w", justify="left")
+        lbl.pack(side="left", padx=10)
+        # ★ 右上角再给一个返回入口（左上角的返回条离得远，容易找不到）
+        GlassButton(row, "返回存档编辑", width=136, height=38, bg=BG_BASE,
+                    font=FONT_SMALL,
+                    command=lambda: self.show("saveedit")).pack(side="right")
+        return lbl
+
+    def _no_save_hint(self, holder, text="还没有选择存档"):
+        for w in holder.winfo_children():
+            w.destroy()
+        tk.Label(holder, text=f"{text}\n\n请在右侧「选择游戏存档」里选好游戏目录与存档。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=520).pack(anchor="w", padx=6, pady=16)
+
+    def _make_tree(self, parent, columns, widths=None, height=12,
+                   stretch_all=False):
+        """带滚动条的表格。columns = [(键, 标题), ...]
+
+        stretch_all=True：所有列都参与伸缩。左侧卡片宽度是固定的，
+        只让一列 stretch 的话，卡片一窄下来这一列会被压到只剩几个像素
+        （踩过：队伍树「昵称」列被压成 20px、HP 列整列消失）。
+        """
+        holder = tk.Frame(parent, bg=CARD)
+        tree = ttk.Treeview(holder, columns=[c[0] for c in columns],
+                            show="headings", height=height)
+        for i, (ck, title) in enumerate(columns):
+            tree.heading(ck, text=title)
+            tree.column(ck, width=(widths[i] if widths else 90), anchor="w",
+                        stretch=True if stretch_all else (i == 1))
+        sb = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        bind_tree_wheel(tree)
+        try:
+            attach_tree_copy(tree, app=self)
+        except Exception:
+            pass
+        return holder, tree
+
+    @staticmethod
+    def _tree_reload(tree, rows):
+        """
+        重填表格并**保住原来的选中行**。
+
+        rows = [(iid, values), ...]；重填会清掉选中状态，不保的话
+        「改一次值就要重新点一遍」。
+        """
+        wanted = list(tree.selection())
+        tree.delete(*tree.get_children())
+        for iid, values in rows:
+            tree.insert("", "end", iid=str(iid), values=values)
+        have = set(tree.get_children())
+        keep = [i for i in wanted if i in have]
+        if keep:
+            tree.selection_set(keep)
+            try:
+                tree.see(keep[0])
+            except Exception:
+                pass
+
+    # ================================================================
+    # 入口页：中间列编辑选项，右侧选存档
+    # ================================================================
+    def _page_saveedit(self):
+        left, panel = self._save_page_shell("saveedit")
+
+        outer, inner = make_scroll_area(left, bg=BG_BASE)
+        outer.pack(fill="both", expand=True)
+
+        card = RoundCard(inner, radius=18, pad=18, auto_height=True)
+        card.pack(fill="x")
+        body = card.body
+        tk.Label(body, text="存档编辑", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        # ★ 说明文字 fill="x" + wraplength 跟实际宽度走：固定 620 在窄窗里
+        #   会被卡片右边缘裁掉一截
+        hint1 = tk.Label(body,
+                         text="右侧先选好游戏目录与存档，再从下面点进要改的部分。"
+                              "所有修改都先放在内存里，改完点右侧「保存到存档」才写进文件"
+                              "（第一次保存会自动生成 .bak 备份）。",
+                         bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                         wraplength=620)
+        hint1.pack(fill="x", pady=(4, 10))
+        bind_autowrap(hint1, pad=4)
+
+        grid = tk.Frame(body, bg=CARD)
+        grid.pack(fill="x")
+        grid.grid_columnconfigure(1, weight=1)
+        for i, (key, name, desc) in enumerate(SAVE_SUBMENUS):
+            GlassButton(grid, f"{i + 1}. {name}", width=210, height=46,
+                        primary=(i == 0), bg=CARD, font=FONT_B,
+                        command=lambda k=key: self.show(k)).grid(
+                row=i, column=0, sticky="w", pady=5)
+            tk.Label(grid, text=desc, bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                     justify="left", wraplength=430).grid(
+                row=i, column=1, sticky="w", padx=(14, 0))
+
+        hint2 = tk.Label(body,
+                         text="★ 数据来源：优先读游戏 Data 目录里编译好的 .dat"
+                              "（汉化版常常只有 .dat、没有 PBS），读不到才退回 PBS。"
+                              "宝可梦／道具／招式名按游戏的语言包显示。",
+                         bg=CARD, fg=C_WARN, font=FONT_SMALL, justify="left",
+                         wraplength=620)
+        hint2.pack(fill="x", pady=(12, 0))
+        bind_autowrap(hint2, pad=4)
+
+        # 概览卡（跟着选中的存档变）
+        self.overview_card = RoundCard(inner, radius=18, pad=18,
+                                       auto_height=True)
+        self.overview_card.pack(fill="x", pady=(10, 0))
+        self.overview_body = tk.Frame(self.overview_card.body, bg=CARD)
+        self.overview_body.pack(fill="x")
+        self._refresh_save_overview()
+
+    def _refresh_save_overview(self):
+        body = getattr(self, "overview_body", None)
+        if body is None:
+            return
+        for w in body.winfo_children():
+            w.destroy()
+        sv = self.save_obj
+        tk.Label(body, text="当前存档概览", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        if sv is None:
+            tk.Label(body, text="（右侧选中存档后这里会显示概览）", bg=CARD,
+                     fg=C_HINT, font=FONT_SMALL).pack(anchor="w", pady=(4, 0))
+            return
+        tr = sv.g("$Trainer").ivars
+        party = [p for p in (tr.get("@party") or []) if not sv.empty_slot(p)]
+        head = tk.Frame(body, bg=CARD)
+        head.pack(fill="x", pady=(4, 2))
+        tk.Label(head, text=os.path.basename(sv.path), bg=CARD, fg=C_KEY,
+                 font=FONT_BIG).pack(side="left")
+        tk.Label(head, text=f"    游戏目录：{os.path.basename(sv.game_root)}"
+                            f"    名称来源：{sv.data.source}"
+                            f"    语言包：{sv.data.lang_dat or '（无）'}",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(side="left")
+        badges = sum(1 for b in (tr.get("@badges") or []) if b)
+        # ★ 徽章数不一定是 8（有些作品更多），按实际长度显示
+        badges_all = len(tr.get("@badges") or [])
+        bag = sv.g("$PokemonBag").ivars.get("@pockets") or []
+        # 用 pocket_entries() 统计，Hash 式口袋也算得进去
+        items = sum(len(sv.pocket_entries(i)) for i in range(len(bag)))
+        boxes = list(sv.boxes())
+        in_box = sum(len([p for p in (b.ivars.get("@pokemon") or [])
+                          if not sv.empty_slot(p)]) for b in boxes)
+        lines = [
+            f"主角：{sfmt(tr.get('@name'))}（ID {sfmt(tr.get('@id'))}）    "
+            f"金钱 {sfmt(tr.get('@money'))}    徽章 {badges}/{badges_all}",
+            f"同行宝可梦：{len(party)} 只    PC 箱子：{in_box} 只 / {len(boxes)} 箱    "
+            f"背包：{items} 种道具",
+            f"开关 {len(sv.switch_peek())} 个    变量 {len(sv.variable_peek())} 个    "
+            f"图鉴已捕获 {sum(1 for x in sv.dex_flags('owned') if x)} / "
+            f"已见 {sum(1 for x in sv.dex_flags('seen') if x)}",
+        ]
+        for ln in lines:
+            tk.Label(body, text=ln, bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
+                     anchor="w").pack(anchor="w")
+
+    # ================================================================
+    # 子页面 1：主角编辑
+    # ================================================================
+    def _page_save_trainer(self):
+        left, panel = self._save_page_shell("save_trainer")
+        self.tr_tool = self._save_toolbar(left, "save_trainer")
+
+        outer, inner = make_scroll_area(left, bg=BG_BASE)
+        outer.pack(fill="both", expand=True)
+        card = RoundCard(inner, radius=18, pad=18, auto_height=True)
+        card.pack(fill="x")
+        body = card.body
+        tk.Label(body, text="主角编辑", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(body, text="这些是游戏通用字段（PokeBattle_Trainer）。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(anchor="w",
+                                                           pady=(2, 8))
+
+        self.tr_vars = {}
+        for k, d in (("name", ""), ("money", ""), ("id", ""),
+                     ("outfit", ""), ("language", "")):
+            self.tr_vars[k] = tk.StringVar(value=d)
+
+        r = tk.Frame(body, bg=CARD)
+        r.pack(fill="x", pady=3)
+        _lbl(r, "名字", width=10).pack(side="left")
+        _entry(r, self.tr_vars["name"], 16).pack(side="left")
+        _lbl(r, "金钱", width=8).pack(side="left", padx=(14, 0))
+        _entry(r, self.tr_vars["money"], 12).pack(side="left")
+        GlassButton(r, "金钱拉满", width=96, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self.tr_vars["money"].set("999999")
+                    ).pack(side="left", padx=8)
+
+        r = tk.Frame(body, bg=CARD)
+        r.pack(fill="x", pady=3)
+        _lbl(r, "训练家 ID", width=10).pack(side="left")
+        _entry(r, self.tr_vars["id"], 12).pack(side="left")
+        _lbl(r, "服装编号", width=8).pack(side="left", padx=(14, 0))
+        _entry(r, self.tr_vars["outfit"], 8).pack(side="left")
+        _lbl(r, "语种", width=8).pack(side="left", padx=(14, 0))
+        _entry(r, self.tr_vars["language"], 8).pack(side="left")
+
+        r = tk.Frame(body, bg=CARD)
+        r.pack(fill="x", pady=3)
+        _lbl(r, "训练家类型", width=10).pack(side="left")
+        self.tr_type_combo = SearchCombo(r, [], width=22)
+        self.tr_type_combo.pack(side="left")
+        self.tr_dex_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(r, text="已获得图鉴", variable=self.tr_dex_var, bg=CARD,
+                       activebackground=CARD, selectcolor="#FFFFFF",
+                       font=FONT_SMALL, fg=TEXT).pack(side="left", padx=(14, 0))
+        self.tr_dex_lbl = _hint(r, "")
+        self.tr_dex_lbl.pack(side="left", padx=(8, 0))
+
+        # 徽章
+        tk.Label(body, text="徽章", bg=CARD, fg=C_TITLE,
+                 font=FONT_B).pack(anchor="w", pady=(10, 2))
+        self.tr_badges = []
+        brow = tk.Frame(body, bg=CARD)
+        brow.pack(fill="x")
+        for i in range(8):
+            v = tk.BooleanVar(value=False)
+            self.tr_badges.append(v)
+            tk.Checkbutton(brow, text=f"{i + 1}", variable=v, bg=CARD,
+                           activebackground=CARD, selectcolor="#FFFFFF",
+                           font=FONT_SMALL, fg=TEXT).pack(side="left",
+                                                          padx=(0, 6))
+        GlassButton(brow, "全给", width=76, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: [v.set(True) for v in self.tr_badges]
+                    ).pack(side="left", padx=6)
+        GlassButton(brow, "全清", width=76, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: [v.set(False) for v in self.tr_badges]
+                    ).pack(side="left")
+
+        # 图鉴 / 形态图鉴
+        tk.Label(body, text="图鉴与形态图鉴", bg=CARD, fg=C_TITLE,
+                 font=FONT_B).pack(anchor="w", pady=(12, 2))
+        da = tk.Frame(body, bg=CARD)
+        da.pack(fill="x", pady=2)
+        # ★ 5 个按钮一行约 590px，比最小窗口（1240）下的卡片还宽，
+        #   最后一个会被裁掉 —— 统一收窄按钮宽度留出余量
+        GlassButton(da, "全部已见", width=96, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self._dex_all("seen", True)).pack(side="left")
+        GlassButton(da, "清空已见", width=96, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self._dex_all("seen", False)).pack(
+            side="left", padx=6)
+        GlassButton(da, "全部已捕获", width=100, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self._dex_all("owned", True)).pack(side="left")
+        GlassButton(da, "清空已捕获", width=100, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self._dex_all("owned", False)).pack(
+            side="left", padx=6)
+        GlassButton(da, "形态图鉴全开", width=108, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._dex_forms).pack(side="left")
+        self.tr_dex_info = _hint(body, "")
+        self.tr_dex_info.pack(fill="x", pady=(4, 0))
+        bind_autowrap(self.tr_dex_info, pad=4)
+
+        save_row = tk.Frame(body, bg=CARD)
+        save_row.pack(fill="x", pady=(12, 0))
+        GlassButton(save_row, "应用主角修改", width=148, height=40,
+                    primary=True, bg=CARD, font=FONT_B,
+                    command=self._apply_trainer).pack(side="left")
+        tk.Label(save_row,
+                 text="图鉴那四个按钮是立刻生效的；上方字段要再点这个按钮。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(side="left",
+                                                           padx=(12, 0))
+
+    def _dex_all(self, which, value):
+        sv = self.save_obj
+        if sv is None:
+            return
+        name = "已见" if which == "seen" else "已捕获"
+        if not messagebox.askyesno(
+                "图鉴", f"把图鉴的「{name}」{'全部勾上' if value else '全部清空'}吗？"):
+            return
+        sv.set_dex(which, None, value)
+        self.mark_dirty()
+        self._refresh_save_trainer()
+
+    def _dex_forms(self):
+        """形态图鉴全开（两种存档格式的细节都交给 save_tools）。"""
+        sv = self.save_obj
+        if sv is None:
+            return
+        n = sv.unlock_all_forms()
+        if n:
+            self.mark_dirty()
+            messagebox.showinfo("形态图鉴", f"已把 {n} 条形态记录标记为已见。")
+        else:
+            messagebox.showinfo("形态图鉴",
+                                "这份存档里没有形态图鉴字段（不同作品不一样），"
+                                "跳过。")
+        self._refresh_save_trainer()
+
+    def _apply_trainer(self):
+        sv = self.save_obj
+        if sv is None:
+            messagebox.showinfo("提示", "先在右侧选一份存档。")
+            return
+        try:
+            sv.set_trainer(
+                name=self.tr_vars["name"].get(),
+                money=int(self.tr_vars["money"].get().strip() or 0),
+                id=int(self.tr_vars["id"].get().strip() or 0),
+                outfit=int(self.tr_vars["outfit"].get().strip() or 0),
+                language=int(self.tr_vars["language"].get().strip() or 0),
+                pokedex=bool(self.tr_dex_var.get()),
+            )
+            tt = self.tr_type_combo.value_of()
+            if tt is not None:
+                sv.set_trainer(trainertype=tt)
+            sv.set_trainer(badges=[v.get() for v in self.tr_badges])
+        except ValueError:
+            messagebox.showwarning("填写有误", "金钱 / ID / 服装 / 语种要填整数。")
+            return
+        self.mark_dirty()
+        self._refresh_save_trainer()
+        messagebox.showinfo("已应用", "主角字段已改好（记得点「保存到存档」写入文件）。")
+
+    def _refresh_save_trainer(self):
+        sv = self.save_obj
+        if sv is None:
+            return
+        t = sv.trainer()
+        self.tr_vars["name"].set(str(t["名字"] or ""))
+        self.tr_vars["money"].set(str(t["持有金钱"] or 0))
+        self.tr_vars["id"].set(str(t["训练家ID"] or 0))
+        self.tr_vars["outfit"].set(str(t["服装编号"] or 0))
+        self.tr_vars["language"].set(str(t["语种"] or 0))
+        self.tr_dex_var.set(bool(t["已获得图鉴"]))
+        self.tr_type_combo.set_pairs(
+            [(f"{n}（#{i}）", i) for n, i in sv.data.trainer_type_list()],
+            keep=False)
+        self.tr_type_combo.set_value(t["训练家类型ID"])
+        if t["训练家类型ID"] is None and t["训练家类型"]:
+            # 没映射到编号（比如游戏自定义的训练家类型）：直接显示文字
+            self.tr_type_combo.set(str(t["训练家类型"]))
+        for i, v in enumerate(self.tr_badges):
+            v.set(i < len(t["徽章明细"] or []) and bool(t["徽章明细"][i]))
+        seen = sum(1 for x in sv.dex_flags("seen") if x)
+        owned = sum(1 for x in sv.dex_flags("owned") if x)
+        self.tr_dex_lbl.config(text=f"图鉴：已见 {seen} / 已捕获 {owned}")
+        self.tr_dex_info.config(
+            text=f"存档格式：{t.get('存档格式', sv.fmt)}    "
+                 f"训练家类型 {t['训练家类型'] or '—'}"
+                 f"（ID {sfmt(t['训练家类型ID'])}）    "
+                 f"徽章 {sum(1 for v in self.tr_badges if v.get())}"
+                 f"/{len(self.tr_badges)}    "
+                 f"存档：{os.path.basename(sv.path)}")
+
+    # ================================================================
+    # 子页面 2：同行宝可梦编辑
+    # ================================================================
+    def _page_save_party(self):
+        left, panel = self._save_page_shell("save_party")
+        self.party_tool = self._save_toolbar(left, "save_party")
+
+        wrap = tk.Frame(left, bg=BG_BASE)
+        wrap.pack(fill="both", expand=True)
+        # ★ 左卡定宽 322：5 列表格（40+74+78+32+56=280）+ 滚动条 13 + 卡片
+        #   内边距 24 刚好放下。原来是 250，表格被压得「昵称」只剩 20px、
+        #   HP 列整列看不见（用户截图反馈过）。
+        wrap.grid_columnconfigure(0, weight=0, minsize=322)
+        wrap.grid_columnconfigure(1, weight=1)
+        wrap.grid_rowconfigure(0, weight=1)
+
+        lcard = RoundCard(wrap, radius=16, pad=12)
+        lcard.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        tk.Label(lcard.body, text="同行队伍（最多 6 只）", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", pady=(0, 6))
+        holder, self.party_tree = self._make_tree(
+            lcard.body,
+            [("pos", "位置"), ("nick", "昵称"), ("sp", "种族"),
+             ("lv", "Lv"), ("hp", "HP")],
+            [40, 74, 78, 32, 56], height=10, stretch_all=True)
+        self.party_tree.bind("<<TreeviewSelect>>", self._on_party_select)
+
+        # ★ 底部按钮钉在卡片底边（side="bottom"），树自动让位
+        btn_grid(lcard.body, [
+            ("复制一只", self._party_duplicate),
+            ("移入 PC", self._party_to_box),
+            ("移出队伍", self._party_remove),
+        ]).pack(side="bottom", fill="x", pady=(8, 0))
+
+        holder.pack(fill="both", expand=True)
+
+        rcard = RoundCard(wrap, radius=16, pad=12)
+        rcard.grid(row=0, column=1, sticky="nsew")
+        self.party_form = PokemonForm(rcard.body, self)
+        self.party_form.frame.pack(fill="both", expand=True)
+
+    def _on_party_select(self, _e=None):
+        sv = self.save_obj
+        if sv is None:
+            return
+        sel = self.party_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        party = sv.party()
+        if 0 <= idx < len(party):
+            self.party_form.load(party[idx], f"队伍第 {idx + 1} 位")
+
+    def _refresh_save_party(self):
+        sv = self.save_obj
+        if sv is None:
+            return
+        rows = []
+        party = sv.party()
+        for i, pm in enumerate(party):
+            if sv.empty_slot(pm):
+                continue
+            r = sv.read_pokemon(pm)
+            rows.append((i, (i + 1, r.get("name") or "",
+                             sv.data.species(r["species"]), r["level"],
+                             f"{r.get('hp')}/{r.get('totalhp')}")))
+        self._tree_reload(self.party_tree, rows)
+        if not self.party_tree.selection() and rows:
+            self.party_tree.selection_set(str(rows[0][0]))
+        if self.party_tree.selection():
+            self._on_party_select()       # 表单跟着新值重读
+        else:
+            self.party_form.clear()
+        self.party_tool.config(
+            text=f"共 {len(rows)} 只    "
+                 f"存档：{os.path.basename(sv.path)}")
+
+    def _party_index(self):
+        sel = self.party_tree.selection()
+        return int(sel[0]) if sel else None
+
+    def _party_duplicate(self):
+        sv = self.save_obj
+        i = self._party_index()
+        if sv is None or i is None:
+            messagebox.showinfo("提示", "先在左边选一只宝可梦。")
+            return
+        pm = sv.clone_pokemon(sv.party()[i])
+        if pm is None:
+            return
+        if not sv.add_to_party(pm):
+            messagebox.showwarning("队伍满了", "同行队伍最多 6 只，先移走一只。")
+            return
+        self.mark_dirty()
+        self._refresh_save_party()
+
+    def _party_to_box(self):
+        sv = self.save_obj
+        i = self._party_index()
+        if sv is None or i is None:
+            return
+        # ★ 先看有没有空位再动队伍 —— 之前是先 pop 再放，放不下那只就没了（丢档）
+        pm = sv.party()[i] if 0 <= i < len(sv.party()) else None
+        if sv.empty_slot(pm):
+            return
+        if sv.add_to_box(pm, 0)[0] < 0:
+            messagebox.showwarning("箱子满了", "所有箱子都满了，先腾一格。")
+            return
+        sv.remove_from_party(i)
+        self.mark_dirty()
+        self._refresh_save_party()
+
+    def _party_remove(self):
+        sv = self.save_obj
+        i = self._party_index()
+        if sv is None or i is None:
+            return
+        if not messagebox.askyesno("移出队伍", "把这只从队伍里删掉吗？"
+                                              "（不会放进箱子，直接消失）"):
+            return
+        sv.remove_from_party(i)
+        self.mark_dirty()
+        self._refresh_save_party()
+
+    # ================================================================
+    # 子页面 3：背包编辑
+    # ================================================================
+    def _page_save_bag(self):
+        left, panel = self._save_page_shell("save_bag")
+        self.bag_tool = self._save_toolbar(left, "save_bag")
+
+        card = RoundCard(left, radius=16, pad=14)
+        card.pack(fill="both", expand=True)
+        body = card.body
+
+        top = tk.Frame(body, bg=CARD)
+        top.pack(fill="x", pady=(0, 6))
+        _lbl(top, "口袋", width=8).pack(side="left")
+        self.bag_pocket_combo = SearchCombo(top, [], width=18)
+        self.bag_pocket_combo.pack(side="left")
+        self.bag_pocket_combo.bind("<<ComboboxSelected>>",
+                                   lambda e: self._load_bag_items())
+        _lbl(top, "登记道具", width=10).pack(side="left", padx=(16, 0))
+        self.bag_reg_combo = SearchCombo(top, [], width=20)
+        self.bag_reg_combo.pack(side="left")
+        GlassButton(top, "设为登记道具", width=128, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._bag_set_registered).pack(side="left", padx=8)
+        self.bag_reg_lbl = _hint(top, "")
+        self.bag_reg_lbl.pack(side="left")
+
+        holder, self.bag_tree = self._make_tree(
+            body, [("name", "道具"), ("id", "#"), ("count", "数量")],
+            [300, 70, 80], height=14)
+        self.bag_tree.bind("<<TreeviewSelect>>", self._on_bag_select)
+
+        # ★ 底部两行（改数量 / 添加道具）单独一帧、side="bottom" 钉在卡片
+        #   底边，树自动让位。原来按顺序 pack，窗口一矮「添加道具」整行被
+        #   挤出卡片看不见（1366×768 屏幕上尤其明显）。
+        foot = tk.Frame(body, bg=CARD)
+        foot.pack(side="bottom", fill="x")
+
+        edit = tk.Frame(foot, bg=CARD)
+        edit.pack(fill="x", pady=2)
+        _lbl(edit, "数量", width=8).pack(side="left")
+        self.bag_count_var = tk.StringVar(value="")
+        _entry(edit, self.bag_count_var, 10).pack(side="left")
+        GlassButton(edit, "改数量", width=96, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._bag_edit_count).pack(side="left", padx=6)
+        GlassButton(edit, "删除这条", width=104, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._bag_delete).pack(side="left")
+
+        add = tk.Frame(foot, bg=CARD)
+        add.pack(fill="x", pady=(8, 0))
+        _lbl(add, "添加道具", width=10).pack(side="left")
+        self.bag_add_combo = SearchCombo(add, [], width=30)
+        self.bag_add_combo.pack(side="left")
+        _lbl(add, "数量", width=6).pack(side="left", padx=(10, 0))
+        self.bag_add_var = tk.StringVar(value="99")
+        _entry(add, self.bag_add_var, 8).pack(side="left")
+        GlassButton(add, "加入本口袋", width=116, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._bag_add).pack(side="left", padx=6)
+        GlassButton(add, "本口袋补满 999", width=140, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self._bag_bulk(999)).pack(side="left")
+
+        holder.pack(fill="both", expand=True, pady=(4, 6))
+
+    def _bag_pocket_options(self, sv):
+        opts = []
+        for idx in range(len(sv.g("$PokemonBag").ivars.get("@pockets") or [])):
+            opts.append((f"{sv.data.pocket_name(idx)}（{idx}）", idx))
+        return opts
+
+    def _refresh_save_bag(self):
+        sv = self.save_obj
+        if sv is None:
+            return
+        # ★ keep=True：保留玩家当前正在看的口袋，别每次刷新都跳回第 2 个
+        self.bag_pocket_combo.set_pairs(self._bag_pocket_options(sv), keep=True)
+        cur = self.bag_pocket_combo.value_of()
+        if cur is None:
+            cur = 1 if len(self.bag_pocket_combo.pairs) > 1 else 0
+            self.bag_pocket_combo.set_value(cur)
+        items = [(f"{n}（#{i}）", i) for n, i in sv.data.item_list()]
+        self.bag_add_combo.set_pairs(items, keep=True)
+        self.bag_reg_combo.set_pairs([("（无）", 0)] + items, keep=False)
+        reg_id = sv.bag().get("登记道具ID") or 0
+        self.bag_reg_combo.set_value(reg_id)
+        self.bag_reg_lbl.config(text=f"当前登记：{sv.data.item(reg_id)}")
+        self._load_bag_items()
+        self.bag_tool.config(text=f"存档：{os.path.basename(sv.path)}")
+
+    def _load_bag_items(self):
+        sv = self.save_obj
+        if sv is None:
+            return
+        idx = self.bag_pocket_combo.value_of() or 0
+        rows = []
+        # ★ 用 pocket_entries()（格式无关，两代存档都能读），别直接翻 ivar
+        for i, (iid, cnt) in enumerate(sv.pocket_entries(idx)):
+            rows.append((i, (sv.data.item(iid), iid, cnt)))
+        self._tree_reload(self.bag_tree, rows)
+        self.bag_count_var.set("")
+
+    def _bag_selected(self):
+        sel = self.bag_tree.selection()
+        return int(sel[0]) if sel else None
+
+    def _on_bag_select(self, _e=None):
+        sv = self.save_obj
+        i = self._bag_selected()
+        if sv is None or i is None:
+            return
+        idx = self.bag_pocket_combo.value_of() or 0
+        entries = sv.pocket_entries(idx)
+        if 0 <= i < len(entries):
+            self.bag_count_var.set(str(entries[i][1]))
+
+    def _bag_edit_count(self):
+        sv = self.save_obj
+        i = self._bag_selected()
+        if sv is None or i is None:
+            messagebox.showinfo("提示", "先在表里选一条道具。")
+            return
+        idx = self.bag_pocket_combo.value_of() or 0
+        entries = sv.pocket_entries(idx)
+        if not (0 <= i < len(entries)):
+            return
+        try:
+            n = int(self.bag_count_var.get().strip())
+        except ValueError:
+            messagebox.showwarning("数量不对", "数量要填整数。")
+            return
+        sv.set_pocket_count_by_index(idx, i, n)
+        self.mark_dirty()
+        self._load_bag_items()
+
+    def _bag_delete(self):
+        sv = self.save_obj
+        i = self._bag_selected()
+        if sv is None or i is None:
+            return
+        idx = self.bag_pocket_combo.value_of() or 0
+        sv.remove_bag_index(idx, i)
+        self.mark_dirty()
+        self._load_bag_items()
+
+    def _bag_add(self):
+        sv = self.save_obj
+        if sv is None:
+            return
+        iid = self.bag_add_combo.value_of()
+        if iid is None:
+            messagebox.showinfo("提示", "先在下拉里选一个道具（可打字搜索）。")
+            return
+        try:
+            n = int(self.bag_add_var.get().strip() or 1)
+        except ValueError:
+            n = 1
+        idx = self.bag_pocket_combo.value_of() or 0
+        sv.set_bag_item(idx, iid, n)
+        self.mark_dirty()
+        self._load_bag_items()
+
+    def _bag_bulk(self, n):
+        sv = self.save_obj
+        if sv is None:
+            return
+        idx = self.bag_pocket_combo.value_of() or 0
+        entries = sv.pocket_entries(idx)
+        if not entries:
+            messagebox.showinfo("提示", "这个口袋是空的。")
+            return
+        if not messagebox.askyesno("批量改数量",
+                                   f"把「{sv.data.pocket_name(idx)}」里 "
+                                   f"{len(entries)} 种道具都改成 {n} 个？"):
+            return
+        sv.fill_pocket(idx, n)
+        self.mark_dirty()
+        self._load_bag_items()
+
+    def _bag_set_registered(self):
+        sv = self.save_obj
+        if sv is None:
+            return
+        v = self.bag_reg_combo.value_of()
+        if v is None:
+            return
+        sv.set_registered_item(v)
+        self.mark_dirty()
+        self.bag_reg_lbl.config(text=f"当前登记：{sv.data.item(v)}")
+
+    # ================================================================
+    # 子页面 4：PC 盒子编辑
+    # ================================================================
+    def _page_save_box(self):
+        left, panel = self._save_page_shell("save_box")
+        self.box_tool = self._save_toolbar(left, "save_box")
+
+        wrap = tk.Frame(left, bg=BG_BASE)
+        wrap.pack(fill="both", expand=True)
+        # ★ 左卡定宽 320：4 列表格（40+90+96+38=264）+ 滚动条 13 + 内边距 24。
+        #   原来 290 偏窄，树列全挤在一起，顶行「改名」按钮还被裁成「箱」。
+        wrap.grid_columnconfigure(0, weight=0, minsize=320)
+        wrap.grid_columnconfigure(1, weight=1)
+        wrap.grid_rowconfigure(0, weight=1)
+
+        lcard = RoundCard(wrap, radius=16, pad=12)
+        lcard.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        top = tk.Frame(lcard.body, bg=CARD)
+        top.pack(fill="x")
+        _lbl(top, "箱子", width=4).pack(side="left")
+        # ★ 箱子选择 + 改名分成两行：原来一行硬塞（标签+下拉+输入框+按钮），
+        #   卡片一窄「改名」按钮就被压成 35px（用户截图里只剩个「箱」字）
+        self.box_combo = SearchCombo(top, [], width=14)
+        self.box_combo.pack(side="left", fill="x", expand=True)
+        self.box_combo.bind("<<ComboboxSelected>>",
+                            lambda e: self._load_box_slots())
+        top2 = tk.Frame(lcard.body, bg=CARD)
+        top2.pack(fill="x", pady=(2, 0))
+        self.box_name_var = tk.StringVar(value="")
+        _entry(top2, self.box_name_var, 12).pack(side="left", fill="x",
+                                                 expand=True)
+        GlassButton(top2, "改名", width=72, height=30, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._box_rename).pack(side="left", padx=(6, 0))
+
+        holder, self.box_tree = self._make_tree(
+            lcard.body,
+            [("slot", "格"), ("nick", "昵称"), ("sp", "种族"), ("lv", "Lv")],
+            [40, 90, 96, 38], height=13, stretch_all=True)
+        self.box_tree.bind("<<TreeviewSelect>>", self._on_box_select)
+
+        # ★ 底部按钮钉在卡片底边（side="bottom"），树自动让位 ——
+        #   按顺序 pack 时窗口一矮这排按钮就被挤扁（踩过：1366×768）
+        btn_grid(lcard.body, [
+            ("移入队伍", self._box_to_party),
+            ("复制到空位", self._box_duplicate),
+            ("清空该格", self._box_clear),
+        ]).pack(side="bottom", fill="x", pady=(6, 0))
+
+        holder.pack(fill="both", expand=True, pady=(6, 4))
+
+        rcard = RoundCard(wrap, radius=16, pad=12)
+        rcard.grid(row=0, column=1, sticky="nsew")
+        self.box_form = PokemonForm(rcard.body, self)
+        self.box_form.frame.pack(fill="both", expand=True)
+
+    def _refresh_save_box(self):
+        sv = self.save_obj
+        if sv is None:
+            return
+        opts = []
+        for i, b in enumerate(sv.boxes()):
+            n = len([p for p in (b.ivars.get("@pokemon") or [])
+                     if not sv.empty_slot(p)])
+            opts.append((f"{i + 1}. {b.ivars.get('@name') or '箱子'}（{n}）", i))
+        self.box_combo.set_pairs(opts, keep=True)
+        if self.box_combo.value_of() is None:
+            self.box_combo.set_value(
+                sv.g("$PokemonStorage").ivars.get("@currentBox") or 0)
+        self._load_box_slots()
+        self.box_tool.config(
+            text=f"共 {len(sv.boxes())} 箱    存档：{os.path.basename(sv.path)}")
+
+    def _load_box_slots(self):
+        sv = self.save_obj
+        if sv is None:
+            return
+        bi = self.box_combo.value_of() or 0
+        slots = sv.box_slots(bi)
+        rows = []
+        for i in range(30):
+            pm = slots[i] if i < len(slots) else None
+            if sv.empty_slot(pm):
+                rows.append((i, (i + 1, "（空）", "", "")))
+                continue
+            r = sv.read_pokemon(pm)
+            rows.append((i, (i + 1, r.get("name") or "",
+                             sv.data.species(r["species"]), r["level"])))
+        self._tree_reload(self.box_tree, rows)
+        boxes = sv.boxes()
+        if 0 <= bi < len(boxes):
+            self.box_name_var.set(str(boxes[bi].ivars.get("@name") or ""))
+        # 表单跟着选中格重读（没选中就清空）
+        self._on_box_select()
+
+    def _box_selected(self):
+        sel = self.box_tree.selection()
+        return int(sel[0]) if sel else None
+
+    def _on_box_select(self, _e=None):
+        sv = self.save_obj
+        i = self._box_selected()
+        bi = self.box_combo.value_of() or 0
+        if sv is None or i is None:
+            self.box_form.clear()
+            return
+        slots = sv.box_slots(bi)
+        pm = slots[i] if i < len(slots) else None
+        if sv.empty_slot(pm):
+            self.box_form.clear()
+            self.box_form.title_lbl.config(
+                text=f"第 {bi + 1} 箱 · 第 {i + 1} 格（空）")
+            return
+        self.box_form.load(pm, f"第 {bi + 1} 箱 · 第 {i + 1} 格")
+
+    def _box_rename(self):
+        sv = self.save_obj
+        if sv is None:
+            return
+        bi = self.box_combo.value_of() or 0
+        sv.rename_box(bi, self.box_name_var.get())
+        self.mark_dirty()
+        self._refresh_save_box()
+
+    def _box_to_party(self):
+        sv = self.save_obj
+        i, bi = self._box_selected(), self.box_combo.value_of() or 0
+        if sv is None or i is None:
+            return
+        if not sv.move_box_to_party(bi, i):
+            messagebox.showwarning("放不进去", "同行队伍满了，或者这一格是空的。")
+            return
+        self.mark_dirty()
+        self._load_box_slots()
+
+    def _box_duplicate(self):
+        sv = self.save_obj
+        i, bi = self._box_selected(), self.box_combo.value_of() or 0
+        if sv is None or i is None:
+            return
+        slots = sv.box_slots(bi)
+        if not (0 <= i < len(slots)) or sv.empty_slot(slots[i]):
+            messagebox.showinfo("提示", "这一格是空的。")
+            return
+        pm = sv.clone_pokemon(slots[i])
+        if pm is None:
+            return
+        b2, s2 = sv.add_to_box(pm, bi)
+        if b2 < 0:
+            messagebox.showwarning("放不下", "所有箱子都满了。")
+            return
+        self.mark_dirty()
+        self._load_box_slots()
+        messagebox.showinfo("已复制", f"复制到了第 {b2 + 1} 箱第 {s2 + 1} 格。")
+
+    def _box_clear(self):
+        sv = self.save_obj
+        i, bi = self._box_selected(), self.box_combo.value_of() or 0
+        if sv is None or i is None:
+            return
+        if not messagebox.askyesno("清空该格", "把这一格的宝可梦删掉吗？"):
+            return
+        sv.remove_from_box(bi, i)
+        self.mark_dirty()
+        self._load_box_slots()
+        self.box_form.clear()
 
 
 # ================================================================
