@@ -567,7 +567,7 @@ def _install_mkxp_preload(game_dir, say, quiet=False):
     fwd = MKXP_PRELOAD.replace("\\", "/")
     if not has_ext:
         body = ('{\n'
-                '    // 由「宝可梦翻译工具」创建：调试模式用，可随时删除。\n'
+                '    // 由「宝可梦同人工具」创建：调试模式用，可随时删除。\n'
                 '    "preloadScript": ["%s"]\n'
                 '}\n' % fwd)
     else:
@@ -636,7 +636,7 @@ def _inject_mkxp_preload(txt, rb_fwd):
 # ================================================================
 # 作用：把 $DEBUG / $TEST 置真（+ 后台维持），配合 `Game.exe debug`。
 # 不屏蔽 Compiler —— 改用「补齐占位文件」让编译不触发。
-_MKXP_PRELOAD_RB = r'''# pkmn-debug preload（由「宝可梦翻译工具」生成，可随时删除）
+_MKXP_PRELOAD_RB = r'''# pkmn-debug preload（由「宝可梦同人工具」生成，可随时删除）
 # 作用：确保 $DEBUG / $TEST 为真；后台线程防止被 Settings 覆盖回去。
 begin
   $DEBUG = true
@@ -716,7 +716,7 @@ def _render_py(game_dir, exe, kind):
     body = _py_body_mkxp(exe_name) if kind == "mkxp" else _py_body_rgss(exe_name)
     header = (
         "# -*- coding: utf-8 -*-\n"
-        "# 宝可梦翻译工具 · 调试模式启动器（自动生成）\n"
+        "# 宝可梦同人工具 · 调试模式启动器（自动生成）\n"
         f"# 运行库：{RUNTIME_LABEL.get(kind, '未知')}\n"
         "# 双击本文件（或同目录的「调试模式启动.bat」）即以调试模式进入游戏。\n"
         "# 不改游戏本体、不动存档；不想用了直接删掉生成的文件即可。\n\n"

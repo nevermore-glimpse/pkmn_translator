@@ -146,12 +146,13 @@ def save_report_edit(src, dst, src_path=None):
 def _edited_path_for(src_path):
     """
     源文件 → 手工编辑记录路径（与 cache.edited_path 的规则一致）：
-        <目录>/<主名>_cache_edited.json
-    ★ 不碰 config.Runtime，纯算路径，GUI 里统计条数时用。
+        <中间文件目录>/<主名>_cache_edited.json
+    ★ 中间文件目录 = 源目录下若有「翻译中间文件」夹就用它（见 config.aux_dir），
+      与缓存落在同一处，两边的规则必须一致，否则统计会数不到。
     """
-    parent = os.path.dirname(os.path.abspath(src_path))
-    stem = os.path.splitext(os.path.basename(src_path))[0]
-    return os.path.join(parent, f"{stem}_cache_edited.json")
+    src = source_of(src_path)
+    stem = os.path.splitext(os.path.basename(src))[0]
+    return os.path.join(config.aux_dir(src), f"{stem}_cache_edited.json")
 
 
 def count_manual_edits(paths):
@@ -292,17 +293,17 @@ def apply_manual_edits(paths):
 # 路径
 # ================================================================
 def _report_path():
-    """检查报告路径：与输出文件同目录。"""
+    """检查报告路径：中间文件 → 优先放「翻译中间文件」夹。"""
     out = config.Runtime.output_file
-    d = os.path.dirname(out) or "."
+    d = config.aux_dir(out) or "."
     base = os.path.splitext(os.path.basename(out))[0]
     return os.path.join(d, f"{base}_report.txt")
 
 
 def _unknown_ctrl_report_path():
-    """与输入文件同目录，名为 <输入名>_unknown_ctrl.txt"""
+    """未识别控制码报告：中间文件 → 优先放「翻译中间文件」夹。"""
     inp = config.Runtime.input_file
-    d = os.path.dirname(inp) or "."
+    d = config.aux_dir(inp) or "."
     base = os.path.splitext(os.path.basename(inp))[0]
     return os.path.join(d, f"{base}_unknown_ctrl.txt")
 
@@ -784,28 +785,72 @@ TRANSLATED_SUFFIX = "_translated.txt"
 REPORT_SUFFIX     = "_translated_report.txt"
 CACHE_SUFFIX      = "_cache.json"
 CONFLICT_SUFFIX   = "_conflicts.json"
+POLISH_LOG_SUFFIX = "_polished.txt"
 
-# 「缓存 / 译文 / 报告」→ 源文件，按长到短匹配（_translated_report.txt 先于
-# _translated.txt，否则会被切错）
-_GENERATED_SUFFIXES = (REPORT_SUFFIX, TRANSLATED_SUFFIX, CACHE_SUFFIX)
+# 「缓存 / 译文 / 报告 / 润色」→ 源文件，按长到短匹配
+# （_translated_report.txt 先于 _translated.txt；_polish_cache.json 先于
+#   _cache.json，否则后者会把前者切错）
+_GENERATED_SUFFIXES = (REPORT_SUFFIX, TRANSLATED_SUFFIX,
+                       "_polish_cache.json", POLISH_LOG_SUFFIX, CACHE_SUFFIX)
+
+
+def enter_work_dir(paths):
+    """
+    「翻译整个文件夹」时，在文件夹下建「翻译中间文件」夹，把中间文件放进去。
+
+    条件：**≥2 个文件且都在同一个目录**（单文件 / 跨目录的一批不建，
+    保持老行为：中间文件跟源文件同目录）。
+    返回建好的目录；没建返回 ""。
+    """
+    items = [p for p in (paths or []) if p]
+    dirs = {os.path.dirname(os.path.abspath(p)) for p in items}
+    if len(items) < 2 or len(dirs) != 1:
+        return ""
+    d = next(iter(dirs))
+    wd = os.path.join(d, config.WORK_DIR_NAME)
+    try:
+        os.makedirs(wd, exist_ok=True)
+    except OSError as e:
+        log.warning("建「%s」失败（中间文件仍放源目录）：%s",
+                    config.WORK_DIR_NAME, e)
+        return ""
+    return wd
+
+
+def _announce_work_dir(paths):
+    """
+    批量处理前先建好「翻译中间文件」夹并打一行日志。
+    返回目录（没建 → ""，表示中间文件仍与源文件同目录）。
+    """
+    wd = enter_work_dir(paths)
+    if wd:
+        log.info("本次中间文件目录：%s", wd)
+        emit(f"  · 缓存 / 冲突 / 报告 / 润色稿等中间文件都放进：{wd}")
+    return wd
 
 
 def source_of(path):
     """
-    把「缓存文件 / 译文文件 / 检查报告」换回它对应的**源文件**路径；
+    把「缓存文件 / 译文文件 / 检查报告 / 润色稿」换回它对应的**源文件**路径；
     本来就是源文件的原样返回。
 
     ★ 菜单 4（术语重翻）/ 6（中文润色）只允许选 `*_cache.json`、
       菜单 7（换行重排）只允许选 `*_translated.txt`，而后面的流程都是按
       **源文件**推导缓存与译文路径的（Runtime.set_input），所以要先换算一步，
       否则会拼出 `xxx_cache_cache.json` 这种鬼东西。
+    ★ 中间文件若在「翻译中间文件」夹里，源文件在它的**上一层**。
     """
     if not path:
         return path
-    low = str(path).lower()
+    text = str(path)
+    low = text.lower()
     for suf in _GENERATED_SUFFIXES:
         if low.endswith(suf):
-            return path[: -len(suf)] + ".txt"
+            base = os.path.basename(text)[: -len(suf)]
+            d = os.path.dirname(text)
+            if os.path.basename(os.path.abspath(d)) == config.WORK_DIR_NAME:
+                d = os.path.dirname(d)
+            return os.path.join(d, base + ".txt") if d else base + ".txt"
     return path
 
 
@@ -815,8 +860,7 @@ def cache_path_for(path):
         return None
     src = source_of(path)
     stem = os.path.splitext(os.path.basename(src))[0]
-    return os.path.join(os.path.dirname(os.path.abspath(src)),
-                        f"{stem}{CACHE_SUFFIX}")
+    return os.path.join(config.aux_dir(src), f"{stem}{CACHE_SUFFIX}")
 
 
 def translated_path_for(path):
@@ -830,13 +874,12 @@ def translated_path_for(path):
 
 
 def report_path_for(src_path):
-    """源文件 → 对应检查报告路径。"""
+    """源文件 → 对应检查报告路径（中间文件，放「翻译中间文件」夹）。"""
     if not src_path:
         return None
     src = source_of(src_path)
     stem = os.path.splitext(os.path.basename(src))[0]
-    parent = os.path.dirname(os.path.abspath(src))
-    return os.path.join(parent, f"{stem}{REPORT_SUFFIX}")
+    return os.path.join(config.aux_dir(src), f"{stem}{REPORT_SUFFIX}")
 
 
 def conflict_path_for(src_path):
@@ -848,8 +891,7 @@ def conflict_path_for(src_path):
         return None
     src = source_of(src_path)
     stem = os.path.splitext(os.path.basename(src))[0]
-    parent = os.path.dirname(os.path.abspath(src))
-    return os.path.join(parent, f"{stem}{CONFLICT_SUFFIX}")
+    return os.path.join(config.aux_dir(src), f"{stem}{CONFLICT_SUFFIX}")
 
 
 def source_path_for_report(report_path):
@@ -857,6 +899,7 @@ def source_path_for_report(report_path):
     检查报告 → 原始源文件路径。
     报告名为 <原名>_translated_report.txt，反推源文件时按常见扩展名试，
     找不到就在同目录里按前缀匹配。
+    ★ 报告放在「翻译中间文件」夹里时，源文件在**上一层**，两处都找。
     """
     if not report_path:
         return None
@@ -866,20 +909,24 @@ def source_path_for_report(report_path):
         return report_path if os.path.exists(report_path) else None
 
     stem = base[: -len(REPORT_SUFFIX)]
-    for ext in (".txt", ".TXT", ".json", ".yml", ".yaml", ".csv", ""):
-        p = os.path.join(d, stem + ext)
-        if os.path.isfile(p):
-            return p
+    cand_dirs = [d]
+    if os.path.basename(d) == config.WORK_DIR_NAME:
+        cand_dirs.append(os.path.dirname(d))
 
-    try:
-        for f in sorted(os.listdir(d)):
-            low = f.lower()
-            if (low.startswith(stem.lower() + ".")
-                    and not (low.endswith(TRANSLATED_SUFFIX)
-                             or low.endswith(REPORT_SUFFIX))):
-                return os.path.join(d, f)
-    except OSError:
-        pass
+    for cd in cand_dirs:
+        for ext in (".txt", ".TXT", ".json", ".yml", ".yaml", ".csv", ""):
+            p = os.path.join(cd, stem + ext)
+            if os.path.isfile(p):
+                return p
+        try:
+            for f in sorted(os.listdir(cd)):
+                low = f.lower()
+                if (low.startswith(stem.lower() + ".")
+                        and not (low.endswith(TRANSLATED_SUFFIX)
+                                 or low.endswith(REPORT_SUFFIX))):
+                    return os.path.join(cd, f)
+        except OSError:
+            pass
     return None
 
 
@@ -1609,6 +1656,7 @@ def translate_paths(paths, src_lang=None, tgt_lang=None, model=None):
     翻译一组文件（无交互）。返回统计 dict。
     """
     _apply_lang_model(src_lang, tgt_lang, model)
+    _announce_work_dir(paths)          # 整个文件夹 → 中间文件另存
 
     log.info("=" * 50)
     log.info("开始翻译  共 %d 个文件  方向 %s → %s",
@@ -1738,6 +1786,7 @@ def _conflicts_as_hits(entries=None, out_lines=None):
 
 def check_paths(paths):
     """批量检查，返回 {path: hits}。"""
+    _announce_work_dir(paths)
     result = {}
     for i, path in enumerate(paths, 1):
         bridge.progress(i - 1, len(paths), os.path.basename(path))
@@ -1762,6 +1811,8 @@ def retranslate_report_paths(paths, src_lang=None, tgt_lang=None, model=None,
              手工改过的句子一旦被重翻就白改了。
     """
     _apply_lang_model(src_lang, tgt_lang, model)
+
+    _announce_work_dir(paths)
 
     active = set(RETRANSLATE_KINDS) if kinds is None else set(kinds)
     active -= NEVER_RETRANSLATE_KINDS
@@ -1861,6 +1912,8 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
     extra_terms: GUI 刚编辑过的术语，会强制纳入「受影响术语」。
     """
     _apply_lang_model(src_lang, tgt_lang, model)
+
+    _announce_work_dir(paths)
 
     import term_sync as TS
 
@@ -1988,6 +2041,8 @@ def apply_term_conflicts(choices, paths=None, src_lang=None, tgt_lang=None,
     """
     import term_sync as TS
 
+    _announce_work_dir(paths)
+
     mapping = {}
     renames = {}
     for c in (choices or []):
@@ -2099,6 +2154,8 @@ def apply_prefix_dict_paths(paths, entries_map=None):
     """
     import prefix_dict as PFD
 
+    _announce_work_dir(paths)
+
     log.info("=" * 50)
     log.info("应用前缀字典  共 %d 个文件", len(paths))
 
@@ -2207,6 +2264,8 @@ def apply_prefix_terms_paths(paths=None):
     """
     import prefix_dict as PFD
 
+    _announce_work_dir(paths)
+
     PFD.reload_dict()
     changes, stats = PFD.apply_terms_for_tg()
 
@@ -2306,9 +2365,9 @@ def _save_polish_state(path, state):
 
 
 def _polish_log_path():
-    """润色报告路径：与输出文件同目录，名为 <输出名>_polished.txt"""
+    """润色报告路径：中间文件 → 优先放「翻译中间文件」夹，名 <输出名>_polished.txt"""
     out = config.Runtime.output_file
-    d = os.path.dirname(out) or "."
+    d = config.aux_dir(out) or "."
     base = os.path.splitext(os.path.basename(out))[0]
     return os.path.join(d, f"{base}_polished.txt")
 
@@ -2569,6 +2628,8 @@ def polish_paths(paths, model=None, reset=False):
     """
     _apply_lang_model(None, None, model)
 
+    _announce_work_dir(paths)
+
     log.info("=" * 50)
     log.info("中文润色重翻  共 %d 个文件", len(paths))
 
@@ -2696,6 +2757,8 @@ def scan_reflow_blocks(paths, preview=8):
     """
     result = {"newline": [], "space": []}
 
+    _announce_work_dir(paths)
+
     for path in paths:
         if not os.path.exists(path):
             continue
@@ -2764,6 +2827,8 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None, blocks=None):
     blocks : 只重排这些区块（reflow_block_id 组成的列表 / 集合）；
              None 或空 = 文件里所有区块都重排。
     """
+    _announce_work_dir(paths)
+
     log.info("=" * 50)
     log.info("换行重排  共 %d 个文件", len(paths))
 

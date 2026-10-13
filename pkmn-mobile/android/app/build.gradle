@@ -1,0 +1,155 @@
+plugins { id 'com.android.application' }
+apply plugin: 'com.chaquo.python'
+
+// ================================================================
+// ★ 本工程不做任何自动同步。
+//
+//   core/、core_data/、web/ 里的内容由人工从电脑版拷贝进来，
+//   Gradle 只负责把它们原封不动搬进 APK。想更新电脑版的改动，
+//   手动 cp 过去再重新打包即可 —— 没有脚本、不会覆盖你手改的东西。
+// ================================================================
+
+android {
+    namespace 'com.mali.pkmntools'
+
+    // compileSdk 36：能用到的最新 API 与资源都在这里，compile 高没问题。
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.mali.pkmntools'
+        minSdk 24          // Chaquopy 17 的下限；24 覆盖 97%+ 在用设备
+
+        // ★★★ targetSdk 29 —— **这是 iQOO Neo7 SE 打不开的真正原因**。
+        //
+        // 参考对照：用户提供的「能在同款手机上正常打开」的
+        // 口袋改版工具盒_2.1.0.0.clone.apk，用 aapt2 解出来是
+        //     minSdkVersion=21  targetSdkVersion=29  compileSdkVersion=32
+        // 它能在 OriginOS 6 上跑，说明 **targetSdk 29 在这台设备上是安全的**。
+        //
+        // 而我们之前用的是 targetSdk 36，触发了 Android 15/16 上的一批
+        // 新行为，其中至少有一项会让 App 直接起不来。国产 ROM 对这些
+        // 新行为的实现各不相同，很难逐条排查 —— 与其赌 ROM 的实现，
+        // 不如退到已知可用的 29。
+        //
+        // 代价（都要处理）：
+        //   · edge-to-edge 不再强制 → 但 edge_to_edge 是我们自己开着的，
+        //     insets 代码保留即可，两种情况都对；
+        //   · 分页存储不再强制 → 反而更简单，不用适配 scoped storage；
+        //   · 13+ 的「通知权限」「照片选择器」等一律不触发。
+        //
+        // 本工具完全离线、不联外网，也不做任何后台调度，这些新行为
+        // 对我们没有价值。targetSdk 29 是合适的选择。
+        targetSdk 29
+        versionCode 10
+        versionName '1.7.2'
+
+        python {
+            // ★ 必须 3.13+：3.12 及更早的 Android wheels 是 4KB 对齐的，
+            //   在 16KB 页设备（Android 15/16 常见）上 dlopen 直接失败 ——
+            //   表现为「点开就闪退 / 打不开」。
+            version '3.13'
+            // 刻意不用 pip install：Chaquopy 的构建环境里 pip 版本偏旧，
+            //   经 Python 3.13 主机会报 `ModuleNotFoundError: No module named 'cgi'`
+            //   （cgi 在 3.13 被移除）。
+            //   rubymarshal 已内置在 vendor/ —— 纯 Python、26KB、零依赖。
+        }
+
+        // ★ 只打 64 位。Chaquopy 17 的 Python 3.13 **没有 32 位版本**
+        //   （构建时会直接报 "Python 3.13 is not available for the ABI
+        //   'armeabi-v7a'"），而 16KB 页设备本来就只支持 64 位 ——
+        //   两个理由指向同一个结论。
+        //
+        // 默认只带 arm64-v8a（真机）。x86_64 是给电脑上安卓模拟器用的，
+        //   白占 12MB，所以做成开关：
+        //       gradlew assembleDebug -PwithEmulator=true
+        // 想在模拟器上调试时才加，平时别加。
+        def abis = ['arm64-v8a']
+        if (project.hasProperty('withEmulator')) {
+            abis += 'x86_64'
+        }
+        ndk { abiFilters.clear(); abiFilters.addAll(abis) }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // ★ 仍用 debug 签名：这是自用/小范围分发的工具，
+            //   上架前请换成自己的签名文件。
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    // ★ 关掉 lint 的致命阻断。这个工具大量使用「平台主题 + 平台 Activity +
+    //   WebView」的老派写法，lint 会报一堆 MissingClass / NewApi 类误报，
+    //   构建时直接失败反而会挡住真正要看的编译错误。
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        jniLibs {
+            // ★★★ useLegacyPackaging **true**（= 把 .so 解压到应用私有目录）。
+            //
+            // 三个能在用户这台 iQOO Neo7 SE 上正常打开的参照 APK，
+            // aapt2 解出来**全部是 extractNativeLibs=true**：
+            //     口袋改版工具盒  targetSdk 29
+            //     MT管理器          targetSdk 30
+            //     DeepSeek 2.4.5    targetSdk 36  ← 同样开着
+            // 而我们之前是 false（.so 留在 APK 里由系统直接映射），
+            // 表现为「点开即闪退、连弹窗都没有」。
+            //
+            // 为什么这个开关如此关键：
+            //   · false 时系统直接把 APK 里的 .so mmap 进进程，
+            //     要求文件在包内偏移与 ELF 段都严格 16KB 对齐；
+            //     部分国产 ROM 的安装器 / 优化流程会重写 APK，
+            //     把对齐破坏掉 → dlopen 失败 → 秒退，来不及弹窗。
+            //   · true 时安装时把 .so 解到 /data/data/<包名>/lib/，
+            //     由文件系统保证对齐，绕开整条风险链。
+            //
+            // 代价是安装后多占几 MB 磁盘与一点安装时间，对本工具可接受。
+            //注：需要 AGP ≥ 8.5.1 才会尊重这个开关。
+            useLegacyPackaging true
+        }
+        resources {
+            // 封面图已经是压缩过的 JPEG，再压一遍没意义
+            excludes += ['META-INF/**', '**/*.txt']
+        }
+    }
+}
+
+dependencies {
+    // ★★★ 依赖列表**刻意留空**。
+    //
+    // 排查「点开即闪退、连弹窗都没有」时，这是除 Chaquopy 之外唯一被怀疑的
+    // 地方 —— 而且是可控的那一半。
+    //
+    // 原先引了三个：appcompat、webkit、core。它们的副作用不是多几 MB 代码，
+    // 而是**在清单里注入了一批开机就跑的组件**。合并后的清单是这样的：
+    //
+    //     android:appComponentFactory = "androidx.core.app.CoreComponentFactory"
+    //     <provider android:name="androidx.startup.InitializationProvider">
+    //         EmojiCompatInitializer
+    //         ProcessLifecycleInitializer
+    //         ProfileInstallerInitializer
+    //
+    // ContentProvider 由系统在 **Application.onCreate 之前** 创建，也就是说
+    // 这几个 Initializer 跑的时候，我们装在 App.onCreate 里的崩溃处理器
+    // 还没生效。它们中间任何一个抛异常（emoji2 加载字体、lifecycle 注册
+    // 回调、profileinstaller 写 profile，在国产 ROM 上都出过问题），
+    // 进程就在我们的代码之前死掉 —— 用户看到的就是「闪一下，什么提示都没有」。
+    //
+    // 而本工具根本用不到这三个库：
+    //   · 界面全是 WebView 里的 HTML，不需要 AppCompat 的控件与主题；
+    //   · 不读 WebView 高级 API（WebViewCompat），webkit 用不上；
+    //   · 不用任何 androidx 控件，core 的 windowInsets 我们也不需要
+    //     （targetSdk 29，系统本来就帮窗口避开状态栏）。
+    //
+    // 所以全部删掉，改成平台自带的 android.app.Activity + 平台主题。
+    // 少一层框架，就少一个「还没轮到我们的代码就崩了」的机会。
+}

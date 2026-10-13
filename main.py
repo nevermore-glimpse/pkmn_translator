@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""宝可梦同人游戏翻译工具 —— 主入口（CLI / GUI）。"""
+"""宝可梦同人工具 —— 主入口（CLI / GUI）。"""
 import os
 import sys
 import traceback

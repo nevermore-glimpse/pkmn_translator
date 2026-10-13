@@ -1,0 +1,43 @@
+{
+  "source": "E:/pkmn_translator",
+  "synced_at": "2026-10-13 16:18:45",
+  "modules": [
+    "rmarshal.py",
+    "save_tools.py",
+    "debug_tool.py",
+    "game_scripts.py",
+    "essentials_base.py",
+    "logger.py",
+    "intl_text.py"
+  ],
+  "files": {
+    "rmarshal.py": {
+      "sha256": "3b16fcc35a1e4c3ac73e92568c12afc71ec6eebe4a28a9062eaa1c1c7a80bee9",
+      "size": 39721
+    },
+    "save_tools.py": {
+      "sha256": "5776dd13cbdda4cb47741d5f5977897f43863042fd4501093f6f42458c156c34",
+      "size": 150914
+    },
+    "debug_tool.py": {
+      "sha256": "d119b9973f7ee215f51f83b513bd2a3e8a63049fc2f10ee1cdd09b41ca602447",
+      "size": 47602
+    },
+    "game_scripts.py": {
+      "sha256": "3e513703fc817c763c59aca632c1f74394431a09ef2e5b8bca5208d00e2c6cf7",
+      "size": 46880
+    },
+    "essentials_base.py": {
+      "sha256": "ff309ca7db374b40a6099e00dce3858e196a44a7fb2840013debf2147436f17b",
+      "size": 23723
+    },
+    "logger.py": {
+      "sha256": "47c2a3b0cc14cf96d41018ba327da9d7e46fdbb6cb749399c6539f98e896a8f2",
+      "size": 5460
+    },
+    "intl_text.py": {
+      "sha256": "5be2b9471679956ad6504273e68089db3f9b5965d252cd7f1c8d4ef3acab6fbb",
+      "size": 51635
+    }
+  }
+}

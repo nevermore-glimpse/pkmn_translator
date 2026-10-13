@@ -1,0 +1,28 @@
+buildscript {
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // ★ AGP 8.13.0：8.5.1 是「16KB 页面对齐」的第一个支持版本。
+        //   低于它，app/build.gradle 里的 useLegacyPackaging=false 会被忽略，
+        //   打出来的 APK 在 Android 15/16 上加载不了原生库（表现为点开闪退）。
+        classpath 'com.android.tools.build:gradle:8.13.0'
+
+        // ★ Chaquopy 17.0.0：**唯一**真正支持 16KB 页的版本
+        //   （16.x 只把 OpenSSL/SQLite 两个 stub 改成 16KB，libpython 仍是 4KB）。
+        //   它要求 Python 3.13+ 的 wheels，见 app/build.gradle 的说明。
+        classpath 'com.chaquo.python:gradle:17.0.0'
+    }
+}
+
+// ★ 项目的依赖仓库统一由 settings.gradle 的 dependencyResolutionManagement 管
+//   （那里设了 FAIL_ON_PROJECT_REPOS），这里不要再声明 allprojects.repositories，
+//   否则会直接报 "Build was configured to prefer settings repositories..."。
+//   本文件只负责 buildscript 的类查找路径（AGP / Chaquopy 插件本身）。
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}

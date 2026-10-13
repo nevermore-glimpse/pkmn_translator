@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  冷启动窗口。系统在你 WebView 起来之前先显示这一屏，
+  配色与 HTML 封面页一致，所以看起来是「封面页无缝接上 App」。
+
+  ★★★ 这里曾经踩过一个「点开就闪退」的坑，务必不要再改回去：
+
+    原来是这么写的：
+
+        <item><bitmap android:gravity="center"
+                      android:src="@mipmap/ic_launcher" /></item>
+
+    看着没问题，但 @mipmap/ic_launcher 在 **Android 8.0 (API 26) 以上**
+    解析到的并不是那张 PNG，而是 mipmap-anydpi-v26/ic_launcher.xml ——
+    一个 <adaptive-icon>。而 <bitmap> 只接受真正的图片，它内部走的是
+    BitmapFactory.decodeResource()，喂给它一个 XML 会返回 null，于是
+    直接抛
+
+        XmlPullParserException: <bitmap> requires a valid 'src' attribute
+
+    这个 drawable 挂在 Activity 主题的 android:windowBackground 上，
+    而窗口背景是在**框架创建窗口时**（installDecor → generateLayout）
+    就去加载的 —— 那一步在 Activity.onCreate 里面、在我们任何一行代码
+    真正跑起来之前。Resource 加载失败 → 窗口建不起来 → 用户看到的就是
+    「点一下，闪一下，没了」，连我们自己写的诊断弹窗都没机会显示。
+
+  所以现在改成：颜色 + 一张**独立的普通 PNG**（drawable-xxhdpi/splash_logo.png，
+  由 tools/make_assets.py 同源的 start.ico 生成）。
+
+   ★ 关键点：这个文件名（splash_logo）在 mipmap-anydpi-v26 里**没有同名覆盖**，
+     所以它在所有系统版本上都稳定解析到那张 PNG，不会再出现
+     「XML 冒充图片」的问题。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 背景色与 HTML 封面页一致 -->
+    <item android:drawable="@color/brand_deep" />
+
+    <!--
+      居中图标。刻意**不写** android:width/height —— 交给 PNG 自带的
+      固有尺寸（384px @xxhdpi = 128dp），避免图层尺寸与 gravity 互相打架。
+    -->
+    <item
+        android:gravity="center"
+        android:drawable="@drawable/splash_logo" />
+</layer-list>

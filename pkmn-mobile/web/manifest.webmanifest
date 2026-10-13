@@ -1,0 +1,25 @@
+{
+  "name": "宝可梦同人工具",
+  "short_name": "宝可梦同人",
+  "description": "Essentials 同人游戏的开 DEBUG、基准覆盖、字体替换与存档编辑",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#20304A",
+  "theme_color": "#0F4C86",
+  "scope": "./",
+  "icons": [
+    {
+      "src": "assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

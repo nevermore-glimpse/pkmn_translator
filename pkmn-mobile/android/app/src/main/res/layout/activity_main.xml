@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  根容器。targetSdk 29 → 系统仍会把窗口放在状态栏/导航条之内，
+  所以这里不需要任何 inset 处理（fitsSystemWindows / WindowInsets 都不用）。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_base">
+
+    <WebView
+        android:id="@+id/webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!--
+      启动遮罩：Python 起来之前显示进度。
+      真正的封面页在 HTML 侧（带 3 秒停留与作者信息），这里只管冷启动。
+
+      ★ 这张遮罩刻意全部用**平台原生控件**（没有 WebView、没有 androidx），
+        因为它是「App 到底能不能打开」唯一的可见凭据：
+        Python 或 WebView 出问题时，这里显示的东西就是全部线索。
+    -->
+    <LinearLayout
+        android:id="@+id/boot_layer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/bg_base"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:paddingLeft="24dp"
+        android:paddingRight="24dp"
+        android:paddingTop="24dp"
+        android:paddingBottom="24dp"
+        android:visibility="visible">
+
+        <ProgressBar
+            android:id="@+id/boot_spinner"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:indeterminateTint="@color/brand" />
+
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="正在准备…"
+            android:textColor="@color/text_dim"
+            android:textSize="13sp" />
+
+        <!--
+          实时启动日志：每推进一步就追加一行（带毫秒时间戳）。
+          出问题时用户直接截图，不用连电脑抓 logcat。
+        -->
+        <ScrollView
+            android:id="@+id/log_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="18dp"
+            android:fillViewport="true">
+
+            <TextView
+                android:id="@+id/log_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:textColor="@color/text_dim"
+                android:textIsSelectable="true"
+                android:textSize="10sp" />
+        </ScrollView>
+    </LinearLayout>
+
+</FrameLayout>

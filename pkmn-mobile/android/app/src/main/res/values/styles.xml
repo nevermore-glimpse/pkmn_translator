@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      ★ 用**平台自带**主题，不用 Theme.AppCompat。
+
+        原因有两条，都跟「启动期崩溃」有关：
+        ① 用 AppCompat 主题就必须带 androidx.appcompat 依赖，而它会往
+           清单里塞一个 androidx.startup.InitializationProvider，里面挂着
+           EmojiCompat / ProcessLifecycle / ProfileInstaller 三个 Initializer。
+           ContentProvider 是系统在 Application.onCreate **之前**创建的 ——
+           那里一旦抛异常，进程直接死，我们的崩溃处理器根本来不及装，
+           表现正是「闪一下就没了，没有弹窗」。
+
+        ② 平台主题零依赖、零初始化，画面在我们自己的代码跑起来之前
+           就已经由系统按这份样式画好了。
+
+      targetSdk 29 → 系统仍会帮我们把窗口放在状态栏/导航条之内，
+      所以不需要 edge-to-edge 那套 inset 计算。
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/brand</item>
+        <item name="android:colorPrimaryDark">@color/brand_deep</item>
+        <item name="android:colorAccent">@color/brand</item>
+        <item name="android:windowBackground">@color/bg_base</item>
+        <item name="android:statusBarColor">@color/brand</item>
+        <item name="android:navigationBarColor">@color/bg_base</item>
+    </style>
+</resources>

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-宝可梦同人游戏翻译工具 —— 亚克力毛玻璃图形界面。
+宝可梦同人工具 —— 亚克力毛玻璃图形界面。
 
 布局：
   左侧  圆形头像（**点击回主页** + 悬停显示作者信息）+ 菜单列表（悬停放大 +
@@ -1157,7 +1157,12 @@ class FilePanel(tk.Frame):
     """
 
     # 翻译页需要跳过的后缀
-    SKIP_SUFFIX = ("_translated.txt", "_translated_report.txt")
+    # 源文件之外的「工具产物」一律不列出来（译文 / 报告 / 缓存 / 润色稿…）
+    SKIP_SUFFIX = ("_translated.txt", "_translated_report.txt",
+                   "_polished.txt", "_unknown_ctrl.txt",
+                   "_cache.json", "_cache_edited.json",
+                   "_conflicts.json", "_placeholder.json",
+                   "_polish_cache.json")
 
     def __init__(self, master, bg=CARD, width=272, mode="source",
                  on_change=None, app=None, allow_game_root=False,
@@ -1315,8 +1320,18 @@ class FilePanel(tk.Frame):
         files = sorted(
             os.path.join(folder, f)
             for f in os.listdir(folder)
-            if self._accept(f)
+            # ★ 只收文件（别把「翻译中间文件」这类子目录也列进来）
+            if self._accept(f) and os.path.isfile(os.path.join(folder, f))
         )
+        # ★ 再扫一层「翻译中间文件」夹 —— 缓存 / 报告 / 润色稿现在都放里面，
+        #   用户选源文件夹时应该能直接选到它们（否则得再点进子目录一次）。
+        wd = os.path.join(folder, getattr(config, "WORK_DIR_NAME", ""))
+        if os.path.isdir(wd):
+            files += sorted(
+                os.path.join(wd, f)
+                for f in os.listdir(wd)
+                if self._accept(f) and os.path.isfile(os.path.join(wd, f))
+            )
         if not files:
             messagebox.showinfo("提示", self._hint_text().replace("\n", ""))
             return
@@ -1337,6 +1352,10 @@ class FilePanel(tk.Frame):
             if depth > 4:
                 dirs[:] = []
                 continue
+            # ★ 跳过工具建的「翻译中间文件」夹（里面全是缓存 / 报告 / 润色稿）
+            wd = getattr(config, "WORK_DIR_NAME", "")
+            if wd:
+                dirs[:] = [d for d in dirs if d != wd]
             for f in files:
                 if not f.lower().endswith(".txt"):
                     continue
@@ -1806,16 +1825,24 @@ class SearchCombo(ttk.Combobox):
       自带的 get() 取值 —— 统一走 value_of()。
     """
 
-    def __init__(self, master, pairs=None, width=30, font=None, value=None):
+    def __init__(self, master, pairs=None, width=30, font=None, value=None,
+                 resolver=None):
         self.pairs: list = []
         self._labels: list = []
         self._map: dict = {}
+        # ★ 手输解析器：下拉里没有的写法（内部名 / 编号）交给它认。
+        #   物种 / 道具 / 招式那几个框会挂上 GameData.find_species 之类。
+        self._resolver = resolver
         ttk.Combobox.__init__(self, master, width=width, values=[],
                               font=font or FONT_SMALL)
         self.set_pairs(pairs or [], keep=False)
         self.bind("<KeyRelease>", self._on_key)
         if value is not None:
             self.set_value(value)
+
+    def set_resolver(self, fn):
+        """挂/换手输解析器（GameData.find_species 等）。"""
+        self._resolver = fn
 
     # -- 数据 --------------------------------------------------------------
     def set_pairs(self, pairs, keep: bool = True):
@@ -1840,13 +1867,40 @@ class SearchCombo(ttk.Combobox):
         self.set("" if value is None else f"（#{value}）")
 
     def value_of(self):
-        """当前选中项的值；认不出来（没选 / 打了半个名字）返回 None。"""
+        """当前选中项的值；认不出来返回 None。
+
+        ★ 除了下拉里选的（含打字过滤后选中的），还接受**手输**：
+          纯数字编号，或交给 _resolver 认内部名 / 显示名。
+        """
         txt = self.get().strip()
         if txt in self._map:
             return self._map[txt]
         if txt.lstrip("-").isdigit():
             return int(txt)
+        # set_value() 认不出时会填「（#955）」这种占位 —— 也当编号认
+        m = re.fullmatch(r"[（(]\s*#?(\d+)\s*[)）]", txt)
+        if m:
+            return int(m.group(1))
+        if self._resolver is not None and txt:
+            try:
+                return self._resolver(txt)
+            except Exception:                       # noqa: BLE001
+                return None
         return None
+
+    def value_or_text(self):
+        """
+        选中项的值；**认不出来就把原文原样返回**（空则 None）。
+
+        ★ 给「没选游戏数据」的场景用：这时对照表读不到，解析器认不出内部名，
+          但现代存档本来就能直接写内部名 —— 所以把原文交给 core 去判断，
+          core 认不出来会给出「必须用内部名」的明确报错。
+        """
+        v = self.value_of()
+        if v is not None:
+            return v
+        txt = self.get().strip()
+        return txt or None
 
     # -- 过滤 --------------------------------------------------------------
     def _on_key(self, e=None):
@@ -1860,6 +1914,43 @@ class SearchCombo(ttk.Combobox):
             return
         hits = [s for s in self._labels if txt in s.lower()]
         self["values"] = hits[:300] if hits else ["（没有匹配项）"]
+
+
+def make_manual_resolver(get_save, kind, get_pm=None):
+    """
+    「手输解析器」工厂：把用户打的内部名 / 编号 / 显示名换算成下拉用的取值。
+
+    支持 kind：species / item / move / nature / status / ability / trainer_type
+    get_save —— 返回当前 SaveFile 的可调用对象（没有数据时返回 None）
+    get_pm   —— 可选；特性解析要结合「这只宝可梦的可选特性列表」
+
+    ★ 认不出来就返回 None：调用方用 `SearchCombo.value_or_text()` 时会把
+      原文交给 core，由 core 按内部名处理（没选游戏数据时的必需通路）。
+    """
+    def fn(txt):
+        sv = get_save()
+        if sv is None:
+            return None
+        d = sv.data
+        if kind == "species":
+            return d.find_species(txt)
+        if kind == "item":
+            return d.find_item(txt)
+        if kind == "move":
+            return d.find_move(txt)
+        if kind == "nature":
+            return d.nature_index_by_name(txt)
+        if kind == "status":
+            return d.status_code_by_name(txt)
+        if kind == "trainer_type":
+            return d.find_trainer_type(txt)
+        if kind == "ability":
+            pm = get_pm() if get_pm else None
+            if pm is None:
+                return d.find_ability(txt)
+            return sv._ability_index_for(pm, txt)
+        return None
+    return fn
 
 
 def _lbl(parent, text, **kw):
@@ -1949,8 +2040,8 @@ class SavePanel(tk.Frame):
                  bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=width - 40).pack(anchor="w", padx=10, pady=(0, 6))
 
-        # ---- ① 游戏根目录（读数据用） ----
-        tk.Label(self, text="① 游戏数据（读 .dat / PBS）", bg=bg, fg=C_TITLE,
+        # ---- ① 游戏根目录（读数据用；可不选） ----
+        tk.Label(self, text="① 游戏数据（可选）", bg=bg, fg=C_TITLE,
                  font=FONT_B).pack(anchor="w", padx=10)
         r1 = tk.Frame(self, bg=bg)
         r1.pack(fill="x", padx=10, pady=(2, 0))
@@ -2102,8 +2193,9 @@ class SavePanel(tk.Frame):
                 fg=C_HINT if ok else C_WARN)
         else:
             self.root_lbl.config(
-                text="未选择 —— 会按存档位置往上找。\n"
-                     "（想让名字/种族值显示准确就选一下）", fg=C_HINT)
+                text="未选择（可以不选）—— 名字/种族值会显示不全，\n"
+                     "改「种族 / 道具 / 特性」等时请填**英文内部名或编号**。",
+                fg=C_HINT)
         self.count_lbl.config(text=f"已选 {len(self.files)} 个" if self.files
                               else "")
 
@@ -2207,7 +2299,9 @@ class SavePanel(tk.Frame):
         badges = sum(1 for b in (tr.get("@badges") or []) if b)
         self.title_lbl.config(text=os.path.basename(sv.path))
         self.info_lbl.config(text=(
-            f"存档格式：{sv.fmt}{'（v19+）' if sv.fmt == 'hash' else '（v16~v18）'}\n"
+            f"存档格式：{sv.fmt}{'（v19+）' if sv.fmt == 'hash' else '（v16~v18）'}"
+            + ("" if sv.encoding == "plain" else f"　封装：{sv.encoding_label}")
+            + "\n"
             f"主角：{sfmt(tr.get('@name'))}    ID：{sfmt(tr.get('@id'))}\n"
             f"金钱：{sfmt(tr.get('@money'))}    徽章：{badges}\n"
             f"同行：{len(party)} 只    箱子：{in_box} 只（{len(boxes)} 箱）\n"
@@ -2267,6 +2361,10 @@ class PokemonForm:
         self.pm = None
         self.where = ""
         self.totalhp = 0
+        # ★ 种族 / 昵称联动用：记住「载入时的种族与昵称」，
+        #   用户在种族下拉里换了项时据此判断要不要把昵称一起改掉。
+        self._last_sid = None        # 上一次的种族编号
+        self._loaded_nick = ""       # 载入时的昵称（判断用户有没有手动改过）
         self.frame = tk.Frame(parent, bg=CARD)
         self.vars = {}
         self._build(compact)
@@ -2315,11 +2413,18 @@ class PokemonForm:
         _lbl(r, "昵称", width=7).pack(side="left")
         _entry(r, self._var("nick"), 14).pack(side="left")
         _lbl(r, "种族", width=7).pack(side="left", padx=(12, 0))
-        self.sp_combo = SearchCombo(r, [], width=20)
+        self.sp_combo = SearchCombo(r, [], width=20,
+                                    resolver=self._manual_resolver("species"))
         self.sp_combo.pack(side="left")
         self.sp_combo.bind("<<ComboboxSelected>>",
                            lambda e: self._refresh_species())
         self.sp_combo.bind("<FocusOut>", lambda e: self._refresh_species())
+        # ★ 手输提醒：下拉里找不到时可以自己填（必须用英文内部名或编号）
+        self.sp_hint = _hint(sec, "以上「种族 / 性格 / 特性 / 状态 / 道具 / 招式」"
+                                  "都可以直接打字手输 —— 必须用英文内部名"
+                                  "（PIKACHU / MODEST / POKEBALL…）或编号；"
+                                  "没选「游戏数据」时只能填内部名或编号",
+                             wraplength=520)
 
         r2 = tk.Frame(sec, bg=CARD)
         r2.pack(fill="x", pady=2)
@@ -2334,17 +2439,21 @@ class PokemonForm:
         self.form_hint = _hint(sec, "", wraplength=400)
         bind_autowrap(self.form_hint, pad=4, minimum=120)
         self.form_hint.pack(anchor="w")
+        bind_autowrap(self.sp_hint, pad=4, minimum=140)
+        self.sp_hint.pack(anchor="w")
 
         r3 = tk.Frame(sec, bg=CARD)
         r3.pack(fill="x", pady=2)
         _lbl(r3, "性格", width=8).pack(side="left")
         self.nat_combo = SearchCombo(
             r3, [(f"{n}（{ST.NATURES_EN[i]}）", i)
-                 for i, n in enumerate(ST.NATURES)], width=16)
+                 for i, n in enumerate(ST.NATURES)], width=16,
+            resolver=self._manual_resolver("nature"))
         self._nat_base = list(self.nat_combo.pairs)
         self.nat_combo.pack(side="left")
         _lbl(r3, "特性", width=8).pack(side="left", padx=(12, 0))
-        self.ab_combo = SearchCombo(r3, [], width=16)
+        self.ab_combo = SearchCombo(r3, [], width=16,
+                                    resolver=self._manual_resolver("ability"))
         self.ab_combo.pack(side="left")
 
         r4 = tk.Frame(sec, bg=CARD)
@@ -2356,7 +2465,8 @@ class PokemonForm:
         GlassButton(r4, "回满", width=64, height=30, bg=CARD, font=FONT_SMALL,
                     command=self._fill_hp).pack(side="left", padx=(10, 0))
         _lbl(r4, "状态", width=8).pack(side="left", padx=(12, 0))
-        self.st_combo = SearchCombo(r4, STATUS_CHOICES, width=12)
+        self.st_combo = SearchCombo(r4, STATUS_CHOICES, width=12,
+                                    resolver=self._manual_resolver("status"))
         self.st_combo.pack(side="left")
 
         # --- 个体值 / 努力值 ---
@@ -2409,7 +2519,8 @@ class PokemonForm:
             rr = tk.Frame(mv, bg=CARD)
             rr.pack(fill="x", pady=2)
             _lbl(rr, f"招式 {i + 1}", width=8).pack(side="left")
-            cb = SearchCombo(rr, [], width=26)
+            cb = SearchCombo(rr, [], width=26,
+                             resolver=self._manual_resolver("move"))
             cb.pack(side="left")
             _lbl(rr, "PP", width=4).pack(side="left", padx=(10, 0))
             _entry(rr, self._var(f"mpp{i}"), 6).pack(side="left")
@@ -2421,10 +2532,12 @@ class PokemonForm:
         r5 = tk.Frame(ot, bg=CARD)
         r5.pack(fill="x", pady=2)
         _lbl(r5, "携带道具", width=8).pack(side="left")
-        self.item_combo = SearchCombo(r5, [], width=16)
+        self.item_combo = SearchCombo(r5, [], width=16,
+                                      resolver=self._manual_resolver("item"))
         self.item_combo.pack(side="left", padx=(0, 14))
         _lbl(r5, "捕获用球", width=8).pack(side="left")
-        self.ball_combo = SearchCombo(r5, [], width=16)
+        self.ball_combo = SearchCombo(r5, [], width=16,
+                                      resolver=self._manual_resolver("item"))
         self.ball_combo.pack(side="left")
 
         r6 = tk.Frame(ot, bg=CARD)
@@ -2483,8 +2596,13 @@ class PokemonForm:
     def _fill_hp(self):
         self.vars["hp"].set(str(self.totalhp or 0))
 
+    def _manual_resolver(self, kind):
+        """本编辑器的手输解析器（见 make_manual_resolver）。"""
+        return make_manual_resolver(self.app.current_save, kind,
+                                    get_pm=lambda: self.pm)
+
     def _refresh_species(self):
-        """种族/形态变了 → 刷新可用特性与形态提示。"""
+        """种族/形态变了 → 刷新可用特性与形态提示，并把昵称一起同步。"""
         sv = self.app.current_save()
         sid = self.sp_combo.value_of()
         if sv is None or sid is None:
@@ -2498,6 +2616,18 @@ class PokemonForm:
         else:
             self.form_hint.config(text="形态表未记录，按数字填（0 = 基础形态）",
                                   fg=C_HINT)
+
+        # ★ 用户明确要求：**改了种族就把昵称一起改成新种族名**。
+        #   否则存档里会出现「@species 是果然翁、@name 还写着电灯怪」，
+        #   队伍小图标 / 图鉴大图看着跟名字对不上。
+        #   只有当用户**手动输入过自定义昵称**（与载入时不同）才保留它。
+        if self._last_sid is not None and sid != self._last_sid:
+            new_name = sv.data.species(sid)
+            cur = self.vars["nick"].get().strip()
+            if cur in ("", (self._loaded_nick or "").strip()):
+                self.vars["nick"].set(new_name)
+                self._loaded_nick = new_name
+        self._last_sid = sid
 
     # ---------- 载入 / 应用 ----------
     def load(self, pm, where=""):
@@ -2521,9 +2651,12 @@ class PokemonForm:
         self.sp_combo.set_value(sid)
         # 性格显示名跟着术语表走
         self.nat_combo.set_pairs(d.nature_options(), keep=False)
+        # ★ 先认下当前种族，_refresh_species 才不会把「载入」误当成「用户改种族」
+        self._last_sid = sid
         self._refresh_species()
 
         self.vars["nick"].set(str(r.get("name") or ""))
+        self._loaded_nick = str(r.get("name") or "")
         self.vars["level"].set(str(r["level"]))
         self.vars["exp"].set(str(r["exp"]))
         self.vars["form"].set(str(r.get("form") or 0))
@@ -2582,6 +2715,8 @@ class PokemonForm:
     def clear(self):
         self.pm = None
         self.totalhp = 0
+        self._last_sid = None
+        self._loaded_nick = ""
         self.title_lbl.config(text="（先选中一只宝可梦）")
         self.quick_lbl.config(text="")
         self.stat_lbl.config(text="")
@@ -2617,18 +2752,33 @@ class PokemonForm:
         if sv is None or pm is None:
             messagebox.showinfo("提示", "先选中一只宝可梦。", parent=self.frame)
             return
-        sid = self.sp_combo.value_of()
-        if sid is None:
-            # ★ 没有物种表（source == "none"）时下拉是空的，别报错 ——
-            #   保留这只原本的种族，其它字段照常写入。
-            if sv.data.source == "none":
-                sid = sv.read_pokemon(pm)["species"]
-            else:
-                messagebox.showwarning(
-                    "种族没选好",
-                    "「种族」要从下拉列表里选一项（可打字搜索）。",
-                    parent=self.frame)
-                return
+        # ★ 所有「选项」类字段都允许手输：
+        #   认得出（下拉项 / 编号 / 显示名）就用它的值；
+        #   认不出就把**原文**交给 core —— core 会按内部名处理，
+        #   实在不行会给出「必须用内部名」的报错（下面 try 里弹出来）。
+        sid = self.sp_combo.value_or_text()
+        if sid in (None, ""):
+            # 空 = 不改种族（没选游戏数据时下拉本来就是空的）
+            sid = sv.read_pokemon(pm)["species"]
+        # 轻量预检：明显认不出的（中文名 / 乱填）先拦一下，别写一半才报错
+        for combo, label in ((self.item_combo, "携带道具"),
+                             (self.ball_combo, "捕获用球"),
+                             (self.nat_combo, "性格"),
+                             (self.ab_combo, "特性"),
+                             (self.st_combo, "状态")):
+            txt = combo.get().strip()
+            if not txt or txt in ("（无）", "（未知）"):
+                continue
+            if combo.value_of() is not None:
+                continue
+            if txt.lstrip("+-").isdigit() or ST.looks_internal(txt):
+                continue
+            messagebox.showwarning(
+                f"{label}没认出来",
+                f"「{label}」里填的「{txt}」认不出来。\n\n"
+                + ST.GameData.MANUAL_INPUT_HINT,
+                parent=self.frame)
+            return
         ev_sum = sum(self._get_int(f"ev{i}", 0) or 0 for i in range(6))
         if ev_sum > 510 and not messagebox.askyesno(
                 "努力值超出上限",
@@ -2648,22 +2798,22 @@ class PokemonForm:
             sv.set_pokemon(pm, "努力值",
                            [self._get_int(f"ev{i}", 0, 0, 255) for i in range(6)],
                            recalc=False)
-            nat = self.nat_combo.value_of()
+            nat = self.nat_combo.value_or_text()
             if nat is not None:
                 sv.set_pokemon(pm, "性格", nat, recalc=False)
-            ab = self.ab_combo.value_of()
+            ab = self.ab_combo.value_or_text()
             if ab is not None:
                 sv.set_pokemon(pm, "特性", ab, recalc=False)
-            sv.set_moves(pm, [(self.move_combos[i].value_of() or 0,
+            sv.set_moves(pm, [(self.move_combos[i].value_or_text() or 0,
                                self.vars[f"mpp{i}"].get().strip() or None)
                               for i in range(4)])
-            sv.set_pokemon(pm, "携带道具", self.item_combo.value_of() or 0)
-            sv.set_pokemon(pm, "捕获用球", self.ball_combo.value_of() or 0)
+            sv.set_pokemon(pm, "携带道具", self.item_combo.value_or_text() or 0)
+            sv.set_pokemon(pm, "捕获用球", self.ball_combo.value_or_text() or 0)
             sv.set_pokemon(pm, "亲密度", self._get_int("happy", 0, 0, 255),
                            recalc=False)
             sv.set_pokemon(pm, "孵蛋步数", self._get_int("eggsteps", 0, 0),
                            recalc=False)
-            sv.set_pokemon(pm, "状态", self.st_combo.value_of() or 0)
+            sv.set_pokemon(pm, "状态", self.st_combo.value_or_text() or 0)
             sf = self.shiny_combo.value_of()
             sv.set_pokemon(pm, "异色",
                            None if sf in (None, "auto") else (sf == "yes"))
@@ -9823,7 +9973,9 @@ class App:
         r = tk.Frame(body, bg=CARD)
         r.pack(fill="x", pady=3)
         _lbl(r, "训练家类型", width=10).pack(side="left")
-        self.tr_type_combo = SearchCombo(r, [], width=22)
+        self.tr_type_combo = SearchCombo(r, [], width=22,
+                                         resolver=self._manual_resolver(
+                                             "trainer_type"))
         self.tr_type_combo.pack(side="left")
         self.tr_dex_var = tk.BooleanVar(value=False)
         tk.Checkbutton(r, text="已获得图鉴", variable=self.tr_dex_var, bg=CARD,
@@ -9933,12 +10085,21 @@ class App:
                 language=int(self.tr_vars["language"].get().strip() or 0),
                 pokedex=bool(self.tr_dex_var.get()),
             )
-            tt = self.tr_type_combo.value_of()
-            if tt is not None:
+            tt = self.tr_type_combo.value_or_text()
+            # ★ 没选游戏数据时下拉是空的，别拿「当前编号」去写 ——
+            #   那样只会写成一个错的类型；这时保持原样。
+            if tt is not None and (self.tr_type_combo.pairs
+                                   or not isinstance(tt, int)):
                 sv.set_trainer(trainertype=tt)
             sv.set_trainer(badges=[v.get() for v in self.tr_badges])
-        except ValueError:
-            messagebox.showwarning("填写有误", "金钱 / ID / 服装 / 语种要填整数。")
+        except ValueError as e:
+            msg = str(e)
+            if "trainertype" in msg or "训练家类型" in msg:
+                messagebox.showwarning("填写有误", msg)
+            else:
+                messagebox.showwarning(
+                    "填写有误",
+                    f"{msg}\n\n金钱 / ID / 服装 / 语种要填整数。")
             return
         self.mark_dirty()
         self._refresh_save_trainer()
@@ -10118,7 +10279,9 @@ class App:
         self.bag_pocket_combo.bind("<<ComboboxSelected>>",
                                    lambda e: self._load_bag_items())
         _lbl(top, "登记道具", width=10).pack(side="left", padx=(16, 0))
-        self.bag_reg_combo = SearchCombo(top, [], width=20)
+        self.bag_reg_combo = SearchCombo(
+            top, [], width=20,
+            resolver=make_manual_resolver(lambda: self.save_obj, "item"))
         self.bag_reg_combo.pack(side="left")
         GlassButton(top, "设为登记道具", width=128, height=32, bg=CARD,
                     font=FONT_SMALL,
@@ -10152,7 +10315,9 @@ class App:
         add = tk.Frame(foot, bg=CARD)
         add.pack(fill="x", pady=(8, 0))
         _lbl(add, "添加道具", width=10).pack(side="left")
-        self.bag_add_combo = SearchCombo(add, [], width=30)
+        self.bag_add_combo = SearchCombo(
+            add, [], width=30,
+            resolver=make_manual_resolver(lambda: self.save_obj, "item"))
         self.bag_add_combo.pack(side="left")
         _lbl(add, "数量", width=6).pack(side="left", padx=(10, 0))
         self.bag_add_var = tk.StringVar(value="99")
@@ -10250,16 +10415,22 @@ class App:
         sv = self.save_obj
         if sv is None:
             return
-        iid = self.bag_add_combo.value_of()
+        iid = self.bag_add_combo.value_or_text()
         if iid is None:
-            messagebox.showinfo("提示", "先在下拉里选一个道具（可打字搜索）。")
+            messagebox.showinfo(
+                "提示", "先在下拉里选一个道具（可打字搜索），"
+                        "或直接填**英文内部名 / 编号**（如 POKEBALL、410）。")
             return
         try:
             n = int(self.bag_add_var.get().strip() or 1)
         except ValueError:
             n = 1
         idx = self.bag_pocket_combo.value_of() or 0
-        sv.set_bag_item(idx, iid, n)
+        try:
+            sv.set_bag_item(idx, iid, n)
+        except Exception as e:                                  # noqa: BLE001
+            messagebox.showwarning("加不进去", str(e), parent=self)
+            return
         self.mark_dirty()
         self._load_bag_items()
 
@@ -10284,12 +10455,17 @@ class App:
         sv = self.save_obj
         if sv is None:
             return
-        v = self.bag_reg_combo.value_of()
+        v = self.bag_reg_combo.value_or_text()
         if v is None:
             return
-        sv.set_registered_item(v)
+        try:
+            sv.set_registered_item(v)
+        except Exception as e:                                  # noqa: BLE001
+            messagebox.showwarning("设置失败", str(e), parent=self)
+            return
         self.mark_dirty()
-        self.bag_reg_lbl.config(text=f"当前登记：{sv.data.item(v)}")
+        self.bag_reg_lbl.config(text=f"当前登记：{sv.data.item(v)}"
+                                     if isinstance(v, int) else f"当前登记：{v}")
 
     # ================================================================
     # 子页面 4：PC 盒子编辑

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0F4C86">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="宝可梦同人工具">
+<title>宝可梦同人工具</title>
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/icon-192.png">
+</head>
+<body>
+
+<!-- ================================================================
+     封面页：进入工具前停留 3 秒。
+       顶部  两行免责文字
+       中间  封面图
+       底部  作者信息
+     ================================================================ -->
+<div id="cover">
+    <div class="cover-note">
+        <b>本工具完全免费 无任何盈利行为</b>
+        <b class="l2">仅供学习交流，请勿用于商业用途</b>
+    </div>
+
+    <div class="cover-pic">
+        <img src="assets/cover.jpg" alt="封面">
+    </div>
+
+    <div class="cover-author">
+        <div class="who">作者 · 玛俐大小姐想让我告白</div>
+        <div>宝可梦同人工具 · 手机版</div>
+        <div class="links">
+            <a class="chip" href="https://github.com/nevermore-glimpse/pkmn_translator">GitHub · nevermore-glimpse/pkmn_translator</a>
+            <a class="chip" href="https://space.bilibili.com/3546602748775226">Bilibili · 玛俐大小姐想让我告白</a>
+        </div>
+        <div class="cover-bar"><i></i></div>
+        <button class="cover-skip" id="coverSkip">跳过</button>
+    </div>
+</div>
+
+<header class="bar">
+    <div class="bar-title" id="pageTitle">开启 DEBUG</div>
+    <div class="bar-sub" id="healthLine">连接中…</div>
+</header>
+
+<main id="app">
+
+    <!-- ========================= 开启 DEBUG ========================= -->
+    <section class="page active" id="page-debug">
+
+        <div class="card">
+            <div class="card-h">游戏主程序</div>
+            <div class="row">
+                <input id="gameExe" class="inp" placeholder="选游戏主程序（Game.exe 之类）" inputmode="none">
+            </div>
+            <div class="btns">
+                <button class="btn ghost" id="btnBrowseGame">浏览</button>
+                <button class="btn" id="btnCheckGame">识别</button>
+            </div>
+            <div class="hint" style="margin-bottom:6px">
+                只选 <b>Game.exe</b>（游戏主程序）即可，游戏根目录会自动算出来
+                —— 不用自己一层层点进 Android/data 里找文件夹。
+            </div>
+            <div id="gameInfo" class="hint">还没选择游戏主程序</div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">开启方式</div>
+            <div class="hint" style="margin-bottom:9px">
+                与电脑版工具的下拉框一致（电脑版的「⑧ 调试启动器」要生成
+                Windows exe，手机上做不到，故略）。
+            </div>
+            <div class="row">
+                <select id="debugMode" class="inp"></select>
+            </div>
+            <div id="debugModeDesc" class="hint desc"></div>
+            <div class="check">
+                <input type="checkbox" id="optForce" checked>
+                <label for="optForce">引擎被改过也继续写入<br>
+                    <span class="sub">（同人游戏常把引擎改得面目全非，取消勾选会在发现改动时中止）</span>
+                </label>
+            </div>
+            <div class="check">
+                <input type="checkbox" id="optGuard" checked>
+                <label for="optGuard">自动关闭全量编译<br>
+                    <span class="sub">（给 Compiler 装一道闸：数据已编译好就直接返回；取消勾选则调试启动时真的全量重编译一次）</span>
+                </label>
+            </div>
+            <div class="hint">
+                反调试代码<b>不会自动注释</b> —— 检测到时会弹窗把代码摆出来，
+                由你决定「自动注释 / 跳过 / 取消」。
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">当前状态</div>
+            <div id="debugStatus" class="kv">
+                <div class="hint">选好目录后自动查询</div>
+            </div>
+            <div class="btns">
+                <button class="btn primary" id="btnEnable">开启 DEBUG</button>
+                <button class="btn" id="btnDisable">关闭 DEBUG</button>
+                <button class="btn ghost" id="btnRestore">还原备份</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">
+                执行日志
+                <button class="mini" id="btnCancel" disabled>取消</button>
+            </div>
+            <pre id="debugLog" class="log">（等待操作）</pre>
+            <div class="progress"><i id="debugBar"></i></div>
+        </div>
+    </section>
+
+    <!-- ========================= 基准覆盖 ========================= -->
+    <section class="page" id="page-ow">
+
+        <div class="card">
+            <div class="card-h">用官方基准覆盖</div>
+            <div class="hint" style="margin-bottom:9px">
+                同人游戏常把引擎改得面目全非 —— 尤其是 <b>debug 函数</b>和
+                <b>地图更新（Scene_Map）</b>。改完之后工具认不出该在哪下手，
+                这时可以用官方同版本脚本把这两处<b>盖回原样</b>，
+                之后再开 DEBUG 就有干净的落点了。
+            </div>
+            <div class="check">
+                <input type="checkbox" id="owWarn">
+                <label for="owWarn">我已知悉：<span class="warn">原作者对这两个脚本的改动会被替换掉</span>（原文件会自动备份，可用「还原覆盖」恢复）</label>
+            </div>
+            <div class="row" style="margin-top:8px">
+                <select id="owVersion" class="inp"></select>
+            </div>
+            <div class="hint" style="margin-bottom:4px">
+                「自动」= 先读游戏自报版本，读不到就按<b>脚本指纹</b>挑最接近的基准；
+                也可以直接手动选一个版本。
+            </div>
+            <div class="btns">
+                <button class="btn" id="btnOwDebug" disabled>覆盖 debug 函数</button>
+                <button class="btn" id="btnOwMap" disabled>覆盖地图更新</button>
+            </div>
+            <div class="btns" style="margin-top:8px">
+                <button class="btn ghost" id="btnOwRestore">还原覆盖</button>
+            </div>
+            <div id="owInfo" class="hint" style="margin-top:9px">先在「DEBUG」页选好游戏目录</div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">
+                覆盖日志
+                <button class="mini" id="btnOwCancel" disabled>取消</button>
+            </div>
+            <pre id="owLog" class="log">（等待操作）</pre>
+            <div class="progress"><i id="owBar"></i></div>
+        </div>
+    </section>
+
+    <!-- ========================= 字体替换 ========================= -->
+    <section class="page" id="page-font">
+
+        <div class="card">
+            <div class="card-h">游戏字体</div>
+            <div class="hint" style="margin-bottom:9px">
+                给游戏装上「中文文本处理」插件，并把字体换成内置的
+                <b>萝莉体</b>。这样对话框里的中文才能正常显示，不会是方块。
+                也可以用你自己的字体文件。
+            </div>
+            <div id="fontList" class="hint">正在读取字体…</div>
+            <div class="btns" style="margin-top:10px">
+                <button class="btn primary" id="btnFontInstall">替换字体</button>
+                <button class="btn ghost" id="btnFontRestore">还原</button>
+            </div>
+            <div id="fontInfo" class="hint" style="margin-top:9px"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">
+                执行日志
+                <button class="mini" id="btnFontCancel" disabled>取消</button>
+            </div>
+            <pre id="fontLog" class="log">（等待操作）</pre>
+            <div class="progress"><i id="fontBar"></i></div>
+        </div>
+    </section>
+
+    <!-- ========================= 存档编辑 ========================= -->
+    <section class="page" id="page-save">
+
+        <div class="card">
+            <div class="card-h">存档文件</div>
+            <div class="row">
+                <input id="savePath" class="inp" placeholder="选 Game.rxdata 之类的存档" inputmode="none">
+            </div>
+            <!-- 游戏根目录（数据源）不再让用户自己选：跟着「游戏主程序」自动带出来；
+                 没选也能用，只是名字显示不全 -->
+            <input type="hidden" id="saveRoot">
+            <div id="saveRootHint" class="hint" style="margin-bottom:6px">
+                <b>游戏数据可以不选</b> —— 不选也能照常编辑和写回，只是宝可梦 /
+                道具的名字显示不全。<br>
+                这时改「种族 / 道具 / 特性 / 招式 / 训练家类型」请填
+                <b>英文内部名</b>（如 PIKACHU / POKEBALL）或<b>编号</b>。
+            </div>
+            <div class="btns">
+                <button class="btn ghost" id="btnBrowseSave">浏览</button>
+                <button class="btn" id="btnOpenSave">打开</button>
+            </div>
+            <div id="saveInfo" class="hint">还没打开存档</div>
+        </div>
+
+        <div class="tabs" id="saveTabs">
+            <button class="tab active" data-view="trainer">主角</button>
+            <button class="tab" data-view="party">同行</button>
+            <button class="tab" data-view="bag">背包</button>
+            <button class="tab" data-view="boxes">PC 箱子</button>
+            <button class="tab" data-view="vars">开关变量</button>
+        </div>
+
+        <div id="saveBody" class="card">
+            <div class="hint">先打开一个存档</div>
+        </div>
+
+        <div class="btns sticky">
+            <button class="btn primary" id="btnSaveWrite">写回存档</button>
+        </div>
+    </section>
+
+    <!-- ========================= 关于 ========================= -->
+    <section class="page" id="page-about">
+        <div class="card">
+            <div class="card-h">关于</div>
+            <div id="aboutBody" class="kv"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">内置基准数据</div>
+            <div id="baselineBody" class="kv"></div>
+            <div class="hint" style="margin-top:10px">
+                这些数据随 App 一起打包，用来识别游戏的 Essentials 版本、
+                以及给「基准覆盖」提供官方同版本脚本。
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">问题反馈</div>
+            <div class="hint" style="margin-bottom:9px">
+                打不开、闪退、白屏这类问题，光说「打不开」是查不出来的。
+                点下面的按钮把诊断信息复制出来发给我，里面含有系统版本、
+                内存页大小、WebView 版本和崩溃记录。
+            </div>
+            <div class="btns">
+                <button class="btn primary" id="btnDiag">复制诊断报告</button>
+                <button class="btn ghost" id="btnClearCrash">清除崩溃记录</button>
+            </div>
+            <pre id="diagOut" class="log" style="margin-top:10px;display:none"></pre>
+        </div>
+
+        <div class="card">
+            <div class="card-h">作者</div>
+            <div class="kv">
+                <div class="k">作者</div><div class="v">玛俐大小姐想让我告白</div>
+                <div class="k">GitHub</div>
+                <div class="v"><a href="https://github.com/nevermore-glimpse/pkmn_translator">nevermore-glimpse/pkmn_translator</a></div>
+                <div class="k">Bilibili</div>
+                <div class="v"><a href="https://space.bilibili.com/3546602748775226">space.bilibili.com/3546602748775226</a></div>
+            </div>
+            <div class="hint" style="margin-top:10px">
+                本工具完全免费、无任何盈利行为，也不上传任何数据。
+                所有处理都在你自己的手机上完成。
+            </div>
+        </div>
+    </section>
+
+</main>
+
+<!-- 目录/文件浏览器 -->
+<div class="sheet" id="browseSheet">
+    <div class="sheet-in">
+        <div class="sheet-h">
+            <span id="browseTitle">浏览</span>
+            <button class="mini" id="browseClose">关闭</button>
+        </div>
+        <div class="sheet-path" id="browsePath"></div>
+        <div class="sheet-list" id="browseList"></div>
+    </div>
+</div>
+
+<!-- 选项选择器（物种 / 道具 / 招式）：搜索 + 手输 -->
+<div class="sheet" id="pickSheet">
+    <div class="sheet-in">
+        <div class="sheet-h">
+            <span id="pickTitle">选择</span>
+            <button class="mini" id="pickClose">关闭</button>
+        </div>
+        <div class="sheet-path" style="display:flex;gap:7px;align-items:center">
+            <input id="pickSearch" class="inp" placeholder="搜名称或编号…" style="flex:1">
+        </div>
+        <div class="hint" id="pickManualHint" style="padding:6px 15px"></div>
+        <div class="sheet-list" id="pickList"></div>
+    </div>
+</div>
+
+<!-- 通用对话框 -->
+<div class="dlg" id="dlg">
+    <div class="dlg-in">
+        <div class="dlg-h" id="dlgH">提示</div>
+        <div class="dlg-b" id="dlgB"></div>
+        <div class="dlg-f" id="dlgF"></div>
+    </div>
+</div>
+
+<nav class="tabs-bar">
+    <button class="tab-btn active" data-page="debug"><span>◆</span>DEBUG</button>
+    <button class="tab-btn" data-page="ow"><span>▤</span>基准覆盖</button>
+    <button class="tab-btn" data-page="font"><span>字</span>字体</button>
+    <button class="tab-btn" data-page="save"><span>●</span>存档</button>
+    <button class="tab-btn" data-page="about"><span>?</span>关于</button>
+</nav>
+
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

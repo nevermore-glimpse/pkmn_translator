@@ -47,7 +47,7 @@ Supports terminology lists, placeholder protection, resume from cache, and autom
 
 1. Go to the [Releases](https://github.com/nevermore-glimpse/pkmn_translator/releases) page
 2. Download `PkmnTranslator_vX.Y.Z.zip` and unzip it
-3. Run `宝可梦翻译工具.exe`
+3. Run `宝可梦同人工具.exe`
 4. (Optional) Double-click `创建桌面快捷方式.vbs` to create a desktop shortcut with icon
 
 ### Option B — Run from source
@@ -70,7 +70,7 @@ python main.py
 
 ### Quick Start
 
-Double-click `启动.bat` (or `宝可梦翻译工具.exe` if using the release build), or run:
+Double-click `启动.bat` (or `宝可梦同人工具.exe` if using the release build), or run:
 
 ```bash
 python main.py          # acrylic GUI (default)
@@ -320,7 +320,7 @@ Restart the exe to apply.
 
 - Console: `INFO` level
 - File: `logs/translate_YYYYMMDD.log` (includes `DEBUG`)
-- Debug mode: `set DEBUG_PH=1 && python main.py` (source) or `set DEBUG_PH=1 && 宝可梦翻译工具.exe`
+- Debug mode: `set DEBUG_PH=1 && python main.py` (source) or `set DEBUG_PH=1 && 宝可梦同人工具.exe`
 
 ## Troubleshooting
 
@@ -356,14 +356,14 @@ Make sure you are using the latest release. The tool uses `user_config.json` in 
 Open a Command Prompt in the exe folder and run it manually to see the error:
 
 ```cmd
-宝可梦翻译工具.exe
+宝可梦同人工具.exe
 ```
 
 ## Building the exe
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --name "宝可梦翻译工具" --icon=start.ico ^
+pyinstaller --onefile --name "宝可梦同人工具" --icon=start.ico ^
     --add-data "萝莉体.ttf;." ^
     --add-data "LM操作指南;LM操作指南" ^
     --hidden-import openpyxl --hidden-import tkinter --hidden-import PIL main.py

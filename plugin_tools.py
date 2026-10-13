@@ -1074,7 +1074,7 @@ def build_script_body(src_dir, font_file, family, copied):
                  encoding="utf-8", errors="replace") as f:
         tools = f.read()
     head = (f"# {SCRIPT_HEAD_MARK}\n"
-            f"# 由「宝可梦同人游戏翻译工具」自动插到本游戏 Main 之前，\n"
+            f"# 由「宝可梦同人工具」自动插到本游戏 Main 之前，\n"
             f"# 想撤掉请用工具里的「还原」，不要手删。\n"
             f"# (RGSS 从上往下执行脚本、读到 Main 就进游戏主循环，\n"
             f"#  所以本脚本必须待在 Main 上面才有用。)\n")

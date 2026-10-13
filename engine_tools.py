@@ -294,6 +294,42 @@ def _create_target_plan(game_dir, sname, index=1):
     return None
 
 
+def _create_script_everywhere(game_dir, sname, text, index=1):
+    """
+    把「游戏里没有」的新脚本**建到所有脚本落盘处**。
+
+    ★ 用户要求：游戏如果既有解包 `Data/Scripts/**.rb`、又有 `Data/Scripts.rxdata`，
+      那么所有改动都要对**两处**生效（运行时读哪份取决于 Game.ini 的
+      `Scripts=` 指向，只写一处会出现「改了没反应」）。新建脚本同理。
+
+    · loader 形态（Scripts.rxdata 只是 `load_scripts_from_folder(...)`）：
+      只往 loader 指的那个目录写 .rb —— 往 rxdata 追加既排不到 Main 前、
+      文件名也过不了四位数字过滤。
+    · 其余：rxdata 有就追加条目，解包 Data/Scripts 有就写 .rb，两个都做。
+
+    返回 [{"mode","path"}, ...]；一处都建不了返回 []。
+    """
+    made = []
+    loader_dir = GS.loader_scripts_dir(game_dir)
+    if loader_dir and os.path.isdir(loader_dir):
+        fn = GS.script_file_name(game_dir, sname, index=index)
+        p = GS.add_script_file_at(os.path.join(loader_dir, fn), text)
+        return [{"mode": "file", "path": p}]
+
+    rx = GS.rxdata_path(game_dir)
+    if rx and os.path.isfile(rx):
+        _backup(rx)
+        GS.add_rxdata_script(rx, sname, text)
+        made.append({"mode": "rxdata", "path": rx})
+
+    # 解包形态：真存在 .rb 才算（空目录 / 只有占位不算）
+    if GS.script_dirs(game_dir):
+        p = GS.add_script_file(game_dir, sname, text, index=index)
+        if p:
+            made.append({"mode": "file", "path": p})
+    return made
+
+
 def overwrite_plan(game_dir, version, files=None):
     """
     算「覆盖计划」→ [item, ...]，不写盘。
@@ -319,6 +355,7 @@ def overwrite_plan(game_dir, version, files=None):
         if not tgt:
             item["create"] = _create_target_plan(game_dir, sname,
                                                  index=len(out) + 1)
+            item["_idx"] = len(out) + 1
         out.append(item)
     for sname, fname in engine_src.overwrite_func_items(version):
         src = engine_src.script_src_path(version, sname)
@@ -391,24 +428,29 @@ def overwrite_engine_scripts(game_dir, version, translate=True, emit=None,
             n_tr += k
         if cp:
             # ★ 游戏里没有这个脚本 → 把基准里那一份**新增进去**
-            #   （引擎真正读的是 Scripts.rxdata；解包的游戏写 Data/Scripts/*.rb）
+            #   （两处脚本落盘处都建：见 _create_script_everywhere）
             try:
-                if cp["mode"] == "rxdata":
-                    _backup(cp["path"], emit=emit)
-                    GS.add_rxdata_script(cp["path"], cp["title"], text)
-                    rep["backups"].append(cp["path"])
-                else:
-                    # 解包形态：文件本来就不存在，没有「原文件」要备份
-                    GS.add_script_file(game_dir, sname, text)
+                made = _create_script_everywhere(game_dir, sname, text,
+                                                 index=item.get("_idx", 1))
             except (OSError, RuntimeError) as e:
                 rep["reason"] = f"新建「{label}」失败：{e}"
                 say(f"[覆盖] ✘ {rep['reason']}")
                 return rep
+            if not made:
+                rep["reason"] = f"新建「{label}」失败：没有可写入的脚本位置"
+                say(f"[覆盖] ✘ {rep['reason']}")
+                return rep
+            for m in made:
+                if m["mode"] == "rxdata":
+                    rep["backups"].append(m["path"])
             rep["written"].append(label)
             rep["created"] += 1
-            say(f"[覆盖] ⊕ 游戏里没有「{label}」，已按基准**新建**一个"
-                f"（{'追加进 Scripts.rxdata（排在 Main 之前）'
-                   if cp['mode'] == 'rxdata' else '写入 Data/Scripts'}）")
+            where = "、".join(
+                "追加进 Scripts.rxdata（排在 Main 之前）"
+                if m["mode"] == "rxdata" else "写入 Data/Scripts"
+                for m in made)
+            say(f"[覆盖] ⊕ 游戏里没有「{label}」，已按基准**新建**"
+                f"（{where}）")
             continue
         tgt = item["target"]
         if fname:

@@ -1,4 +1,4 @@
-# 宝可梦同人游戏翻译工具
+# 宝可梦同人工具
 
 [中文](README-ch.md) | [English](README.md)
 
@@ -50,7 +50,7 @@
 
 1. 打开 [Releases](https://github.com/nevermore-glimpse/pkmn_translator/releases) 页面
 2. 下载 `PkmnTranslator_vX.Y.Z.zip` 并解压
-3. 双击 `宝可梦翻译工具.exe`
+3. 双击 `宝可梦同人工具.exe`
 4. （可选）双击 `创建桌面快捷方式.vbs` 生成桌面带图标的快捷方式
 
 ### 方式 B —— 源码运行
@@ -75,7 +75,7 @@ python main.py --cli
 
 ### 快速开始
 
-双击 `启动.bat`（或 exe 版本的 `宝可梦翻译工具.exe`），或在命令行：
+双击 `启动.bat`（或 exe 版本的 `宝可梦同人工具.exe`），或在命令行：
 
 ```bash
 python main.py
@@ -150,7 +150,7 @@ mkxp-z（v19–v21.1）用命令行参数 `Game.exe debug` + 游戏目录 `mkxp.
 ### 创建桌面快捷方式（可选）
 
 双击 `创建桌面快捷方式.vbs`。  
-桌面会出现名为"宝可梦同人游戏翻译工具"的快捷方式。
+桌面会出现名为"宝可梦同人工具"的快捷方式。
 
 ### 翻译流程
 
@@ -793,7 +793,7 @@ API_MAX_TOKENS = 8192        # 云端 max_tokens 上限保护
 
 - 控制台：`INFO` 级
 - 文件：`logs/translate_YYYYMMDD.log`（含 `DEBUG`）
-- 调试模式：源码 `set DEBUG_PH=1 && python main.py`，exe `set DEBUG_PH=1 && 宝可梦翻译工具.exe`
+- 调试模式：源码 `set DEBUG_PH=1 && python main.py`，exe `set DEBUG_PH=1 && 宝可梦同人工具.exe`
 
 ## 常见问题
 
@@ -834,21 +834,21 @@ ollama pull qwen2.5:14b
 在 exe 所在目录打开命令行（cmd），手动运行看错误：
 
 ```cmd
-宝可梦翻译工具.exe
+宝可梦同人工具.exe
 ```
 
 ## 编译 exe
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --name "宝可梦翻译工具" --icon=start.ico ^
+pyinstaller --onefile --name "宝可梦同人工具" --icon=start.ico ^
     --add-data "萝莉体.ttf;." ^
     --add-data "LM操作指南;LM操作指南" ^
     --hidden-import openpyxl --hidden-import tkinter --hidden-import PIL main.py
 ```
 
-（仓库里的 `宝可梦翻译工具.spec` 已配好这些 hidden-import，直接  
-`pyinstaller 宝可梦翻译工具.spec` 即可。）
+（仓库里的 `宝可梦同人工具.spec` 已配好这些 hidden-import，直接  
+`pyinstaller 宝可梦同人工具.spec` 即可。）
 
 ## 许可
 

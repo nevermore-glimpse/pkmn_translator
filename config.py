@@ -60,9 +60,9 @@ def resource_dir(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.6.0"
-APP_NAME    = "宝可梦同人游戏翻译工具"
-APP_TITLE   = f"{APP_NAME}v{VERSION}"
+VERSION     = "1.6.3"
+APP_NAME    = "宝可梦同人工具"
+APP_TITLE   = f"{APP_NAME} v{VERSION}"
 
 AUTHOR_NAME     = "玛俐大小姐想让我告白"
 AUTHOR_GITHUB   = "https://github.com/nevermore-glimpse"
@@ -109,6 +109,54 @@ MAX_INPUT_LINES = 0
 
 
 # ================================================================
+# 翻译中间文件目录
+# ================================================================
+# 一次翻译会产生不少「中间文件」：缓存、术语冲突、占位符缺失、检查报告、
+# 润色稿、润色进度…… 编译文本时其实**只看 `*_translated.txt`**，
+# 这些中间文件堆在源文件夹里既乱又容易被误当成源文本。
+#
+# 所以「翻译整个文件夹」时，工具会在该文件夹下建这么一个子目录，
+# 把上面这些中间文件全放进去；源文件夹里只剩「源文件 + 译文」。
+# 单文件翻译不建（保持老行为：中间文件跟源文件同目录）。
+WORK_DIR_NAME = "翻译中间文件"
+
+
+def work_dir_for(directory) -> str:
+    """给定目录，返回其下**已存在**的「翻译中间文件」夹路径（没有 → ""）。"""
+    if not directory:
+        return ""
+    wd = os.path.join(directory, WORK_DIR_NAME)
+    return wd if os.path.isdir(wd) else ""
+
+
+def aux_dir(file_path, create: bool = False) -> str:
+    """
+    「中间文件」（缓存 / 冲突 / 占位符 / 报告 / 润色）该放哪个目录。
+
+      ① file_path 所在目录下已经有「翻译中间文件」夹 → 用它；
+      ② create=True → 直接建一个再用；
+      ③ 都没有 → 就放 file_path 所在目录（单文件翻译的老行为）。
+
+    ★ 用「目录是否存在」来判断，而不是靠运行时状态 —— 这样菜单 2/4/6/7
+      事后单独选一个译文 / 缓存来跑时，也能自己找到那个中间文件夹。
+    """
+    if not file_path:
+        return ""
+    d = os.path.dirname(os.path.abspath(file_path))
+    wd = work_dir_for(d)
+    if wd:
+        return wd
+    if create and d:
+        wd = os.path.join(d, WORK_DIR_NAME)
+        try:
+            os.makedirs(wd, exist_ok=True)
+            return wd
+        except OSError:
+            pass
+    return d
+
+
+# ================================================================
 # 运行时上下文
 # ================================================================
 class Runtime:
@@ -142,10 +190,12 @@ class Runtime:
         cls.input_file = path
         stem = os.path.splitext(os.path.basename(path))[0]
         parent = os.path.dirname(os.path.abspath(path))
+        # ★ 译文（编译要用的那份）始终留在源文件夹；中间文件去「翻译中间文件」夹
         cls.output_file = os.path.join(parent, f"{stem}_translated.txt")
-        cls.cache_file  = os.path.join(parent, f"{stem}_cache.json")
-        cls.conflict_file = os.path.join(parent, f"{stem}_conflicts.json")
-        cls.placeholder_file = os.path.join(parent, f"{stem}_placeholder.json")
+        aux = aux_dir(path)
+        cls.cache_file  = os.path.join(aux, f"{stem}_cache.json")
+        cls.conflict_file = os.path.join(aux, f"{stem}_conflicts.json")
+        cls.placeholder_file = os.path.join(aux, f"{stem}_placeholder.json")
         cls.last_dir    = parent
 
     @classmethod

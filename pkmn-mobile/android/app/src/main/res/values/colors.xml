@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 图标背景色：与电脑版主色一致 -->
+    <color name="icon_bg">#0F4C86</color>
+    <!-- 状态栏：与电脑版主色一致（任务3：UI 模仿电脑版风格） -->
+    <color name="brand">#0F4C86</color>
+    <color name="brand_deep">#20304A</color>
+    <color name="bg_base">#F5F7FA</color>
+    <color name="card">#FFFFFF</color>
+    <color name="card_border">#D5E4F5</color>
+    <color name="text">#20304A</color>
+    <color name="text_dim">#5A6B7D</color>
+    <color name="ok">#2E7D4F</color>
+    <color name="warn">#B26A00</color>
+    <color name="err">#C0392B</color>
+</resources>

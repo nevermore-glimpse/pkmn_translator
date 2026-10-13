@@ -177,12 +177,24 @@ def bytes_to_float(raw: bytes) -> float:
 # 容器类型
 # --------------------------------------------------------------------------
 class RSymbol:
-    """Ruby Symbol。必须与 str 区分，否则写回时会把 Symbol 变成 String。"""
+    """
+    Ruby Symbol。必须与 str 区分，否则写回时会把 Symbol 变成 String。
 
-    __slots__ = ("name",)
+    ★ .enc：符号名的编码标记（Ruby 1.9+）。**符号名含非 ASCII 时 Ruby 一定会
+      写**，形式就是 `I :婆婆 1 :E T`：
 
-    def __init__(self, name: str):
+          I :婆婆  1  :E  T      # :E = true  → UTF-8 符号名
+
+      和 RStr 的编码标记长得一样，只是字符串那份的 `I "…` 里包的是 String、
+      这份包的是 Symbol。**符号只登记符号表、不进对象表**，所以写回时这个
+      包裹不能占对象表的一格，否则后面所有 '@' 链接号会整体 +1。
+    """
+
+    __slots__ = ("name", "enc")
+
+    def __init__(self, name: str, enc: Optional[bool] = None):
         self.name = name
+        self.enc = enc            # True=UTF-8 / False=BINARY / None=无标记
 
     def __repr__(self) -> str:
         return f":{self.name}"
@@ -657,6 +669,10 @@ class _Loader:
                 # Marshal 的字符串编码标记，就地记下来以便原样写回
                 base.enc = bool(val)
                 return base
+            if key == "E" and isinstance(base, RSymbol):
+                # 符号名的编码标记（非 ASCII 符号必带），同样就地记下
+                base.enc = bool(val)
+                return base
             if isinstance(base, RObject):
                 base.ivars[key] = val
             elif isinstance(base, RIVar):
@@ -736,6 +752,9 @@ def streams(data: bytes) -> List[tuple]:
 # --------------------------------------------------------------------------
 # 序列化（写回）
 # --------------------------------------------------------------------------
+# ★ 'I'（TYPE_IVAR）包装 RIVar 只是 Python 侧的壳：Ruby 里占对象表一格的是
+#   **被包的对象**（Symbol / Fixnum / nil / true / false 则本来就不占），
+#   壳自己永远不占。见 write_obj 里的 RIVar 分支。
 class _Dumper:
     def __init__(self):
         self.out = bytearray(b"\x04\x08")
@@ -845,6 +864,18 @@ class _Dumper:
                 self._reg(obj)
             return
         if isinstance(obj, RSymbol):
+            # ★ 编码标记只跟着「符号表的定义」走：同一个符号后面再出现时
+            #   Ruby 只写 `;link`，**不再带 I/E 包裹**（写回时必须照办，
+            #   否则每个引用处都会多出 6 个字节）。
+            if obj.enc is not None and obj.name not in self.symbols:
+                # I :名字 1 :E T/F
+                # ★ 不占对象表（符号只进符号表），所以这里不 _reg
+                self.write(b"I")
+                self.write_symbol(obj.name)
+                self.write_int(1)
+                self.write_symbol("E")
+                self.write(b"T" if obj.enc else b"F")
+                return
             self.write_symbol(obj.name)
             return
 
@@ -889,26 +920,29 @@ class _Dumper:
             # 只有 UCLASS、没有实例变量时，'I' 字节其实是不存在的
             self.write(b"C")
             self.write_symbol(obj.uclass)
-            self._reg(obj)
-            self._suppress.add(id(obj.base))
-            try:
-                self.write_obj(obj.base)
-            finally:
-                self._suppress.discard(id(obj.base))
+            # ★ 包装本身不是 Ruby 对象，**从不**占登记号；占号的是 base
+            #   （Symbol / Fixnum / nil / true / false 天然不占）。
+            self.write_obj(obj.base)
             return
         if isinstance(obj, RIVar):
-            # Ruby 里 IVAR 的被包装对象只登记一次，序号是它自己的；这里让
-            # wrapper 顶替这个位置，写 base 时临时禁止登记，避免序号错位。
+            # 'I'（TYPE_IVAR）只是给 base 挂实例变量的标记：
+            # 真正的登记发生在 base 身上，包装自己一格都不占。
+            # ★ 两处都不能替 base 占号 —— ① base 是 Symbol（只进符号表，
+            #   如带编码的 I:\x06E\x06:\x06ET）时会让其后所有 @ 号 +1；
+            #   ② base 是别的类型时，同一个 base 第二次出现应该是 '@' 链接，
+            #   若登记的是包装那就查不到、会把对象整个重写一遍。
+            #   真实存档（宝可梦SA 移植版）两种都踩过。
+            bkey = id(obj.base)
+            if bkey in self.objects:
+                # base 已经写过 → Ruby 这时只会写一个链接，不再带 'I'
+                self.write(b"@")
+                self.write_int(self.objects[bkey])
+                return
             self.write(b"I")
             if obj.uclass:
                 self.write(b"C")
                 self.write_symbol(obj.uclass)
-            self._reg(obj)
-            self._suppress.add(id(obj.base))
-            try:
-                self.write_obj(obj.base)
-            finally:
-                self._suppress.discard(id(obj.base))
+            self.write_obj(obj.base)
             self.write_int(len(obj.ivars))
             for k, v in obj.ivars.items():
                 self.write_symbol(k)

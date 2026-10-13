@@ -42,6 +42,7 @@ Scripts.rxdata。
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import time
@@ -49,6 +50,102 @@ import zlib
 from typing import Any, Dict, List, Optional, Tuple
 
 import rmarshal
+
+
+# ---------------------------------------------------------------------------
+# 存档外层封装（有些移植版/手机版会把 Marshal 再打包一层）
+# ---------------------------------------------------------------------------
+# ★ 已见过的封装：**`Base64.encode64(Zlib::Deflate.deflate(Marshal.dump(x)))`**
+#   （宝可梦 SA 2.2.2.1 这类 PC 移植版就这么写）。文件里全是 ASCII 文本，
+#   每行正好 60 个字符、末尾一个 \n —— 正是 Ruby 的 `Base64.encode64`
+#   的换行宽度。直接拿它当 Marshal 读就会报「偏移 0x0 处不是 Marshal 魔数」。
+#
+# 用法：`encoding, marshal_bytes = unwrap_save(raw)` 读出真正的 Marshal 流；
+# 写回时用 `wrap_save(encoding, marshal_bytes)` 还原成同一种封装
+# （`plain` 就是原样，保证「打开→保存」字节一致）。
+ENCODING_PLAIN = "plain"        # 裸 Marshal（04 08 …），RGSS 原生存档
+ENCODING_B64ZLIB = "b64zlib"    # Base64(Deflate(Marshal)) —— 移植版常见
+ENCODING_ZLIB = "zlib"          # 裸 Deflate(Marshal)（少见，保底）
+ENCODING_BASE64 = "base64"      # 裸 Base64(Marshal)（少见，保底）
+
+
+def encode_ruby_base64(data: bytes) -> bytes:
+    """
+    模仿 Ruby 的 ``Base64.encode64``：每 60 个字符断行、**末尾也有一个 \\n**
+    （不是 Python 的 ``base64.encodebytes``，那是 76 字符断行）。
+    和 Ruby 的输出逐字节一致 —— 已验证能还原真实存档文件。
+    """
+    b64 = base64.b64encode(data)
+    lines = [b64[i:i + 60] for i in range(0, len(b64), 60)]
+    return b"\n".join(lines) + b"\n"
+
+
+def _looks_like_base64(raw: bytes) -> bool:
+    """整份文件是不是纯 Base64 文本（允许换行/空白，长度 4 的倍数）。"""
+    if not raw:
+        return False
+    body = bytes(c for c in raw if c not in b"\r\n\t ")
+    if len(body) < 8 or len(body) % 4:
+        return False
+    return all(c in b"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+               b"abcdefghijklmnopqrstuvwxyz0123456789+/=" for c in body)
+
+
+def unwrap_save(raw: bytes) -> Tuple[str, bytes]:
+    """
+    拆掉存档的外层封装，返回 ``(encoding, 真正的 Marshal 字节)``。
+
+    认不出来时**原样返回** ``(plain, raw)``，让 rmarshal 去报它自己的错，
+    免得把错误信息盖掉。
+    """
+    if raw[:2] == b"\x04\x08":
+        return ENCODING_PLAIN, raw
+
+    # ① Base64 文本 → 解出来可能还压着
+    if _looks_like_base64(raw):
+        try:
+            data = base64.b64decode(bytes(c for c in raw if c not in b"\r\n\t "))
+        except Exception:
+            data = b""
+        if data[:1] == b"\x78":                      # zlib 头 0x78
+            try:
+                inner = zlib.decompress(data)
+                if inner[:2] == b"\x04\x08":
+                    return ENCODING_B64ZLIB, inner
+            except zlib.error:
+                pass
+        if data[:2] == b"\x04\x08":
+            return ENCODING_BASE64, data
+
+    # ② 没套 Base64，但直接压了 zlib
+    if raw[:1] == b"\x78":
+        try:
+            inner = zlib.decompress(raw)
+            if inner[:2] == b"\x04\x08":
+                return ENCODING_ZLIB, inner
+        except zlib.error:
+            pass
+
+    return ENCODING_PLAIN, raw
+
+
+def wrap_save(encoding: str, marshal_bytes: bytes) -> bytes:
+    """把 Marshal 字节按原来的封装写回去（``plain`` = 原样）。"""
+    if encoding == ENCODING_B64ZLIB:
+        return encode_ruby_base64(zlib.compress(marshal_bytes))
+    if encoding == ENCODING_ZLIB:
+        return zlib.compress(marshal_bytes)
+    if encoding == ENCODING_BASE64:
+        return encode_ruby_base64(marshal_bytes)
+    return marshal_bytes
+
+
+ENCODING_LABELS = {
+    ENCODING_PLAIN: "原始 Marshal（裸存档）",
+    ENCODING_B64ZLIB: "Base64 + zlib 压缩（移植版存档）",
+    ENCODING_ZLIB: "zlib 压缩的 Marshal",
+    ENCODING_BASE64: "Base64 编码的 Marshal",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +826,140 @@ class GameData:
     def trainer_type_list(self) -> List[Tuple[str, int]]:
         return self._listing(self._trainer_types)
 
+    # -- 「手动填写」解析：编号 / 内部名 / 显示名都能认 --------------------
+    def _resolve_id(self, text, listing, by_internal) -> Optional[int]:
+        """
+        把用户手输的一串字解析成编号。认不出来返回 None。
+
+        接受这些写法（这是给「下拉里找不到、用户自己填」用的）：
+          · 纯数字编号            25 / 25.0 / #25
+          · **内部名（英文）**      PIKACHU / GIFT_LANTURN / POKEBALL
+                                  （下划线可有可无、大小写不限）
+          · 显示名（与下拉一致）    皮卡丘 / Pikachu / 精灵球
+          · 带编号的名字           皮卡丘（#25）
+
+        ★ 之所以要专门做这一步：同人游戏经常把 PBS 删掉、只留 .dat，
+          甚至 .dat 也读不全 —— 这时下拉是空的，只能手输。手输**必须**
+          用游戏认识的内部名（英文）或编号，中文只在能读到语言包时才对得上。
+        """
+        if text is None:
+            return None
+        t = str(text).strip()
+        if not t:
+            return None
+        if t.lstrip("+-").isdigit():
+            return int(t)
+        hit = self._lookup(by_internal, t)
+        if hit is not None:
+            return hit
+        low = t.lower()
+        for name, i in listing():
+            if str(name).strip().lower() == low:
+                return i
+        m = re.search(r"#\s*(\d+)", t)
+        if m:
+            return int(m.group(1))
+        return None
+
+    def find_species(self, text) -> Optional[int]:
+        """物种：编号 / 内部名（PIKACHU）/ 显示名 → 编号。"""
+        return self._resolve_id(text, self.species_list, self._species_by_internal)
+
+    def find_item(self, text) -> Optional[int]:
+        """道具：编号 / 内部名（POKEBALL）/ 显示名 → 编号。"""
+        return self._resolve_id(text, self.item_list, self._item_by_internal)
+
+    def find_move(self, text) -> Optional[int]:
+        """招式：编号 / 内部名（THUNDERBOLT）/ 显示名 → 编号。"""
+        return self._resolve_id(text, self.move_list, self._move_by_internal)
+
+    def ability_index_of(self, name) -> Optional[int]:
+        """特性**内部名**（ANALYTIC）→ 编号（0/1/2…）。认不出返回 None。"""
+        return self._lookup(self._ability_index, name)
+
+    def find_ability(self, text) -> Optional[int]:
+        """特性：编号 / 内部名 / 显示名 → 编号。"""
+        def listing():
+            return [(self.ability_name(i), i) for i in sorted(self._abilities)]
+        return self._resolve_id(text, listing, self._ability_index)
+
+    def nature_index_by_name(self, text) -> Optional[int]:
+        """
+        性格：内部名（HARDY/MODEST，其实与英文名同形）/ 中文名 / 编号 → 0~24。
+        """
+        if text is None:
+            return None
+        t = str(text).strip()
+        if not t:
+            return None
+        if t.lstrip("+-").isdigit():
+            i = int(t)
+            return i if 0 <= i < 25 else None
+        i = self.nature_index_of(t)
+        if i is not None:
+            return i
+        low = t.lower()
+        for k, nm in enumerate(NATURES):
+            if nm == t:
+                return k
+        for k, nm in enumerate(NATURES_EN):
+            if nm.lower() == low:
+                return k
+        return None
+
+    def status_code_by_name(self, text) -> Optional[int]:
+        """状态：内部名（SLEEP）/ 中文名 / 编号 → 0~6。"""
+        if text is None:
+            return None
+        t = str(text).strip()
+        if not t:
+            return None
+        if t.lstrip("+-").isdigit():
+            i = int(t)
+            return i if i in self.STATUS_SYMBOLS.values() else None
+        low = t.lower()
+        for k, v in self.STATUS_SYMBOLS.items():
+            if k.lower() == low:
+                return v
+        for k, v in STATUS_NAMES.items():
+            if str(v) == t:
+                return k
+        return None
+
+    def find_trainer_type(self, text) -> Optional[int]:
+        """训练家类型：编号 / 内部名（POKEMONTRAINER_Red）/ 显示名 → 编号。"""
+        if text is None:
+            return None
+        t = str(text).strip()
+        if not t:
+            return None
+        if t.lstrip("+-").isdigit():
+            return int(t)
+        got = self.trainer_type_id_of(t)
+        if got is not None:
+            return got
+        low = t.lower()
+        for i, nm in self._trainer_types.items():
+            if str(nm).strip().lower() == low:
+                return i
+        return None
+
+    # 手输时给用户看的「必须怎么填」提醒（界面直接拿去显示）
+    MANUAL_INPUT_HINT = (
+        "下拉里找不到时可以自己填 —— **必须用游戏认识的英文内部名**，或**编号**：\n"
+        "  · 物种：PIKACHU、GIFT_LANTURN、MR_MIME（大小写不限，下划线可有可无）\n"
+        "  · 道具：POKEBALL、RARECANDY、REPEL\n"
+        "  · 招式：THUNDERBOLT、TACKLE\n"
+        "  · 特性：ANALYTIC、TELEPATHY（也可以填 0 / 1 / 2 表示第几个特性）\n"
+        "  · 性格：HARDY、MODEST、JOLLY…（或 0~24 的编号）\n"
+        "  · 状态：NONE、SLEEP、POISON、BURN、FROZEN、PARALYSIS、FAINT（或 0~6）\n"
+        "  · 训练家类型：POKEMONTRAINER_Red（或编号）\n"
+        "  · 也可以直接填**编号**（纯数字，如物种 25 → 皮卡丘）。\n"
+        "⚠ 不要填中文名 —— 只有在游戏自带语言包、且中文名与下拉里显示的一模一样"
+        "时才认得；否则游戏读档会把它当成不存在的对象。\n"
+        "⚠ 没选「游戏数据（游戏根目录）」时，工具读不到对照表 —— "
+        "这时**只能填内部名或编号**，显示名 / 中文名一律认不出。")
+
     # -- 单只宝可梦要用到的原始数据 ----------------------------------------
     def base_stats(self, sid: Any, form: Any = 0) -> List[int]:
         """六项种族值，顺序 = [HP, 攻击, 防御, 速度, 特攻, 特防]。"""
@@ -1138,6 +1369,22 @@ def _sym(v: Any) -> str:
     return v.name if isinstance(v, rmarshal.RSymbol) else str(v)
 
 
+# 「内部名」长什么样：字母开头，只含字母 / 数字 / 下划线
+# （PIKACHU、MR_MIME、GIFT_LANTURN、POKEMONTRAINER_Red、X2…）
+_INTERNAL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def looks_internal(name: Any) -> bool:
+    """
+    这串字像不像「内部名」。
+
+    ★ 用途：没选游戏根目录（读不到 .dat / PBS 的对照表）时，用户仍然可以直接
+      填内部名 —— 现代存档（v19+）里物种 / 道具 / 招式 / 特性本来就是
+      Symbol（内部名），能原样写进去，不需要对照表。
+    """
+    return bool(_INTERNAL_RE.match(str(name or "").strip()))
+
+
 # ---------------------------------------------------------------------------
 # 存档
 # ---------------------------------------------------------------------------
@@ -1206,7 +1453,15 @@ class SaveFile:
         self.path = path
         with open(path, "rb") as f:
             self.raw = f.read()
-        self.objects = rmarshal.loads_all(self.raw)
+        # ★ 先拆外层封装：有些移植版存档是 Base64(Deflate(Marshal))
+        self.encoding, self.marshal = unwrap_save(self.raw)
+        try:
+            self.objects = rmarshal.loads_all(self.marshal)
+        except rmarshal.UnmarshalError as e:
+            raise rmarshal.UnmarshalError(
+                f"{e}\n（{os.path.basename(path)}：外层封装识别为「"
+                f"{ENCODING_LABELS.get(self.encoding, self.encoding)}」，"
+                f"文件头 {self.raw[:8].hex(' ')} / 共 {len(self.raw)} 字节）")
         self.fmt = "legacy"
         self.root = None
         first = self.objects[0] if self.objects else None
@@ -1320,9 +1575,18 @@ class SaveFile:
 
     # -- 写回 --------------------------------------------------------------
     def dumps(self) -> bytes:
+        """Marshal 字节（**不含**外层封装）。"""
         if self.fmt == "hash":
             return rmarshal.dumps(self.root)
         return rmarshal.dumps_all(self.objects)
+
+    def file_bytes(self) -> bytes:
+        """最终写进 .rxdata 的完整字节（按打开时认出来的封装还原）。"""
+        return wrap_save(self.encoding, self.dumps())
+
+    @property
+    def encoding_label(self) -> str:
+        return ENCODING_LABELS.get(self.encoding, self.encoding)
 
     def write(self, path: Optional[str] = None, backup: bool = True) -> str:
         target = path or self.path
@@ -1335,16 +1599,18 @@ class SaveFile:
                         f.write(self.raw)
                 except OSError:
                     pass
-        blob = self.dumps()
+        blob = self.file_bytes()
         with open(target, "wb") as f:
             f.write(blob)
         if same:
             self.raw = blob            # 让 roundtrip_ok() 反映新的状态
+            self.marshal = self.dumps()
         forget_save(target)            # ★ 刷新缓存 mtime，免得下次被当成「外部改过」
         return target
 
     def roundtrip_ok(self) -> bool:
-        return self.dumps() == self.raw
+        """没改过东西时，写出来的完整文件应当和原文件**逐字节相同**。"""
+        return self.file_bytes() == self.raw
 
     # =====================================================================
     # 解码
@@ -1640,6 +1906,10 @@ class SaveFile:
             "昵称": nickname,
             "相同与否": ("同名" if nickname in (None, "") or nickname == sp_name
                        else "已改名"),
+            "招式": shows,
+            "招式文本": "、".join(
+                f"{s['招式']}（PP {s['PP']}）" if s.get("PP") is not None
+                else str(s["招式"]) for s in shows) or "（无）",
             "等级": level,
             "等级来源": ("存档直接存的" if self.fmt == "hash" else
                        ("HP反推" if r.get("level_by_hp")
@@ -1670,6 +1940,7 @@ class SaveFile:
             "携带道具": d.item(r["item"]),
             "携带道具ID": r["item"],
             "捕获用球": d.item(r["ball"]),
+            "捕获用球ID": r["ball"],
             "状态": STATUS_NAMES.get(r["status"], str(r["status"])),
             "状态回合": iv.get("@statusCount"),
             "亲密度": r["happiness"],
@@ -1969,11 +2240,31 @@ class SaveFile:
                 # v19+ 名字变成 @has_pokedex
                 iv["@has_pokedex" if modern else "@pokedex"] = bool(v)
             elif k == "trainertype":
+                # ★ 支持手输内部名（POKEMONTRAINER_Red）或编号
+                raw = str(v).strip() if isinstance(v, str) else v
+                if isinstance(raw, str) and not raw.lstrip("+-").isdigit():
+                    got = self.data.find_trainer_type(raw)
+                    if got is None:
+                        if not (looks_internal(raw) and modern):
+                            raise ValueError(
+                                f"训练家类型「{raw}」认不出来。请填**英文内部名**"
+                                "（如 POKEMONTRAINER_Red）或编号；"
+                                "没选游戏数据时只能填内部名或编号。")
+                        iv["@trainer_type"] = rmarshal.RSymbol(raw.upper())
+                        continue
+                    raw = got
                 if modern:
+                    if isinstance(raw, int) and not self.data._trainer_type_internal:
+                        raise ValueError(
+                            "训练家类型填的是编号，但没选「游戏数据（游戏根目录）」时"
+                            "读不到「编号 → 内部名」的对照表。\n"
+                            "请直接填**英文内部名**（如 POKEMONTRAINER_Red），"
+                            "或先选一下游戏根目录。")
                     iv["@trainer_type"] = rmarshal.RSymbol(
-                        self.data.trainer_type_internal(v))
+                        self.data.trainer_type_internal(raw)
+                        if isinstance(raw, int) else str(raw))
                 else:
-                    iv["@trainertype"] = int(v)
+                    iv["@trainertype"] = int(raw)
             elif k in ("money", "id", "outfit", "language"):
                 iv["@" + k] = int(v)
             else:
@@ -2130,6 +2421,10 @@ class SaveFile:
         form = ivs.get("@form") or 0
         base = list(base_override) if base_override else \
             self.data.base_stats(sid, form)
+        # ★ 没选「游戏数据」时读不到种族值（base_stats 会兜底成全 1）——
+        #   这时算出来的能力值是错的，宁可不写，也不要凭白把存档改坏。
+        if self.data.source == "none" and all(b == 1 for b in base):
+            return []
         rate = self.data.growth_rate(sid, form)
         if modern:
             ivs_list = self._stat_hash(ivs.get("@iv"))
@@ -2177,7 +2472,159 @@ class SaveFile:
     }
     RECALC_FIELDS = {"种族", "经验", "性格", "形态", "等级", "个体值", "努力值"}
 
-    def set_pokemon(self, pm: Any, key: str, value: Any, recalc: bool = True) -> bool:
+    # 「可手输」字段的值归一 ------------------------------------------------
+    # 用户填的可能是：编号（25 / "25"）、内部名（PIKACHU）、显示名（皮卡丘）。
+    #   · 有「游戏数据」时统一换算成编号；
+    #   · 没数据时（没选游戏根目录）—— 现代存档（v19+）的物种/道具/招式/特性
+    #     本来就是 Symbol，可以**原样按内部名写**，不需要对照表；
+    #     v16~v18 存的是数字编号，那种就只能填编号。
+    def coerce_ref(self, value, kind: str):
+        """kind ∈ species / item / move。返回 (值, 错误说明)。"""
+        label = {"species": "物种", "item": "道具", "move": "招式"}.get(kind, kind)
+        if value is None or isinstance(value, bool):
+            return 0, ""
+        if isinstance(value, int):
+            return value, ""
+        t = str(value).strip()
+        if not t:
+            return 0, ""
+        if t.lstrip("+-").isdigit():
+            return int(t), ""
+        finder = {"species": self.data.find_species,
+                  "item": self.data.find_item,
+                  "move": self.data.find_move}.get(kind)
+        got = finder(t) if finder else None
+        if got is not None:
+            return got, ""
+        if looks_internal(t):
+            if self.fmt == "hash":
+                return t.upper(), ""        # 现代存档：直接按内部名写
+            return None, (f"{label}「{t}」认不出来：v16~v18 的{label}存的是"
+                          f"**数字编号**，请先选「游戏数据（游戏根目录）」，"
+                          f"或直接填编号。")
+        return None, (f"{label}「{t}」认不出来。请填**英文内部名**"
+                      f"（如 PIKACHU / POKEBALL / THUNDERBOLT）或**编号**，"
+                      f"不要填中文。")
+
+    def _symbol_or_none(self, value) -> Any:
+        """内部名 / 编号 → 现代存档要写的 Symbol（0 / 空 → None）。"""
+        if value in (None, "", 0):
+            return None
+        if isinstance(value, str) and not value.lstrip("+-").isdigit():
+            return rmarshal.RSymbol(value)
+        return None
+
+    def _ability_index_for(self, pm: Any, name) -> Optional[int]:
+        """
+        特性内部名 → **这只宝可梦可选特性列表里的序号**（0/1/2）。
+
+        ★ 注意：`@ability_index` / `@abilityflag` 存的是「第几个特性」，
+          不是特性的全局编号 —— 拿全局编号写进去会让特性整个错位
+          （踩过：给皮卡丘填 TELEPATHY 结果变成了「避雷针」）。
+        """
+        ivs = pm.ivars
+        sid = (self._species_id(ivs.get("@species")) if self.fmt == "hash"
+               else ivs.get("@species"))
+        form = ivs.get("@form") or 0
+        want = GameData._norm_internal(name)
+        if not want:
+            return None
+        for i, a in enumerate(self.data.abilities_of(sid, form)):
+            if GameData._norm_internal(a) == want:
+                return i
+        return None
+
+    def _internal_name_or_fail(self, conv, value, label, example) -> str:
+        """
+        编号 → 内部名。读不到对照表（没选游戏数据）时直接报错 ——
+        否则会写出游戏认不出的 Symbol（如 `:"#25"`），读档就炸。
+        """
+        name = ""
+        try:
+            name = conv(value)
+        except Exception:                                   # noqa: BLE001
+            name = ""
+        if not name or str(name).startswith("#"):
+            raise ValueError(
+                f"{label}填的是编号 {value}，但没选「游戏数据（游戏根目录）」时"
+                f"读不到「编号 → 内部名」的对照表。\n"
+                f"请直接填**英文内部名**（如 {example}），或先选一下游戏根目录。")
+        return str(name)
+
+    def nickname_is_default(self, pm: Any, sid: Any = None) -> bool:
+        """
+        昵称是不是「默认的」—— 空 / nil / 与种族名一模一样。
+
+        ★ 只有默认昵称才应该跟着种族变；玩家自己起的名（「小黑」）不动。
+          这样既修好了「改种族后昵称还留着旧种族名」，又不会把自定义昵称冲掉。
+        """
+        if pm is None:
+            return True
+        ivs = pm.ivars
+        nm = ivs.get("@name")
+        if nm in (None, ""):
+            return True
+        if sid is None:
+            sid = (self._species_id(ivs.get("@species"))
+                   if self.fmt == "hash" else ivs.get("@species"))
+        sp_name = self.data.species(sid) if sid is not None else ""
+        return str(nm).strip() == str(sp_name).strip()
+
+    def _sync_nick_after_species(self, pm: Any, old_sid: Any, new_sid: Any,
+                                 force: bool = True) -> bool:
+        """
+        改完种族后把昵称同步成新种族名。返回是否改了昵称。
+
+        必须**在改 @species 之前**算好 old_sid（用来判断原昵称是不是旧种族名）。
+
+        ★ 默认 force=True：**只要改种族就把昵称一起改**。这是用户明确要求的
+          ——「改种类后昵称还留着旧种族名」正是本问题的根源（存档里 @species
+          已经变成新种族，@name 还写着旧种族名，于是队伍小图标 / 图鉴大图
+          看着跟名字对不上）。想保留玩家自定昵称的调用方可传 force=False，
+          那样只在昵称是「默认的」（空 / 恰为旧种族名）时才同步。
+
+        · v19+：`@name = nil` 表示「显示种族名」—— 交给游戏自己取，最稳，
+          名字和图标都跟着新种族走。
+        · v16~v18：`@name` 不能为 nil，写回新种族名。
+        """
+        if pm is None:
+            return False
+        if not force and not self.nickname_is_default(pm, old_sid):
+            return False
+        ivs = pm.ivars
+        if self.fmt == "hash":
+            ivs["@name"] = None
+        else:
+            ivs["@name"] = rmarshal.RStr(self.data.species(new_sid))
+        return True
+
+    def _fix_form_for_species(self, pm: Any, new_sid: Any) -> None:
+        """
+        种族变了 → 把不属于新种族的形态号清掉。
+
+        ★ 形态号（@form / @forced_form）是「相对种族」的：原来是一只形态 2 的
+          宝可梦，改成只有形态 0 的种族后，残留的形态号会让游戏**找不到图**，
+          表现为「队伍小图标 / 图鉴大图与宝可梦对不上」。这里把它拉回合法值。
+        """
+        if pm is None:
+            return
+        ivs = pm.ivars
+        try:
+            forms = self.data.forms_of(int(new_sid))
+        except (TypeError, ValueError):
+            forms = [0]
+        forms = list(forms) if forms else [0]
+        if 0 not in forms:
+            forms = [0] + forms
+        cur = ivs.get("@form")
+        if isinstance(cur, int) and cur not in forms:
+            ivs["@form"] = 0
+        ff = ivs.get("@forced_form")
+        if isinstance(ff, int) and ff not in forms:
+            ivs["@forced_form"] = None
+
+    def set_pokemon(self, pm: Any, key: str, value: Any, recalc: bool = True,
+                    sync_nick: bool = True) -> bool:
         """
         改单只宝可梦的一个字段（改完自动重算能力值）。返回是否重算了。
 
@@ -2187,16 +2634,19 @@ class SaveFile:
 
         ★ 两代存档的字段名完全不一样（v19+ 的种族是 Symbol、IV/EV 是 Hash），
           所以这里只做分派，具体写法在下面两个方法里。
+        ★ sync_nick：改「种族」时是否把默认昵称一起同步（默认开）。
+          详见 `_sync_nick_after_species`。
         """
         if self.fmt == "hash":
-            need = self._set_pokemon_modern(pm, key, value)
+            need = self._set_pokemon_modern(pm, key, value, sync_nick=sync_nick)
         else:
-            need = self._set_pokemon_legacy(pm, key, value)
+            need = self._set_pokemon_legacy(pm, key, value, sync_nick=sync_nick)
         if need and recalc:
             self.recalc_pokemon(pm)
         return need
 
-    def _set_pokemon_modern(self, pm: Any, key: str, value: Any) -> bool:
+    def _set_pokemon_modern(self, pm: Any, key: str, value: Any,
+                            sync_nick: bool = True) -> bool:
         """v19+ 的写法（Symbol / Hash）。"""
         ivs = pm.ivars
         d = self.data
@@ -2211,7 +2661,23 @@ class SaveFile:
             if isinstance(owner, rmarshal.RObject):
                 owner.ivars["@name"] = rmarshal.RStr(str(value))
         elif key == "种族":
-            ivs["@species"] = rmarshal.RSymbol(d.species_internal(int(value)))
+            old_sid = self._species_id(ivs.get("@species"))
+            v, err = self.coerce_ref(value, "species")
+            if err:
+                raise ValueError(err)
+            if isinstance(v, str):
+                ivs["@species"] = rmarshal.RSymbol(v)
+                new_sid = v            # 只有内部名，算不了编号
+            else:
+                new_sid = int(v)
+                ivs["@species"] = rmarshal.RSymbol(
+                    self._internal_name_or_fail(d.species_internal, new_sid,
+                                                "种族", "PIKACHU"))
+            # ★ 先同步默认昵称（判断用的是改之前的旧种族名），再修正形态号
+            if sync_nick:
+                self._sync_nick_after_species(pm, old_sid, new_sid)
+            if isinstance(new_sid, int):
+                self._fix_form_for_species(pm, new_sid)
             need = True
         elif key in ("等级", "经验"):
             sid = self._species_id(ivs.get("@species"))
@@ -2234,12 +2700,35 @@ class SaveFile:
                                 [max(0, min(255, x)) for x in v] + [0] * (6 - len(v)))
             need = True
         elif key == "性格":
-            ivs["@nature"] = rmarshal.RSymbol(d.nature_symbol(int(value)))
+            if isinstance(value, str) and not str(value).strip().lstrip("+-").isdigit():
+                nat = d.nature_index_by_name(value)
+                if nat is None:
+                    raise ValueError(
+                        f"性格「{value}」认不出来。请填**英文内部名**"
+                        "（HARDY / MODEST / JOLLY…）或 0~24 的编号。")
+            else:
+                nat = int(value)
+            ivs["@nature"] = rmarshal.RSymbol(d.nature_symbol(nat))
             need = True
         elif key == "特性":
-            # v19+ 用 @ability_index（@ability 非空时会盖过它，所以清掉）
-            ivs["@ability_index"] = max(0, min(2, int(value)))
-            ivs["@ability"] = None
+            # v19+ 用 @ability_index（@ability 非空时会盖过它）。
+            # ★ 手输内部名时：能用对照表就换成编号，换不了就直接写 @ability
+            #   （现代存档允许显式指定特性 Symbol）。
+            raw = str(value).strip() if isinstance(value, str) else value
+            if isinstance(raw, str) and not raw.lstrip("+-").isdigit():
+                idx = self._ability_index_for(pm, raw)
+                if idx is not None:
+                    ivs["@ability_index"] = max(0, min(9, int(idx)))
+                    ivs["@ability"] = None
+                elif looks_internal(raw):
+                    ivs["@ability"] = rmarshal.RSymbol(raw.upper())
+                else:
+                    raise ValueError(
+                        f"特性「{raw}」认不出来。请填**英文内部名**"
+                        "（ANALYTIC / TELEPATHY…）或 0 / 1 / 2（第几个特性）。")
+            else:
+                ivs["@ability_index"] = max(0, min(2, int(value)))
+                ivs["@ability"] = None
         elif key == "当前HP":
             total = ivs.get("@totalhp")
             hp = int(value)
@@ -2248,13 +2737,30 @@ class SaveFile:
         elif key == "招式":
             self.set_moves(pm, value)
         elif key == "携带道具":
-            ivs["@item"] = rmarshal.RSymbol(d.item_internal(int(value))) \
-                if int(value) else None
+            v, err = self.coerce_ref(value, "item")
+            if err:
+                raise ValueError(err)
+            ivs["@item"] = (rmarshal.RSymbol(v) if isinstance(v, str)
+                            else (rmarshal.RSymbol(self._internal_name_or_fail(
+                                d.item_internal, v, "携带道具", "POKEBALL"))
+                                  if v else None))
         elif key == "捕获用球":
-            ivs["@poke_ball"] = rmarshal.RSymbol(d.item_internal(int(value))) \
-                if int(value) else None
+            v, err = self.coerce_ref(value, "item")
+            if err:
+                raise ValueError(err)
+            ivs["@poke_ball"] = (rmarshal.RSymbol(v) if isinstance(v, str)
+                                 else (rmarshal.RSymbol(self._internal_name_or_fail(
+                                     d.item_internal, v, "捕获用球", "POKEBALL"))
+                                       if v else None))
         elif key == "状态":
-            st = int(value)
+            st = d.status_code_by_name(value)
+            if st is None:
+                if isinstance(value, str) and \
+                        not str(value).strip().lstrip("+-").isdigit():
+                    raise ValueError(
+                        f"状态「{value}」认不出来。请填 NONE / SLEEP / POISON / "
+                        "BURN / FROZEN / PARALYSIS / FAINT，或 0~6。")
+                st = int(value)
             ivs["@status"] = rmarshal.RSymbol(d.status_symbol(st))
             if st != 1:
                 ivs["@statusCount"] = 0
@@ -2263,7 +2769,9 @@ class SaveFile:
         elif key == "亲密度":
             ivs["@happiness"] = max(0, min(255, int(value)))
         elif key == "异色":
-            ivs["@shiny"] = bool(value)
+            # ★ None 表示「交回游戏按个体 ID 自动判定」（v19+ 存 nil），
+            #   不是「非异色」—— 否则「自动」会被写成 false，异色宝可梦会掉色。
+            ivs["@shiny"] = None if value is None else bool(value)
         elif key == "孵蛋步数":
             ivs["@steps_to_hatch"] = max(0, int(value))
         elif key == "形态":
@@ -2286,7 +2794,8 @@ class SaveFile:
             raise KeyError(f"不认识的字段：{key}")
         return need
 
-    def _set_pokemon_legacy(self, pm: Any, key: str, value: Any) -> bool:
+    def _set_pokemon_legacy(self, pm: Any, key: str, value: Any,
+                            sync_nick: bool = True) -> bool:
         """v16~v18 的写法（数字编号 / 数组）。"""
         ivs = pm.ivars
         need = False
@@ -2314,8 +2823,37 @@ class SaveFile:
             ivs["@hp"] = max(0, min(hp, total)) if isinstance(total, int) else max(0, hp)
         elif key == "招式":
             self.set_moves(pm, value)
+        elif key == "性格":
+            if isinstance(value, str) and not str(value).strip().lstrip("+-").isdigit():
+                nat = self.data.nature_index_by_name(value)
+                if nat is None:
+                    raise ValueError(
+                        f"性格「{value}」认不出来。请填**英文内部名**"
+                        "（HARDY / MODEST / JOLLY…）或 0~24 的编号。")
+            else:
+                nat = int(value)
+            ivs["@natureflag"] = max(0, min(24, nat))
+        elif key == "特性":
+            raw = str(value).strip() if isinstance(value, str) else value
+            if isinstance(raw, str) and not raw.lstrip("+-").isdigit():
+                idx = self._ability_index_for(pm, raw)
+                if idx is None:
+                    raise ValueError(
+                        f"特性「{raw}」认不出来：v16~v18 的特性存的是"
+                        "**编号**（第几个特性），请先选「游戏数据（游戏根目录）」"
+                        "或直接填 0 / 1 / 2。")
+                ivs["@abilityflag"] = max(0, int(idx))
+            else:
+                ivs["@abilityflag"] = max(0, int(value))
         elif key == "状态":
-            st = int(value)
+            st = self.data.status_code_by_name(value)
+            if st is None:
+                if isinstance(value, str) and \
+                        not str(value).strip().lstrip("+-").isdigit():
+                    raise ValueError(
+                        f"状态「{value}」认不出来。请填 NONE / SLEEP / POISON / "
+                        "BURN / FROZEN / PARALYSIS / FAINT，或 0~6。")
+                st = int(value)
             ivs["@status"] = st
             if st != 1:
                 ivs["@statusCount"] = 0
@@ -2327,6 +2865,26 @@ class SaveFile:
             if isinstance(value, str):
                 value = [int(x) for x in re.findall(r"-?\d+", value)]
             ivs["@ribbons"] = [int(x) for x in value]
+        elif key == "种族":
+            v, err = self.coerce_ref(value, "species")
+            if err:
+                raise ValueError(err)
+            if isinstance(v, str):
+                raise ValueError("v16~v18 的种族必须是数字编号，不能填内部名。")
+            old_sid = ivs.get("@species")
+            new_sid = int(v)
+            ivs["@species"] = new_sid
+            if sync_nick:
+                self._sync_nick_after_species(pm, old_sid, new_sid)
+            self._fix_form_for_species(pm, new_sid)
+            need = True
+        elif key == "携带道具" or key == "捕获用球":
+            v, err = self.coerce_ref(value, "item")
+            if err:
+                raise ValueError(err)
+            if isinstance(v, str):
+                raise ValueError("v16~v18 的道具必须是数字编号，不能填内部名。")
+            ivs[self.POKEMON_FIELDS[key]] = int(v or 0)
         elif key in self.POKEMON_FIELDS:
             try:
                 ivs[self.POKEMON_FIELDS[key]] = int(value)
@@ -2369,10 +2927,20 @@ class SaveFile:
                 mv.ivars["@id"] = None if modern else 0
                 mv.ivars["@pp"] = 0
             else:
-                mv.ivars["@id"] = (rmarshal.RSymbol(self.data.move_internal(int(mid)))
-                                   if modern else int(mid))
+                # ★ 招式也支持手输内部名（现代存档的 @id 就是 Symbol）
+                v, err = self.coerce_ref(mid, "move")
+                if err:
+                    raise ValueError(err)
+                if isinstance(v, str):
+                    mv.ivars["@id"] = rmarshal.RSymbol(v)
+                elif modern:
+                    mv.ivars["@id"] = rmarshal.RSymbol(
+                        self._internal_name_or_fail(self.data.move_internal, v,
+                                                    "招式", "THUNDERBOLT"))
+                else:
+                    mv.ivars["@id"] = int(v)
                 mv.ivars["@pp"] = int(pp) if pp not in (None, "") \
-                    else self.data.move_pp(mid)
+                    else self.data.move_pp(v)
             if mv.ivars.get("@ppup") is None:
                 mv.ivars["@ppup"] = 0
             out.append(mv)
@@ -2450,14 +3018,53 @@ class SaveFile:
             return []
         return pockets[index]
 
-    def set_bag_item(self, pocket_index: int, item_id: int, count: int) -> None:
+    def norm_item(self, value):
+        """
+        道具：编号 / 内部名 / 显示名 → (编号 或 None, 内部名 或 None)。
+
+        ★ 没选游戏数据时「编号」换不出内部名，于是这里直接给出**内部名**，
+          现代存档（v19+）的道具本来就是 Symbol，能原样写进去。
+        """
+        if value is None or isinstance(value, bool):
+            return 0, None
+        if isinstance(value, int):
+            return value, None
+        t = str(value).strip()
+        if not t:
+            return 0, None
+        if t.lstrip("+-").isdigit():
+            return int(t), None
+        i = self.data.find_item(t)
+        if i is not None:
+            return i, None
+        if looks_internal(t):
+            if self.fmt == "hash":
+                return None, t.upper()
+            raise ValueError(f"道具「{t}」认不出来：v16~v18 的道具存的是"
+                             "**数字编号**，请先选「游戏数据（游戏根目录）」"
+                             "或直接填编号。")
+        raise ValueError(f"道具「{t}」认不出来。请填**英文内部名**"
+                         "（如 POKEBALL / RARECANDY）或**编号**，不要填中文。")
+
+    def _item_matches(self, key: Any, iid, name) -> bool:
+        """口袋里的这个键是不是目标道具（编号或内部名任一命中）。"""
+        if iid is not None and self._item_id(key) == iid:
+            return True
+        if name and _sym(key).upper() == name:
+            return True
+        return False
+
+    def set_bag_item(self, pocket_index: int, item_id, count: int) -> None:
         """
         设置某口袋某道具的数量（不存在就添加；数量 ≤0 就删除）。
 
         存档里同一种道具可能被拆成多条（游戏自己的历史遗留），这里统一合并到
         第一条上，避免改完显示两行。
+        ★ item_id 支持手输：编号 / 内部名（POKEBALL）。
         """
-        item_id = int(item_id)
+        iid, name = self.norm_item(item_id)
+        if not iid and not name:
+            return
         pockets = self.g("$PokemonBag").ivars.setdefault("@pockets", [])
         while len(pockets) <= pocket_index:
             pockets.append([])
@@ -2468,24 +3075,24 @@ class SaveFile:
             pockets[pocket_index] = poc
             kind = "array"
 
-        # 现代存档里道具是 Symbol（:POTION），比较得先换算成编号
+        # 现代存档里道具是 Symbol（:POTION），比较得先换算成编号 / 内部名
         if kind == "hash":
-            hit = [k for k, _v in poc.pairs if self._item_id(k) == item_id]
+            hit = [k for k, _v in poc.pairs if self._item_matches(k, iid, name)]
             if hit:
                 if count <= 0:
                     poc.pairs = [(k, v) for k, v in poc.pairs
-                                 if self._item_id(k) != item_id]
+                                 if not self._item_matches(k, iid, name)]
                 else:
-                    poc.pairs = [(k, int(count) if self._item_id(k) == item_id else v)
-                                 for k, v in poc.pairs]
+                    poc.pairs = [(k, int(count) if self._item_matches(k, iid, name)
+                                  else v) for k, v in poc.pairs]
                 return
             if count > 0:
-                poc.pairs.append((self._item_key(item_id), int(count)))
+                poc.pairs.append((self._item_key(iid, name), int(count)))
             return
 
         hit = [p for p in poc
                if isinstance(p, list) and len(p) >= 2
-               and self._item_id(p[0]) == item_id]
+               and self._item_matches(p[0], iid, name)]
         if hit:
             if count <= 0:
                 for p in hit:
@@ -2496,12 +3103,16 @@ class SaveFile:
                     poc.remove(p)
             return
         if count > 0:
-            poc.append([self._item_key(item_id), int(count)])
+            poc.append([self._item_key(iid, name), int(count)])
 
-    def _item_key(self, item_id: int) -> Any:
-        """编号 → 存档里该用的「道具键」：v19+ 是 Symbol，legacy 是数字。"""
+    def _item_key(self, item_id, name: Any = None) -> Any:
+        """编号 / 内部名 → 存档里该用的「道具键」：v19+ 是 Symbol，legacy 是数字。"""
         if self.fmt == "hash":
-            return rmarshal.RSymbol(self.data.item_internal(item_id))
+            if name:
+                return rmarshal.RSymbol(name)
+            # 编号 → 内部名；读不到对照表时直接报错，别写出 `:"#410"` 这种鬼东西
+            return rmarshal.RSymbol(self._internal_name_or_fail(
+                self.data.item_internal, item_id, "道具", "POKEBALL"))
         return int(item_id)
 
     def remove_bag_index(self, pocket_index: int, i: int) -> None:
@@ -2548,18 +3159,20 @@ class SaveFile:
             n += 1
         return n
 
-    def set_registered_item(self, item_id: int) -> None:
+    def set_registered_item(self, item_id) -> None:
+        """登记道具；支持手输（编号 / 内部名）。"""
+        iid, name = self.norm_item(item_id)
         iv = self.g("$PokemonBag").ivars
         if self.fmt == "hash":
             # v20+ 是 @registered_items 数组（可以登记好几个）
+            sym = self._item_key(iid, name) if (iid or name) else None
             reg = iv.get("@registered_items")
-            sym = rmarshal.RSymbol(self.data.item_internal(int(item_id)))
             if not isinstance(reg, list) or not reg:
-                iv["@registered_items"] = [sym] if int(item_id) else []
+                iv["@registered_items"] = [sym] if sym is not None else []
             else:
                 reg[0] = sym
             return
-        iv["@registeredItem"] = int(item_id)
+        iv["@registeredItem"] = int(iid or 0)
 
     # -- 开关 / 变量 ------------------------------------------------------
     # 「开关与变量」编辑页已删除，这里只保留概览页要用的只读计数。

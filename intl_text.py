@@ -881,7 +881,16 @@ def collect_text_files(path):
         return [path]
     if os.path.isdir(path):
         out = []
-        for dirpath, _dirnames, filenames in os.walk(path):
+        for dirpath, dirnames, filenames in os.walk(path):
+            # ★ 跳过工具自己建的「翻译中间文件」夹：里面全是缓存 / 报告 /
+            #   润色稿，不是待编译的文本。
+            try:
+                import config as _cfg
+                _skip = _cfg.WORK_DIR_NAME
+            except Exception:                               # noqa: BLE001
+                _skip = ""
+            if _skip:
+                dirnames[:] = [d for d in dirnames if d != _skip]
             for f in sorted(filenames):
                 if f.lower().endswith(".txt"):
                     out.append(os.path.join(dirpath, f))
