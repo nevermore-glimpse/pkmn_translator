@@ -9973,8 +9973,11 @@ class App:
         r = tk.Frame(body, bg=CARD)
         r.pack(fill="x", pady=3)
         _lbl(r, "训练家类型", width=10).pack(side="left")
+        # ★ 这里在 App 类里（不是宝可梦编辑器），用模块级工厂：
+        #   _manual_resolver 是编辑器实例的方法，App 上没有，会 AttributeError。
         self.tr_type_combo = SearchCombo(r, [], width=22,
-                                         resolver=self._manual_resolver(
+                                         resolver=make_manual_resolver(
+                                             lambda: self.save_obj,
                                              "trainer_type"))
         self.tr_type_combo.pack(side="left")
         self.tr_dex_var = tk.BooleanVar(value=False)
