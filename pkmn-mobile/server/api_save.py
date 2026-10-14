@@ -349,10 +349,12 @@ def api_pocket(ctx):
     sv = _sv(ctx)
     q = dict(ctx["query"]); q.update(ctx["body"] or {})
     i = int(q.get("index", 0))
-    # ★ 归一成 {道具ID, 数量, 名称}：pocket() 原样返回的是 Ruby 对象
+    # ★ 归一成 {item_id, count, name}：pocket() 原样返回的是 Ruby 对象
     #   （现代存档里道具键是 Symbol），前端要的是一个能直接显示的编号。
-    rows = [{"item_id": iid, "count": cnt, "name": sv.data.item(iid)}
-            for iid, cnt in sv.pocket_entries(i)]
+    #   认不出编号的道具回退存档原始内部名（TEALMASK 而不是「（无）」）。
+    rows = [{"item_id": iid, "count": cnt,
+             "name": sv.data.item_label(iid if iid else None, raw)}
+            for iid, raw, cnt in sv.pocket_entries_ex(i)]
     return JU.ok({"index": i, "pocket": rows,
                   "pocket_name": sv.data.pocket_name(i)})
 

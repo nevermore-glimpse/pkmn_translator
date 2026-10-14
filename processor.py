@@ -33,6 +33,11 @@ _ANGLE_CMD_PAT = (
 # ② HTML 风格标签：<ar> </ar> <color=red>
 _HTML_TAG_PAT = r'</?[a-zA-Z][^>]*>'
 
+# ②.5 纯数字尖括号标记：</0> <1> <12>
+#   ★ 必须当控制码保护：批量的行号就是 <N> 格式，原文里若裸露 <3> 之类，
+#     模型输出解析时会把它误当成另一条译文（导致串行/漏句）
+_DIGIT_TAG_PAT = r'</?\d+>'
+
 # ③ HTML 实体：&quot;  &amp;  &#39;  &#x27;
 _HTML_ENTITY_PAT = r'&(?:[a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);'
 
@@ -59,6 +64,7 @@ HTML_TAG_RE  = re.compile(_HTML_TAG_PAT)
 CTRL_RE      = re.compile(_CTRL_PAT)
 TAG_RE       = re.compile(_TAG_PAT)
 BRACE_RE     = re.compile(_BRACE_PAT)
+DIGIT_TAG_RE = re.compile(_DIGIT_TAG_PAT)
 SPEAKER_TAG_RE = re.compile(r'\\tg\[([^\]]*)\]')
 
 # 未识别控制码检测（原始文本中残留的 \字母）
@@ -69,6 +75,7 @@ ALL_CTRL_RE = re.compile(
     + _ANGLE_CMD_PAT    + r'|'
     + _CTRL_PAT         + r'|'
     + _HTML_TAG_PAT     + r'|'
+    + _DIGIT_TAG_PAT    + r'|'
     + _HTML_ENTITY_PAT
     + r')'
 )
@@ -78,6 +85,7 @@ _CTRL_FOR_REWRAP = re.compile(
     + _ANGLE_CMD_PAT    + r'|'
     + _CTRL_PAT         + r'|'
     + _HTML_TAG_PAT     + r'|'
+    + _DIGIT_TAG_PAT    + r'|'
     + _HTML_ENTITY_PAT
     + r')'
     r'|@\d+@|⟦\d+⟧'
@@ -202,12 +210,34 @@ def protect(text, drop_newline=True):
 
     def _in_html(s, e):
         return any(s < se and e > ss for ss, se in html_ranges)
+
+    # ---------- ③.2.2 纯数字尖括号标记（<0> </1>，防与行号 <N> 混淆） ----
+    digit_ranges = []
+    for m in DIGIT_TAG_RE.finditer(text):
+        if _in_angle(m.start(), m.end()):
+            continue
+        if _in_html(m.start(), m.end()):
+            continue
+        regions.append({
+            "start": m.start(),
+            "end":   m.end(),
+            "segments": [
+                {"protect": True, "content": m.group(0), "no_pad": False},
+            ],
+        })
+        digit_ranges.append((m.start(), m.end()))
+
+    def _in_digit(s, e):
+        return any(s < se and e > ss for ss, se in digit_ranges)
+
     # ---------- ③.2.5 HTML 实体 ----------
     entity_ranges = []
     for m in re.finditer(_HTML_ENTITY_PAT, text):
         if _in_angle(m.start(), m.end()):
             continue
         if _in_html(m.start(), m.end()):
+            continue
+        if _in_digit(m.start(), m.end()):
             continue
         regions.append({
             "start": m.start(),
@@ -224,6 +254,8 @@ def protect(text, drop_newline=True):
     speaker_ranges = []
     for m in SPEAKER_TAG_RE.finditer(text):
         if _in_angle(m.start(), m.end()) or _in_html(m.start(), m.end()):
+            continue
+        if _in_digit(m.start(), m.end()):
             continue
         if _in_entity(m.start(), m.end()):
             continue
@@ -250,6 +282,8 @@ def protect(text, drop_newline=True):
             continue
         if _in_html(m.start(), m.end()):
             continue
+        if _in_digit(m.start(), m.end()):
+            continue
         if _in_entity(m.start(), m.end()):
             continue
         regions.append({
@@ -268,6 +302,8 @@ def protect(text, drop_newline=True):
             continue
         if _in_html(m.start(), m.end()):
             continue
+        if _in_digit(m.start(), m.end()):
+            continue
         if _in_entity(m.start(), m.end()):
             continue
         regions.append({
@@ -285,6 +321,8 @@ def protect(text, drop_newline=True):
         if _in_angle(m.start(), m.end()):
             continue
         if _in_html(m.start(), m.end()):
+            continue
+        if _in_digit(m.start(), m.end()):
             continue
         if _in_entity(m.start(), m.end()):
             continue

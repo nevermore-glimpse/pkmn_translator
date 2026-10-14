@@ -63,10 +63,12 @@ import rmarshal
 # 用法：`encoding, marshal_bytes = unwrap_save(raw)` 读出真正的 Marshal 流；
 # 写回时用 `wrap_save(encoding, marshal_bytes)` 还原成同一种封装
 # （`plain` 就是原样，保证「打开→保存」字节一致）。
-ENCODING_PLAIN = "plain"        # 裸 Marshal（04 08 …），RGSS 原生存档
-ENCODING_B64ZLIB = "b64zlib"    # Base64(Deflate(Marshal)) —— 移植版常见
-ENCODING_ZLIB = "zlib"          # 裸 Deflate(Marshal)（少见，保底）
-ENCODING_BASE64 = "base64"      # 裸 Base64(Marshal)（少见，保底）
+ENCODING_PLAIN = "plain"            # 裸 Marshal（04 08 …），RGSS 原生存档
+ENCODING_PLAIN_REV = "plain_rev"    # 裸 Marshal，但整串字节反转
+ENCODING_B64ZLIB = "b64zlib"        # Base64(Deflate(Marshal)) —— 移植版常见
+ENCODING_ZLIB = "zlib"              # 裸 Deflate(Marshal)（少见，保底）
+ENCODING_ZLIB_REV = "zlib_rev"      # Deflate(Marshal) 后整串字节反转
+ENCODING_BASE64 = "base64"          # 裸 Base64(Marshal)（少见，保底）
 
 
 def encode_ruby_base64(data: bytes) -> bytes:
@@ -126,6 +128,21 @@ def unwrap_save(raw: bytes) -> Tuple[str, bytes]:
         except zlib.error:
             pass
 
+    # ③ 整串字节被反转（有些移植版 `Marshal.dump(x).reverse` 一下就当"加密"了）
+    if raw[-1:] == b"\x04" and raw[-2:-1] == b"\x08":   # 反转后头两字节是 04 08
+        try:
+            rmarshal.streams(raw[::-1])                 # 要求整串能完整解析，防误判
+            return ENCODING_PLAIN_REV, raw[::-1]
+        except Exception:
+            pass
+    if raw[-1:] == b"\x78":
+        try:
+            inner = zlib.decompress(raw[::-1])
+            if inner[:2] == b"\x04\x08":
+                return ENCODING_ZLIB_REV, inner
+        except zlib.error:
+            pass
+
     return ENCODING_PLAIN, raw
 
 
@@ -135,6 +152,10 @@ def wrap_save(encoding: str, marshal_bytes: bytes) -> bytes:
         return encode_ruby_base64(zlib.compress(marshal_bytes))
     if encoding == ENCODING_ZLIB:
         return zlib.compress(marshal_bytes)
+    if encoding == ENCODING_ZLIB_REV:
+        return zlib.compress(marshal_bytes)[::-1]
+    if encoding == ENCODING_PLAIN_REV:
+        return marshal_bytes[::-1]
     if encoding == ENCODING_BASE64:
         return encode_ruby_base64(marshal_bytes)
     return marshal_bytes
@@ -142,10 +163,131 @@ def wrap_save(encoding: str, marshal_bytes: bytes) -> bytes:
 
 ENCODING_LABELS = {
     ENCODING_PLAIN: "原始 Marshal（裸存档）",
+    ENCODING_PLAIN_REV: "原始 Marshal（整串字节反转）",
     ENCODING_B64ZLIB: "Base64 + zlib 压缩（移植版存档）",
     ENCODING_ZLIB: "zlib 压缩的 Marshal",
+    ENCODING_ZLIB_REV: "zlib 压缩 + 字节反转的 Marshal",
     ENCODING_BASE64: "Base64 编码的 Marshal",
 }
+
+
+# ---------------------------------------------------------------------------
+# 逐流封装（存档里"每个全局变量"再单独套一层）
+# ---------------------------------------------------------------------------
+# ★ 同一层封装还可以出现在**每条 Marshal 流内部**：
+#   宝可梦 SA 这类游戏每个全局变量都写成
+#       Marshal.dump( Zlib::Deflate.deflate(Marshal.dump(x)).reverse )
+#   于是顶层 16 条流全是 `"` (String)，旧版直接去取 `.ivars` 就报
+#       AttributeError: 'RStr' object has no attribute 'ivars'
+#
+#   这里把「流里其实是又一坨 Marshal」的情况认出来、揭开，
+#   写回时若该流没被改过就**原样吐回原始字节**（保证逐字节一致）。
+STREAM_ZLIB_REV = "zlib_rev"    # 反转 + zlib
+STREAM_ZLIB = "zlib"            # zlib
+STREAM_B64ZLIB = "b64zlib"      # Base64 + zlib
+STREAM_PLAIN = "plain"          # 纯再套一层 Marshal（无压缩）
+
+STREAM_CODEC_LABELS = {
+    STREAM_ZLIB_REV: "反转 + zlib",
+    STREAM_ZLIB: "zlib",
+    STREAM_B64ZLIB: "Base64 + zlib",
+    STREAM_PLAIN: "再套一层 Marshal",
+}
+
+
+def _raw_of(s) -> bytes:
+    """Marshal 字符串 → 原始字节（和 rmarshal 的 surrogateescape 解码对应）。"""
+    return str(s).encode("utf-8", "surrogateescape")
+
+
+def _rstr(b: bytes) -> "rmarshal.RStr":
+    return rmarshal.RStr(b.decode("utf-8", "surrogateescape"))
+
+
+def stream_decode(codec: str, raw: bytes) -> Optional[bytes]:
+    """按 codec 把一条流的原始字节还原成内层字节；认不出返回 None。"""
+    try:
+        if codec == STREAM_ZLIB_REV:
+            if raw[-1:] != b"\x78":
+                return None
+            return zlib.decompress(raw[::-1])
+        if codec == STREAM_ZLIB:
+            if raw[:1] != b"\x78":
+                return None
+            return zlib.decompress(raw)
+        if codec == STREAM_B64ZLIB:
+            body = bytes(c for c in raw if c not in b"\r\n\t ")
+            if not _looks_like_base64(body):
+                return None
+            data = base64.b64decode(body)
+            if data[:1] != b"\x78":
+                return None
+            return zlib.decompress(data)
+        if codec == STREAM_PLAIN:
+            return raw
+    except (zlib.error, ValueError):
+        return None
+    return None
+
+
+def stream_encode(codec: str, inner: bytes) -> bytes:
+    """stream_decode 的逆操作。"""
+    if codec == STREAM_ZLIB_REV:
+        return zlib.compress(inner)[::-1]
+    if codec == STREAM_ZLIB:
+        return zlib.compress(inner)
+    if codec == STREAM_B64ZLIB:
+        return encode_ruby_base64(zlib.compress(inner))
+    return inner
+
+
+# 试的顺序有讲究：反转的排前面（它的判别特征最强，不会误伤普通 zlib）
+STREAM_CODECS = (STREAM_ZLIB_REV, STREAM_ZLIB, STREAM_B64ZLIB, STREAM_PLAIN)
+
+
+def unwrap_stream(obj) -> Tuple[Any, bytes, Tuple[str, ...]]:
+    """
+    判断一条流是不是「套着 Marshal 的字符串」。
+
+    是就返回 ``(内层对象, 内层 Marshal 字节, (codec, ...))``；不是返回
+    ``(None, None, ())``。可能一层套一层，所以循环剥到不能再剥。
+    """
+    cur = obj
+    codecs: List[str] = []
+    inner_bytes = b""
+    for _ in range(4):
+        if not isinstance(cur, rmarshal.RStr):
+            break
+        raw = _raw_of(cur)
+        hit = None
+        for codec in STREAM_CODECS:
+            if codec == STREAM_PLAIN and raw[:2] != b"\x04\x08":
+                continue
+            data = stream_decode(codec, raw)
+            if not data or data[:2] != b"\x04\x08":
+                continue
+            try:
+                nxt = rmarshal.loads(data)
+            except rmarshal.UnmarshalError:
+                continue
+            codecs.append(codec)
+            inner_bytes = data
+            cur = nxt
+            hit = True
+            break
+        if not hit:
+            break
+    if not codecs:
+        return None, None, ()
+    return cur, inner_bytes, tuple(codecs)
+
+
+def rewrap_stream(codecs: Tuple[str, ...], obj: Any) -> "rmarshal.RStr":
+    """按 codecs 把对象原路套回成最外层那个字符串流。"""
+    node: Any = obj
+    for codec in reversed(codecs):
+        node = _rstr(stream_encode(codec, rmarshal.dumps(node)))
+    return node
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +431,12 @@ class GameData:
             self.dat_files.append("（.dat 读取失败，已跳过）")
         self._load_pbs()                   # ② PBS/*.txt（只补 .dat 没有的）
         self._load_language_pack()         # ③ 语言包（v16 的 <语言>.dat）
+        # ★ 语言包也可能就是唯一的名字来源（踩过：九重天 2.0 没有
+        #   species.dat / pokemon.txt，1113 个物种名全来自 Data/messages.dat）
+        #   —— 这一步放在 source 定稿之后，所以这里补记一笔
+        if self.source == "none" and (self._species or self._moves
+                                      or self._items or self._abilities):
+            self.source = "lang"
         self._load_pocket_names()          # ④ 口袋名（脚本里的 pbPocketNames）
         return self
 
@@ -715,6 +863,8 @@ class GameData:
 
     # -- 查询 --------------------------------------------------------------
     def species(self, sid: Any) -> str:
+        if sid is None or isinstance(sid, bool):
+            return "（未知）"
         try:
             sid = int(sid)
         except (TypeError, ValueError):
@@ -723,6 +873,26 @@ class GameData:
         if not info:
             return f"#{sid}"
         return self.tr(info.get("Name") or f"#{sid}")
+
+    def species_label(self, sid: Any, raw: Any = None) -> str:
+        """
+        显示用种族名：查得到编号 → 译名；查不到 → **存档里的原始内部名**；
+        两者都没有 → #编号 / （未知）。
+
+        ★ 给「游戏没提供 PBS/.dat」的同人游戏用：这种存档的 @species 是
+          内部名 Symbol（如 :ASHPIKACHU1），species_id_of() 认不出时 sid
+          是 None —— 但存档里明明写着种族，直接把内部名显示出来（网页版
+          保存编辑器就是这么显示的），总比显示成 None 强。
+        """
+        if sid is not None and not isinstance(sid, bool):
+            try:
+                if self._species.get(int(sid)):
+                    return self.species(sid)
+            except (TypeError, ValueError):
+                pass
+        if raw:
+            return str(raw)
+        return self.species(sid)
 
     def species_info(self, sid: Any, form: Any = 0) -> dict:
         """
@@ -748,6 +918,8 @@ class GameData:
         return base
 
     def item(self, iid: Any) -> str:
+        if iid is None or isinstance(iid, bool):
+            return "（无）"
         try:
             iid = int(iid)
         except (TypeError, ValueError):
@@ -759,6 +931,23 @@ class GameData:
         #   所以只有 0 号确实不在表里时才当成「无」。
         return "（无）" if iid == 0 else f"#{iid}"
 
+    def item_label(self, iid: Any, raw: Any = None) -> str:
+        """
+        显示用道具名：编号 → 译名；认不出 → **原始内部名** → （无）/ #编号。
+
+        同 `species_label`：认不出编号时退回存档里的 Symbol 名。
+        """
+        if iid is not None and not isinstance(iid, bool):
+            try:
+                k = int(iid)
+            except (TypeError, ValueError):
+                k = None
+            if k is not None and self._items.get(k):
+                return self.tr(self._items[k][0])
+        if raw:
+            return str(raw)
+        return self.item(iid)
+
     def item_pocket(self, iid: Any) -> int:
         try:
             iid = int(iid)
@@ -767,6 +956,8 @@ class GameData:
         return self._items.get(iid, (None, 0))[1]
 
     def move(self, mid: Any) -> str:
+        if mid is None or isinstance(mid, bool):
+            return "（无）"
         try:
             mid = int(mid)
         except (TypeError, ValueError):
@@ -774,6 +965,19 @@ class GameData:
         if not mid:
             return "（无）"
         return self.tr(self._moves.get(mid, f"#{mid}"))
+
+    def move_label(self, mid: Any, raw: Any = None) -> str:
+        """显示用招式名：编号 → 译名；认不出 → **原始内部名** → #编号。"""
+        if mid is not None and not isinstance(mid, bool):
+            try:
+                k = int(mid)
+            except (TypeError, ValueError):
+                k = None
+            if k is not None and self._moves.get(k):
+                return self.tr(self._moves[k])
+        if raw:
+            return str(raw)
+        return self.move(mid)
 
     def type_name(self, tid: Any) -> str:
         try:
@@ -786,7 +990,8 @@ class GameData:
         try:
             t = self._trainer_types.get(int(tid), str(tid))
         except (TypeError, ValueError):
-            t = str(tid)
+            # Symbol（:婴儿）显示成不带冒号的内部名
+            t = _raw_internal(tid) or str(tid)
         return self.tr(t)
 
     def pocket_name(self, idx: int) -> str:
@@ -1095,7 +1300,8 @@ class GameData:
         idx = self.trainer_type_id_of(internal)
         if idx is not None and self._trainer_types.get(idx):
             return self._trainer_types[idx]
-        return str(internal)
+        # Symbol 显示成不带冒号的内部名（:婴儿 → 婴儿）
+        return _raw_internal(internal) or str(internal)
 
     def species_internal(self, sid: Any) -> str:
         """编号 → 内部名（写现代存档时要用 Symbol）。取不到就退回名字。"""
@@ -1369,6 +1575,32 @@ def _sym(v: Any) -> str:
     return v.name if isinstance(v, rmarshal.RSymbol) else str(v)
 
 
+def _raw_internal(v: Any) -> Optional[str]:
+    """v 是 RSymbol 就返回它的内部名；数字编号没有内部名，返回 None。"""
+    return v.name if isinstance(v, rmarshal.RSymbol) else None
+
+
+def _as_int(v: Any, default: int = 0) -> int:
+    """
+    宽松转 int：123 / '123' / RStr('123') / '123.0' 都认；认不出给 default。
+
+    ★ 有些同人游戏的存档把数值存成了字符串（踩过：宝可梦九重天 2.0 的
+      @exp 是 RStr），直接拿去做算术会 TypeError。
+    """
+    if v is None or isinstance(v, bool):
+        return default
+    if isinstance(v, int):
+        return v
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(str(v).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
 # 「内部名」长什么样：字母开头，只含字母 / 数字 / 下划线
 # （PIKACHU、MR_MIME、GIFT_LANTURN、POKEMONTRAINER_Red、X2…）
 _INTERNAL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -1462,6 +1694,12 @@ class SaveFile:
                 f"{e}\n（{os.path.basename(path)}：外层封装识别为「"
                 f"{ENCODING_LABELS.get(self.encoding, self.encoding)}」，"
                 f"文件头 {self.raw[:8].hex(' ')} / 共 {len(self.raw)} 字节）")
+        # ★ 再拆「逐流封装」：有的游戏把每个全局变量各自套一层
+        #   Marshal.dump(压缩(Marshal.dump(x)))，顶层就全成了字符串。
+        self.stream_codec: Dict[int, Tuple[str, ...]] = {}
+        self.stream_inner: Dict[int, bytes] = {}
+        self.stream_raw_bytes: Dict[int, bytes] = {}
+        self._decode_streams()
         self.fmt = "legacy"
         self.root = None
         first = self.objects[0] if self.objects else None
@@ -1469,8 +1707,31 @@ class SaveFile:
                 and self._modern_keys_of(first)):
             self.fmt = "hash"
             self.root = first
+        elif not self._looks_essentials():
+            # 纯 RPG Maker XP 存档（Game_Actors / Game_Party / Game_Troop…）
+            # 会被误判成 legacy，然后崩在 `g("$Trainer").ivars` —— 在这里
+            # 就挡掉，报清楚的错（踩过：记忆的轮回 1.0 的 Save1.rxdata）。
+            raise ValueError(
+                f"「{os.path.basename(path)}」不像宝可梦 Essentials 存档"
+                f"（倒像纯 RPG Maker XP 游戏的存档）。\n"
+                f"本工具只支持宝可梦同人游戏的存档。")
         self._data: Optional[GameData] = None
         self._game_root = game_root or self._guess_root()
+
+    def _decode_streams(self) -> None:
+        """
+        把「套着 Marshal 的字符串流」剥开，就地替换成内层对象。
+
+        原封不动的层记下原始字节，写回时原样吐回 —— 未被改动的存档依然逐字节一致。
+        """
+        for i, o in enumerate(list(self.objects)):
+            inner, inner_bytes, codecs = unwrap_stream(o)
+            if inner is None:
+                continue
+            self.stream_codec[i] = codecs
+            self.stream_inner[i] = inner_bytes
+            self.stream_raw_bytes[i] = rmarshal.dumps(o)
+            self.objects[i] = inner
 
     @staticmethod
     def _modern_keys_of(h: rmarshal.RHash) -> set:
@@ -1480,6 +1741,25 @@ class SaveFile:
             if isinstance(k, rmarshal.RSymbol):
                 names.add(k.name)
         return names & {"player", "bag", "storage_system"}
+
+    # Essentials 存档里会出现的 Ruby 类（两代都有）。纯 RPG Maker XP 的
+    # 存档（Game_Actors / Game_Party / Game_Troop / Game_Map…）一个都没有。
+    ESSENTIALS_CLASSES = {
+        "Player", "PokeBattle_Trainer", "PokemonBag", "PokemonStorage",
+        "SecretBag", "PokemonSystem", "PokemonMapFactory",
+        "PokemonGlobalMetadata", "PokemonMapMetadata", "GameStats",
+        "WeatherSystem", "PokeBattle_Pokemon",
+    }
+
+    def _looks_essentials(self) -> bool:
+        """对象表里有没有 Essentials 特有的类（RHash 往里看一层）。"""
+        def hit(o: Any) -> bool:
+            if isinstance(o, rmarshal.RObject):
+                return o.ruby_class in self.ESSENTIALS_CLASSES
+            if isinstance(o, rmarshal.RHash):
+                return any(hit(v) for _k, v in o.pairs)
+            return False
+        return any(hit(o) for o in self.objects)
 
     # -- 路径 --------------------------------------------------------------
     def _guess_root(self) -> str:
@@ -1531,12 +1811,25 @@ class SaveFile:
                         len(o) if isinstance(o, (list, rmarshal.RHash)) else None),
                 })
             return out
+        # 每个 Ruby 类名在 STREAM_LABELS 里出现几次（Integer 出现两次：
+        # frame_count 和 map_id —— 那种只能靠位置，不能按类名改标签）
+        cls_count: Dict[str, int] = {}
+        for _lab, c, _d in STREAM_LABELS:
+            cls_count[c] = cls_count.get(c, 0) + 1
         for i, o in enumerate(self.objects):
             label = cls = ""
             desc = ""
             if i < len(STREAM_LABELS):
                 label, cls, desc = STREAM_LABELS[i]
             actual = o.ruby_class if isinstance(o, rmarshal.RObject) else type(o).__name__
+            # 位置上的类型和标称对不上、且这个类名只对应一个全局变量时，
+            # 按类名重新认（流数量/顺序与标准不同的同人游戏）
+            if label and cls and isinstance(o, rmarshal.RObject) \
+                    and actual != cls and cls_count.get(actual, 0) == 1:
+                for lab2, c2, d2 in STREAM_LABELS:
+                    if c2 == actual:
+                        label, desc = lab2, d2
+                        break
             out.append({
                 "index": i,
                 "全局变量": label or f"?({actual})",
@@ -1565,6 +1858,21 @@ class SaveFile:
                 if isinstance(v, rmarshal.RObject) and v.ruby_class == key:
                     return v
             raise KeyError(key)
+        for i, (label, cls, _) in enumerate(STREAM_LABELS):
+            if label == key and i < len(self.objects):
+                o = self.objects[i]
+                # 位置上的对象类型和标称对不上（流数量/顺序与标准不同的同人
+                # 游戏，踩过：记忆的轮回 1.0 只有 12 条流）→ 按 Ruby 类名找
+                if not isinstance(o, rmarshal.RObject) or not cls \
+                        or o.ruby_class == cls:
+                    return o
+                break
+        want = {c for lab, c, _ in STREAM_LABELS if lab == key and c}
+        if want:
+            for o in self.objects:
+                if isinstance(o, rmarshal.RObject) and o.ruby_class in want:
+                    return o
+        # 类名也对不上：保持老行为，按位置给（个别游戏改过类名）
         for i, (label, _, _) in enumerate(STREAM_LABELS):
             if label == key and i < len(self.objects):
                 return self.objects[i]
@@ -1576,9 +1884,26 @@ class SaveFile:
     # -- 写回 --------------------------------------------------------------
     def dumps(self) -> bytes:
         """Marshal 字节（**不含**外层封装）。"""
-        if self.fmt == "hash":
+        if not self.stream_codec and self.fmt == "hash":
             return rmarshal.dumps(self.root)
-        return rmarshal.dumps_all(self.objects)
+        return self._dump_streams()
+
+    def _dump_streams(self) -> bytes:
+        """
+        逐流写回：没动过的「被套住的流」原样吐回原始字节，
+        动过的按原来那套 codec 重新包好 —— 保证「打开→保存」字节一致。
+        """
+        out = bytearray()
+        for i, o in enumerate(self.objects):
+            codecs = self.stream_codec.get(i)
+            if not codecs:
+                out += rmarshal.dumps(o)
+                continue
+            if rmarshal.dumps(o) == self.stream_inner[i]:
+                out += self.stream_raw_bytes[i]
+            else:
+                out += rmarshal.dumps(rewrap_stream(codecs, o))
+        return bytes(out)
 
     def file_bytes(self) -> bytes:
         """最终写进 .rxdata 的完整字节（按打开时认出来的封装还原）。"""
@@ -1586,7 +1911,17 @@ class SaveFile:
 
     @property
     def encoding_label(self) -> str:
-        return ENCODING_LABELS.get(self.encoding, self.encoding)
+        """外层封装 + 逐流封装的文字说明（没有封装就是空串）。"""
+        parts = []
+        if self.encoding != ENCODING_PLAIN:
+            parts.append(ENCODING_LABELS.get(self.encoding, self.encoding))
+        if self.stream_codec:
+            kinds = sorted({STREAM_CODEC_LABELS.get(c, c)
+                            for codecs in self.stream_codec.values()
+                            for c in codecs})
+            parts.append(f"逐流封装：{'／'.join(kinds)}"
+                         f"（{len(self.stream_codec)} 条流）")
+        return "　".join(parts)
 
     def write(self, path: Optional[str] = None, backup: bool = True) -> str:
         target = path or self.path
@@ -1686,8 +2021,12 @@ class SaveFile:
         get = iv.get
         d = self.data
         if self.fmt == "hash":
+            # ★ 原始内部名（Symbol 名）：游戏没给 PBS/.dat、species_id_of()
+            #   认不出时，显示层靠它回退（ASHPIKACHU1 而不是 None）
+            sp_raw = _raw_internal(get("@species"))
             sid = self._species_id(get("@species"))
-            exp = get("@exp") or 0
+            # ★ _as_int：个别同人游戏把 @exp 存成了字符串（九重天 2.0）
+            exp = _as_int(get("@exp"))
             level = get("@level")
             if not isinstance(level, int) or level < 1:
                 level = level_from_exp(exp, d.growth_rate(sid))
@@ -1716,16 +2055,20 @@ class SaveFile:
             if ab_flag is None:
                 ab_flag = (get("@personalID") or 0) % 2
             moves = []
+            moves_raw = []
             for mv in get("@moves") or []:
                 mi = getattr(mv, "ivars", None)
                 if not isinstance(mi, dict):
                     continue
                 moves.append((self._move_id(mi.get("@id")),
                               mi.get("@pp"), mi.get("@ppup")))
+                moves_raw.append(_raw_internal(mi.get("@id")))
             nm = get("@name")
             if nm in (None, ""):
-                # v19 里 @name = nil 表示「用种族名」显示
-                nm = d.species(sid)
+                # v19 里 @name = nil 表示「用种族名」显示；
+                # ★ 认不出种族（游戏没给 PBS/.dat）时退回存档里的原始内部名，
+                #   和网页版编辑器显示得一样（ASHPIKACHU1 而不是 None）
+                nm = d.species_label(sid, sp_raw)
             owner = get("@owner")
             oi = owner.ivars if isinstance(owner, rmarshal.RObject) else {}
             ribbons = get("@ribbons") or []
@@ -1741,6 +2084,8 @@ class SaveFile:
                 "nature_src": nature_src,
                 "ability_flag": ab_flag,
                 "ability_name": ab_txt,
+                # ★ @ability 的原始 Symbol 内部名（显示层「原文+译文」用）
+                "ability_raw": _raw_internal(ab_sym),
                 "ability_src": ab_src,
                 "moves": moves,
                 "item": self._item_id(get("@item")),
@@ -1759,6 +2104,11 @@ class SaveFile:
                 "gender": kind,
                 "hp": get("@hp"),
                 "totalhp": get("@totalhp"),
+                # ★ 原始内部名（认不出编号时给显示层回退用）
+                "species_raw": sp_raw,
+                "moves_raw": moves_raw,
+                "item_raw": _raw_internal(get("@item")),
+                "ball_raw": _raw_internal(get("@poke_ball")),
                 "firstmoves": [_sym(x) for x in (get("@first_moves") or [])],
                 "obtain": (get("@obtain_method"), get("@obtain_map"),
                            get("@obtain_level"), get("@obtain_text")),
@@ -1770,11 +2120,13 @@ class SaveFile:
             }
         # ---- legacy（v16~v18）----
         sid = get("@species")
-        exp = get("@exp") or 0
+        # ★ _as_int：个别同人游戏把 @exp 存成了字符串（九重天 2.0）
+        exp = _as_int(get("@exp"))
         level_by_exp = level_from_exp(exp, d.growth_rate(sid))
         base = d.base_stats(sid)
-        ivs = list(get("@iv") or [0] * 6)
-        evs = list(get("@ev") or [0] * 6)
+        # ★ _as_int：同人游戏可能把数值存成字符串；nil 当 0
+        ivs = [_as_int(x) for x in (get("@iv") or [0] * 6)]
+        evs = [_as_int(x) for x in (get("@ev") or [0] * 6)]
         level_by_hp = level_from_hp(get("@totalhp") or 0, base[0], ivs[0], evs[0])
         level = level_by_hp if level_by_hp else level_by_exp
         nature = get("@natureflag")
@@ -1853,16 +2205,15 @@ class SaveFile:
         r = self._read_pokemon(pm)
         sp = r["species"]
         form = r.get("form") or 0
-        info = d.species_info(sp, form) if sp is not None else {}
         base_stats = d.base_stats(sp, form) if sp is not None else [1] * 6
         rate = d.growth_rate(sp, form) if sp is not None else "Medium"
         level = r["level"]
         nature = r["nature"]
         ivs, evs = r["ivs"], r["evs"]
         nickname = r.get("name") or iv.get("@name")
-        # ★ 走 d.tr()：术语字典里译过的名字要生效（info["Name"] 是 .dat 原文）
-        sp_name = ("（未知）" if sp is None
-                   else (d.tr(info.get("Name")) or d.species(sp)))
+        # ★ species_label 内部会走 d.tr()：术语字典里译过的名字要生效；
+        #    认不出种族时退回存档里的原始内部名（species_raw），与网页版一致
+        sp_name = d.species_label(sp, r.get("species_raw"))
         stored = [iv.get(k) for k in STAT_IVARS]
         recomputed = calc_stats(base_stats, level, ivs, evs, nature)
         # 有些 v19+ 作品不缓存能力值（读档时现算）—— 那就直接显示算出来的
@@ -1886,11 +2237,13 @@ class SaveFile:
                   else str(ab_flag)))
 
         shows = []
-        for mid, pp, _up in r["moves"]:
-            if mid in (None, 0):
+        moves_raw = r.get("moves_raw") or []
+        for i, (mid, pp, _up) in enumerate(r["moves"]):
+            raw = moves_raw[i] if i < len(moves_raw) else None
+            if mid in (None, 0) and not raw:
                 continue
-            shows.append({"招式": d.move(mid), "招式ID": mid, "PP": pp,
-                          "PPUP等级": _up})
+            shows.append({"招式": d.move_label(mid, raw), "招式ID": mid,
+                          "PP": pp, "PPUP等级": _up})
 
         ribbons = r["ribbons"]
         if isinstance(ribbons, list):
@@ -1937,9 +2290,9 @@ class SaveFile:
             "努力值EV": {STAT_KEYS[i]: evs[i] for i in range(6)},
             "性格加成": {STAT_KEYS[i]: nature_boost(nature, i) for i in range(1, 6)
                      if nature_boost(nature, i)},
-            "携带道具": d.item(r["item"]),
+            "携带道具": d.item_label(r["item"], r.get("item_raw")),
             "携带道具ID": r["item"],
-            "捕获用球": d.item(r["ball"]),
+            "捕获用球": d.item_label(r["ball"], r.get("ball_raw")),
             "捕获用球ID": r["ball"],
             "状态": STATUS_NAMES.get(r["status"], str(r["status"])),
             "状态回合": iv.get("@statusCount"),
@@ -2020,6 +2373,11 @@ class SaveFile:
             ttype = iv.get("@trainer_type")
             tname = (self.data.trainer_type_name_of(ttype)
                      if ttype is not None else "")
+            # ★ 存档里的原始值（Symbol 内部名 / 编号）：显示层「原文+译文」
+            #   双行展示用的（对齐 saveeditor.online 的原始数据展示）
+            ttype_raw = _raw_internal(ttype)
+            if ttype_raw is None and ttype is not None:
+                ttype_raw = _as_int(ttype, 0)
             party = [self.pokemon(p, f"队伍第{idx + 1}位")
                      for idx, p in enumerate(iv.get("@party") or [])
                      if not self.empty_slot(p)]
@@ -2030,6 +2388,7 @@ class SaveFile:
                 "训练家ID": iv.get("@id"),
                 "训练家类型": tname,
                 "训练家类型ID": self.data.trainer_type_id_of(ttype),
+                "训练家类型原始": ttype_raw,
                 "持有金钱": iv.get("@money"),
                 "已获得图鉴": bool(iv.get("@has_pokedex")),
                 "服装编号": iv.get("@outfit"),
@@ -2059,6 +2418,8 @@ class SaveFile:
             "训练家ID": iv.get("@id"),
             "训练家类型": self.data.trainer_type(iv.get("@trainertype")),
             "训练家类型ID": iv.get("@trainertype"),
+            "训练家类型原始": (_as_int(iv.get("@trainertype"), 0)
+                           if iv.get("@trainertype") is not None else None),
             "持有金钱": iv.get("@money"),
             "已获得图鉴": bool(iv.get("@pokedex")),
             "服装编号": iv.get("@outfit"),
@@ -2163,6 +2524,30 @@ class SaveFile:
                 out.append((self._item_id(k), v))
         return out
 
+    def pocket_entries_ex(self, index: int) -> List[Tuple[Any, Any, int]]:
+        """
+        口袋内容带原始值：[(道具编号或 0, 原始内部名或 None, 数量)]。
+
+        ★ 认不出编号的道具（游戏没给 items 数据，如宝可梦 SA）编号是 0，
+          但 raw 里有存档原本的 Symbol 名（TEALMASK）—— 显示层靠它回退，
+          改数量时也能按 raw 命中原条目，不会改错行。
+        """
+        pockets = self.g("$PokemonBag").ivars.get("@pockets") or []
+        if not (0 <= index < len(pockets)):
+            return []
+        poc = pockets[index]
+        kind = self._pocket_kind(poc)
+        out: List[Tuple[Any, Any, int]] = []
+        if kind == "array":
+            for pair in poc:
+                if isinstance(pair, list) and len(pair) >= 2:
+                    out.append((self._item_id(pair[0]),
+                                _raw_internal(pair[0]), pair[1]))
+        elif kind == "hash":
+            for k, v in poc.pairs:
+                out.append((self._item_id(k), _raw_internal(k), v))
+        return out
+
     def bag(self) -> dict:
         bg = self.g("$PokemonBag")
         iv = bg.ivars
@@ -2171,8 +2556,14 @@ class SaveFile:
             kind = self._pocket_kind(poc)
             if kind == "none":
                 continue
-            rows = [{"道具": self.data.item(iid), "道具ID": iid, "数量": cnt}
-                    for iid, cnt in self.pocket_entries(idx)]
+            # ★ 道具显示走 item_label：认不出编号时回退存档原始内部名
+            #   （TEALMASK 而不是「（无）」—— 对齐 saveeditor.online）
+            rows = [{"道具": self.data.item_label(
+                         iid if iid else None, raw),
+                     "道具ID": iid,
+                     "道具原始": raw,
+                     "数量": cnt}
+                    for iid, raw, cnt in self.pocket_entries_ex(idx)]
             if not rows:
                 continue
             pockets.append({
@@ -2183,10 +2574,15 @@ class SaveFile:
             })
         if self.fmt == "hash":
             reg = iv.get("@registered_items")
-            reg_id = self._item_id(reg[0]) if isinstance(reg, list) and reg else 0
+            reg_raw = _raw_internal(reg[0]) if isinstance(reg, list) and reg \
+                else None
+            reg_id = self._item_id(reg[0]) if isinstance(reg, list) and reg \
+                else 0
             return {
-                "登记道具": self.data.item(reg_id),
+                "登记道具": self.data.item_label(reg_id if reg_id else None,
+                                             reg_raw),
                 "登记道具ID": reg_id,
+                "登记道具原始名": reg_raw,
                 "登记道具原始": to_plain(reg),
                 "上次打开口袋": self.data.pocket_name(
                     iv.get("@last_viewed_pocket") or 0),
@@ -2197,6 +2593,8 @@ class SaveFile:
         return {
             "登记道具": self.data.item(iv.get("@registeredItem")),
             "登记道具ID": iv.get("@registeredItem"),
+            "登记道具原始名": (iv.get("@registeredItem")
+                           if iv.get("@registeredItem") else None),
             "上次打开口袋": self.data.pocket_name(iv.get("@lastpocket") or 0),
             "各口袋选择位置": iv.get("@choices"),
             "口袋": pockets,
@@ -2421,9 +2819,10 @@ class SaveFile:
         form = ivs.get("@form") or 0
         base = list(base_override) if base_override else \
             self.data.base_stats(sid, form)
-        # ★ 没选「游戏数据」时读不到种族值（base_stats 会兜底成全 1）——
-        #   这时算出来的能力值是错的，宁可不写，也不要凭白把存档改坏。
-        if self.data.source == "none" and all(b == 1 for b in base):
+        # ★ 读不到种族值（base_stats 兜底成全 1）时算出来的能力值是错的，
+        #   宁可不写，也不要凭白把存档改坏。"lang"（只有语言包、没有
+        #   species.dat / pokemon.txt）同样没有种族值，一起挡掉。
+        if self.data.source in ("none", "lang") and all(b == 1 for b in base):
             return []
         rate = self.data.growth_rate(sid, form)
         if modern:
@@ -2431,18 +2830,19 @@ class SaveFile:
             evs_list = self._stat_hash(ivs.get("@ev"))
             level = ivs.get("@level")
             if not isinstance(level, int) or level < 1:
-                level = level_from_exp(ivs.get("@exp") or 0, rate)
+                level = level_from_exp(_as_int(ivs.get("@exp")), rate)
                 ivs["@level"] = level
             nature = self.data.nature_index_of(ivs.get("@nature"))
             if nature is None:
-                nature = (ivs.get("@personalID") or 0) % 25
+                nature = _as_int(ivs.get("@personalID")) % 25
         else:
-            ivs_list = list(ivs.get("@iv") or [0] * 6)
-            evs_list = list(ivs.get("@ev") or [0] * 6)
-            level = level_from_exp(ivs.get("@exp") or 0, rate)
+            # ★ _as_int：同人游戏可能把数值存成字符串；nil 当 0
+            ivs_list = [_as_int(x) for x in (ivs.get("@iv") or [0] * 6)]
+            evs_list = [_as_int(x) for x in (ivs.get("@ev") or [0] * 6)]
+            level = level_from_exp(_as_int(ivs.get("@exp")), rate)
             nature = ivs.get("@natureflag")
             if nature is None:
-                nature = (ivs.get("@personalID") or 0) % 25
+                nature = _as_int(ivs.get("@personalID")) % 25
         stats = calc_stats(base, level, ivs_list, evs_list, nature)
 
         # ★ v19+ 有的作品不缓存能力值（读档现算）—— 那种就别硬塞进去，
@@ -3145,17 +3545,26 @@ class SaveFile:
 
     def set_pocket_count_by_index(self, pocket_index: int, i: int,
                                   count: int) -> None:
-        """按 `pocket_entries()` 的序号改某条的数量（两种存法都支持）。"""
-        entries = self.pocket_entries(pocket_index)
+        """按 `pocket_entries_ex()` 的序号改某条的数量（两种存法都支持）。
+
+        ★ 认不出编号的道具（编号 0 但有原始内部名）按 raw 名命中，
+          别因为编号是 0 就悄悄不改（踩过：宝可梦 SA 的 TEALMASK）。
+        """
+        entries = self.pocket_entries_ex(pocket_index)
         if not (0 <= i < len(entries)):
             return
-        self.set_bag_item(pocket_index, entries[i][0], int(count))
+        iid, raw, _cnt = entries[i]
+        target = raw if (not iid and raw) else iid
+        self.set_bag_item(pocket_index, target, int(count))
 
     def fill_pocket(self, pocket_index: int, count: int) -> int:
         """把某口袋里所有道具的数量统一设成 count，返回改动条数。"""
         n = 0
-        for iid, _cnt in list(self.pocket_entries(pocket_index)):
-            self.set_bag_item(pocket_index, iid, int(count))
+        for iid, raw, _cnt in list(self.pocket_entries_ex(pocket_index)):
+            target = raw if (not iid and raw) else iid
+            if not target:
+                continue
+            self.set_bag_item(pocket_index, target, int(count))
             n += 1
         return n
 
@@ -3175,7 +3584,7 @@ class SaveFile:
         iv["@registeredItem"] = int(iid or 0)
 
     # -- 开关 / 变量 ------------------------------------------------------
-    # 「开关与变量」编辑页已删除，这里只保留概览页要用的只读计数。
+    # 只读 peek 给概览页用；写入走下面的 set_switch / set_variable。
     # ★ 必须用只读的（`.get`），不能用带 setdefault 的版本 —— 那会让「打开概览」
     #   往存档里塞一个空 @data，把没改动过的存档写脏。
     def switch_peek(self) -> list:
@@ -3183,6 +3592,59 @@ class SaveFile:
 
     def variable_peek(self) -> list:
         return self.g("$game_variables").ivars.get("@data") or []
+
+    # 开关 / 变量的写入。编号规则与游戏里一致：**从 1 开始**，
+    # @data[0] 是占位（nil / False），@data[i] 就是编号 i 的值。
+    # 两种存档格式存法一样（v19+ 的 Game_Switches / Game_Variables 仍是
+    # 带 @data 数组的对象），所以共用一个实现。
+    def _rw_data(self, key: str, fill, create: bool = False) -> Optional[list]:
+        """取出 $game_switches / $game_variables 的 @data（可按需创建）。"""
+        obj = self.g(key)
+        data = obj.ivars.get("@data")
+        if not isinstance(data, list):
+            if not create:
+                return None
+            data = []
+            obj.ivars["@data"] = data
+        return data
+
+    def set_switch(self, index: int, value: bool) -> None:
+        """
+        把编号 `index`（从 1 开始）的开关设成 `value`。
+
+        数组不够长会自动补长（补 nil，和 Ruby 的 `Array#[]=` 语义一致）。
+        """
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            raise ValueError(f"开关编号要填整数，收到的是 {index!r}")
+        if i < 1:
+            raise ValueError(f"开关编号从 1 开始（收到 {i}），没有 0 号或负数编号。")
+        data = self._rw_data("$game_switches", None, create=True)
+        if i >= len(data):
+            data.extend([None] * (i + 1 - len(data)))
+        data[i] = bool(value)
+
+    def set_variable(self, index: int, value: int) -> None:
+        """
+        把编号 `index`（从 1 开始）的变量设成 `value`（整数）。
+
+        数组不够长会自动补长（补 0）。传 0 等价于清掉这个变量。
+        """
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            raise ValueError(f"变量编号要填整数，收到的是 {index!r}")
+        if i < 1:
+            raise ValueError(f"变量编号从 1 开始（收到 {i}），没有 0 号或负数编号。")
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"变量值要填整数，收到的是 {value!r}")
+        data = self._rw_data("$game_variables", 0, create=True)
+        if i >= len(data):
+            data.extend([0] * (i + 1 - len(data)))
+        data[i] = v
 
 # ===========================================================================
 # 存档缓存 / 目录扫描（GUI 用）

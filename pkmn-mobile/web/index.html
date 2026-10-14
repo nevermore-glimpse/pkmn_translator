@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0F4C86">
+<meta name="theme-color" content="#0F4C86" id="metaTheme">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="宝可梦同人工具">
 <title>宝可梦同人工具</title>
@@ -12,6 +12,11 @@
 <link rel="icon" href="assets/icon-192.png">
 </head>
 <body>
+
+<!-- 夜间模式：CSS 加载后、首屏渲染前先把类挂上，避免开屏闪一下白 -->
+<script>
+try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.add("night"); } catch (e) {}
+</script>
 
 <!-- ================================================================
      封面页：进入工具前停留 3 秒。
@@ -233,6 +238,20 @@
         <div class="card">
             <div class="card-h">关于</div>
             <div id="aboutBody" class="kv"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">外观</div>
+            <div class="item">
+                <div class="grow">
+                    <div style="font-size:calc(13.5px * var(--fs))">夜间模式</div>
+                    <div class="sub">晚上关灯看屏幕不刺眼</div>
+                </div>
+                <button class="btn" id="btnNight" style="min-width:0;flex:none">开启</button>
+            </div>
+            <div class="hint" style="margin-top:8px">
+                偏好只保存在本机（localStorage），换手机不跟着走。
+            </div>
         </div>
 
         <div class="card">

@@ -31,10 +31,10 @@ log = get_logger("translator")
 SYSTEM_PROMPT = r"""你是专业游戏本地化译者，负责把游戏文本翻译成{tgt}。
 
 【占位符】
-@0@ @1@等占位符必须原样保留：数量、位置、数字不变，不翻译 @ 和数字，不新增。
+@0@ @1@等占位符必须原样保留：数量、位置、数字不变，不新增。
 每句话中的占位符都不能丢；不同句子的占位符重复出现也完整保留。
-短句（只有几个字）也要保留占位符，绝不要把它当成可翻译的词翻掉。
-输出前请先核对：译文里 @N@（或 ⟦N⟧）的数量与输入完全一致，再提交。
+短句（只有几个字）也要完整保留占位符。
+输出前请先核对：译文里 @N@ 的数量与输入是否完全一致，再提交。
 
 【翻译】
 准确第一：语义、语气、人物性格随人物变化
@@ -58,8 +58,11 @@ SYSTEM_PROMPT = r"""你是专业游戏本地化译者，负责把游戏文本翻
 【输出】
 每条两行：
 <编号>译文
-<编号>@@T:原文术语=译文术语|...
+<编号>@@T:原文术语1=译文术语1|原文术语2=译文术语2...
+输入里有多少个编号，就必须输出多少行译文：一个都不能少、不能合并、
+不能只翻译前几条；也不要输出输入里没有的编号。
 不要解释，不要空行，不要markdown，不要注释；原文有引号才加引号。
+正文里若出现 <数字> 字样的游戏内容，那是台词本身，原样保留在译文里。
 
 【示例】
 输入：
@@ -86,6 +89,8 @@ POLISH_SYSTEM_PROMPT = r"""你的任务是把已经译成中文的游戏台词�
 2. 保留换行控制码 \\n；不要在 \\n 前后新增标点。
 3. 不改变原意、事实、情绪方向、人物关系；不新增动作、心理活动或设定；
    不改变句子数量，不删减内容，可以适当调整句子长度和语序。
+4. 输入里有多少个编号，就必须输出多少行，一个都不能少、不能合并；
+   也不要输出输入里没有的编号。
 
 【润色标准】
 通顺：符合中文口语习惯，消除翻译腔、语序别扭、搭配不当、代词/量词误用、重复啰嗦。
@@ -182,12 +187,16 @@ def _format_terms_block(term_pairs, limit=None):
     return "\n".join(lines) + "\n"
 
 
-def _parse_model_output(raw):
+def _parse_model_output(raw, expected=None):
     """
     逐行解析模型输出。
     返回 (translations, terms_map)：
       translations: {idx: text}
       terms_map:    {idx: {src: dst}}
+
+    expected: 本批输入的编号集合；给了就**只收这些编号**——
+      模型偶尔会把台词里的 <3> 之类的字样另起一行输出，或自己编造编号，
+      不挡住的话会污染别的条目（先到的假行占坑，真译文反被丢掉 → 漏句）。
 
     ★ 同一编号重复出现时保留「第一条非空」结果：
       模型偶尔先输出草稿再输出终稿，取第一条更稳。
@@ -203,6 +212,8 @@ def _parse_model_output(raw):
         if not m:
             continue
         idx = int(m.group(1))
+        if expected is not None and idx not in expected:
+            continue          # ★ 编号不在本批输入里：直接丢弃，防串行
         content = m.group(2).strip()
 
         parsed = _parse_terms_line(content)
@@ -513,7 +524,8 @@ class OllamaClient:
 
         raw = self.chat(self._system_prompt(), user_msg)
 
-        translations, terms_map = _parse_model_output(raw)
+        translations, terms_map = _parse_model_output(
+            raw, expected={i for i, _t in items})
 
         if terms_out is not None:
             for idx, terms in terms_map.items():
@@ -556,7 +568,8 @@ class OllamaClient:
             system, user_msg,
             temperature=getattr(config, "POLISH_TEMPERATURE", 0.35),
         )
-        translations, _ = _parse_model_output(raw)
+        translations, _ = _parse_model_output(
+            raw, expected={it[0] for it in items})
         return translations
 
 

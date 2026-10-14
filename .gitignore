@@ -84,3 +84,6 @@ _*.py
 /build_launcher/宝可梦调试启动器/xref-宝可梦调试启动器.html
 /build_launcher/宝可梦调试启动器/宝可梦调试启动器.pkg
 /打包调试启动器.bat
+/tools/
+/pkmn-mobile/打包手机版.bat
+/pkmn-mobile/tools/

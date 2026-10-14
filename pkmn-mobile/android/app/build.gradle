@@ -40,8 +40,8 @@ android {
         // 本工具完全离线、不联外网，也不做任何后台调度，这些新行为
         // 对我们没有价值。targetSdk 29 是合适的选择。
         targetSdk 29
-        versionCode 10
-        versionName '1.7.2'
+        versionCode 13
+        versionName '1.7.6'
 
         python {
             // ★ 必须 3.13+：3.12 及更早的 Android wheels 是 4KB 对齐的，

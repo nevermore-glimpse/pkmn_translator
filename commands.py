@@ -1150,18 +1150,27 @@ def _translate_batch(client, batch_texts, cache,
                                 config.PLAYER_PLACEHOLDER)
 
         # 保护 + 术语查找
-        safe, maps, breaks, hit_terms = PR.prepare(body)
+        # ★ 占位符保护可关（config.PLACEHOLDER_PROTECT，游戏汉化页有开关）：
+        #   关掉后原文整句直接交给模型，不做 @0@ 脱敏、不做换行重排
+        if getattr(config, "PLACEHOLDER_PROTECT", True):
+            safe, maps, breaks, hit_terms = PR.prepare(body)
+        else:
+            safe = body
+            maps, breaks = [], None
+            hit_terms = PR.find_terms(safe)
         batch.append((k, safe))
         maps_dict[k] = maps
         breaks_dict[k] = breaks
+        ph_protect_on = bool(getattr(config, "PLACEHOLDER_PROTECT", True))
 
         log.debug("[批 %d][%d] 送模型=%r", bi, k, safe)
 
         for src_term, dst_term in hit_terms:
             hit_terms_all.setdefault(src_term, dst_term)
 
-        for token, ctx in PR.detect_unknown_ctrl(safe):
-            unknown_ctrl_hits.append((token, txt, ctx))
+        if ph_protect_on:
+            for token, ctx in PR.detect_unknown_ctrl(safe):
+                unknown_ctrl_hits.append((token, txt, ctx))
 
     if new_prefixes:
         PFD.save()
@@ -2529,10 +2538,16 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
             break
 
         items, maps_dict, src_safe_dict = [], {}, {}
+        ph_protect = bool(getattr(config, "PLACEHOLDER_PROTECT", True))
         for k, txt in enumerate(batch_texts):
-            safe, maps = PR.protect(cache.get(txt), drop_newline=False)
-            # ★ 原文一并保护后作为末尾参考提示词，供模型比对、避免润色跑偏
-            src_safe, _ = PR.protect(txt, drop_newline=False)
+            if ph_protect:
+                safe, maps = PR.protect(cache.get(txt), drop_newline=False)
+                # ★ 原文一并保护后作为末尾参考提示词，供模型比对、避免润色跑偏
+                src_safe, _ = PR.protect(txt, drop_newline=False)
+            else:
+                # 占位符保护关闭：原文整句直接交给模型
+                safe, maps = cache.get(txt), []
+                src_safe = txt
             items.append((k, safe, src_safe))
             maps_dict[k] = maps
             src_safe_dict[k] = src_safe

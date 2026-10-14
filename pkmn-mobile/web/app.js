@@ -221,6 +221,34 @@
   }
 
   // ------------------------------------------------------------
+  // 夜间模式
+  // ------------------------------------------------------------
+  // <body> 上的 .night 类由 index.html 里的一小段内联脚本提前挂好
+  // （CSS 之后、首屏之前，避免开屏先闪一下白）。
+  // 这里只负责：① 同步开关按钮文字 ② 点击切换并写 localStorage。
+  const NIGHT_KEY = "pkmn.night";
+
+  function isNight() {
+    return document.body.classList.contains("night");
+  }
+
+  function applyNight(on) {
+    document.body.classList.toggle("night", !!on);
+    $("btnNight").textContent = on ? "关闭" : "开启";
+    // 安卓状态栏 / 最近任务里的主题色也跟着换
+    const meta = $("metaTheme");
+    if (meta) meta.setAttribute("content", on ? "#12181F" : "#0F4C86");
+    try { localStorage.setItem(NIGHT_KEY, on ? "1" : "0"); } catch (e) {}
+  }
+
+  applyNight(isNight());   // 类已经挂过了，这次只是把按钮文字对上
+
+  $("btnNight").addEventListener("click", () => {
+    applyNight(!isNight());
+    toast(isNight() ? "夜间模式已开启" : "夜间模式已关闭");
+  });
+
+  // ------------------------------------------------------------
   // 目录 / 文件浏览
   // ------------------------------------------------------------
   let browseMode = "dir";          // dir = 选目录，file = 选文件，exe = 选游戏主程序
