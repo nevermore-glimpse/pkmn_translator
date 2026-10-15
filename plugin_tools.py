@@ -22,7 +22,6 @@ import struct
 import time
 import zlib
 
-from rubymarshal.writer import write as _rb_write
 from rubymarshal.reader import load as _rb_load
 from rubymarshal.classes import Symbol
 

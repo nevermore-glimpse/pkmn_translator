@@ -10,22 +10,35 @@
 import json
 import os
 import re
+import threading
 import time
 import traceback
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import bridge
 import checker
 import config
 import parser as P
 import processor as PR
+import replacement as REPL
+import restoration as RESTORE
 import settings
 from cache import Cache, atomic_replace, load_edits
 from logger import get_logger
-from translator import (OllamaClient, polish_with_retry,
-                        translate_with_retry)
+from translator import (OllamaClient, estimate_tokens, polish_with_retry,
+                        resolve_concurrency, translate_with_retry)
 
 log = get_logger("commands")
+
+# ★ 并发批翻译时的共享资源锁：
+#   _PREFIX_LOCK    —— prefix_dict 的注册与落盘（读改写同一个 json）
+#   _TERM_MERGE_LOCK —— auto_terms 合并内联术语（读改写 term_dict.py）
+_PREFIX_LOCK = threading.Lock()
+_TERM_MERGE_LOCK = threading.Lock()
+
+# 「上文注入」只收以这些字符结尾的条目（半句话不当前文）
+_SENT_END_CHARS = tuple(".!?。！？…」』\"')]}»›")
 
 
 def emit(*args, **kwargs):
@@ -51,7 +64,7 @@ LANG_OPTIONS = [
 # 重翻检查报告时，默认要处理的问题类型（GUI 里可逐项勾选）
 RETRANSLATE_KINDS = {
     "疑似未翻译", "疑似异常句", "译文残留占位符",
-    "翻译失败", "占位符缺失", "术语冲突","符号不匹配",
+    "翻译失败", "符号不匹配", "标点结构",
 }
 
 # ★ 永远不参与自动重翻的类型：
@@ -66,17 +79,20 @@ NEVER_RETRANSLATE_KINDS = {
 MANUAL_KINDS = {"已编辑"}
 
 # ★ 「提示 / 抽查」类型：只是给你看一眼的线索，**不算问题** ——
+#   「术语冲突」自 2026-10-14 起也归这里（术语译法不一致，与句子质量无关，只提示、不计入问题数）。
 #   不计入「共 N 处问题」的汇总，界面上也不显示成红色。
-ADVISORY_KINDS = {"派生命中"}
+ADVISORY_KINDS = {"派生命中", "术语未应用", "术语冲突"}
 
 # 报告里可能出现的问题类型（展示 / 排序用）
-# ★ 「派生命中」是「提示 / 抽查」类：默认不勾选（不显示、默认不重翻），
-#   勾上才显示；它不会抑制该句的其它检查（见 checker.check 的 info 标记）。
+# ★ 「派生命中」「术语未应用」「术语冲突」是「提示 / 抽查」类：默认不勾选（不显示、
+#   默认不重翻），勾上才显示；它们不会抑制该句的其它检查
+#   （见 checker.check 的 info 标记）。
 REPORT_KIND_ORDER = [
-    "翻译失败", "占位符缺失", "术语冲突", "控制码回退",
+    "翻译失败", "术语冲突", "控制码回退",
     "疑似未翻译", "疑似异常句",
     "译文残留占位符", "译文残留控制码",
-    "符号不匹配", "特殊行", "已编辑", "派生命中",
+    "符号不匹配", "标点结构", "特殊行", "已编辑",
+    "派生命中", "术语未应用",
 ]
 
 # ★ 「共 N 处问题」里的 N 只统计**要处理的问题**：
@@ -132,12 +148,7 @@ def save_report_edit(src, dst, src_path=None):
         raise FileNotFoundError(f"找不到翻译缓存：{cache_file}\n"
                                 f"（先跑一次翻译才会生成）")
     cache = Cache(cache_file)
-    res = cache.save_edit(src, dst)
-    # ★ 手工改好了 → 清掉它的「占位符缺失」记录
-    #   （之后这一句按「已编辑」显示，不再重复报占位符缺失）
-    if drop_placeholder_missing([(src or "").strip()]):
-        log.info("手工编辑后清除占位符缺失记录：%s", (src or "").strip()[:50])
-    return res
+    return cache.save_edit(src, dst)
 
 
 # ================================================================
@@ -561,144 +572,6 @@ def load_conflict_rows(src_paths):
     out.sort(key=lambda r: (bool(r["edited"]), r["term"].lower()))
     return out
 
-
-# ================================================================
-# 占位符缺失记录（翻译时落盘，检查报告 / 菜单 3 复用）
-#   结构：{原文: {"missing": ["@3@"], "dst": 模型那一版译文, "detail": …}}
-#
-#   ★ 翻译时**不再做兜底补回**：重试后仍缺占位符的句子一律保留原文，
-#     并把缺失情况记在这里 —— 于是每次「刷新报告」都能在菜单 3 里
-#     按类型「占位符缺失」看到它，可以勾选重翻，也可以双击手工改。
-# ================================================================
-def _placeholder_path():
-    """占位符缺失记录文件：与缓存文件同目录。"""
-    pf = getattr(config.Runtime, "placeholder_file", None)
-    if pf:
-        return pf
-    cache = config.Runtime.cache_file
-    d = os.path.dirname(cache) or "."
-    base = os.path.splitext(os.path.basename(cache))[0]
-    return os.path.join(d, f"{base}_placeholder.json")
-
-
-def load_placeholder_missing(path=None):
-    """读取占位符缺失记录，返回 dict；文件不存在 / 损坏时返回 {}。"""
-    import json
-    p = path or _placeholder_path()
-    if not os.path.exists(p):
-        return {}
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception as e:
-        log.warning("读取占位符缺失记录失败：%s", e)
-        return {}
-
-
-def save_placeholder_missing(data, path=None):
-    """写入占位符缺失记录（原子替换）。"""
-    import json
-    p = path or _placeholder_path()
-    try:
-        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data or {}, f, ensure_ascii=False, indent=2)
-        atomic_replace(tmp, p)
-        return True
-    except Exception as e:
-        log.warning("写入占位符缺失记录失败：%s", e)
-        return False
-
-
-def _record_placeholder_missing(records):
-    """
-    把本次翻译新发现的占位符缺失并进记录文件。
-    records: [{"src": 原文, "missing": ["@3@"], "dst": 模型那版译文}]
-    """
-    if not records:
-        return
-    data = load_placeholder_missing()
-    for r in records:
-        key = (r.get("src") or "").strip()
-        if not key:
-            continue
-        data[key] = {
-            "missing": list(r.get("missing") or []),
-            "dst": r.get("dst", ""),
-            "detail": r.get("detail") or
-                      f'占位符 {"、".join(r.get("missing") or [])} 丢失',
-        }
-    save_placeholder_missing(data)
-
-
-def drop_placeholder_missing(srcs):
-    """
-    这些句子已经处理好了（重翻成功 / 手工改过），把记录移除。
-    返回实际移除的条数。
-    """
-    data = load_placeholder_missing()
-    if not data:
-        return 0
-    n = 0
-    for s in srcs or []:
-        key = (s or "").strip()
-        if key and key in data:
-            data.pop(key, None)
-            n += 1
-    if n:
-        save_placeholder_missing(data)
-    return n
-
-
-def _placeholder_as_hits(entries=None, out_lines=None):
-    """
-    读取落盘的占位符缺失记录，转成 checker 能吃的 extra_hits。
-    这样菜单 3 单独刷新报告时也能看到（并勾选重翻 / 手工编辑）。
-
-    entries/out_lines 用来把记录关联回具体行号与当前译文；
-    源文件里已经没有的句子（记录过期）顺手清掉。
-    """
-    data = load_placeholder_missing()
-    if not data:
-        return []
-
-    line_of = {}
-    for ln, s in (entries or []):
-        k = (s or "").strip()
-        if k and k not in line_of:
-            line_of[k] = ln
-
-    hits, stale = [], []
-    for src, item in data.items():
-        if not isinstance(item, dict):
-            continue
-        key = (src or "").strip()
-        ln = line_of.get(key)
-        if entries is not None and ln is None:
-            stale.append(src)
-            continue
-        dst = ""
-        if ln is not None and out_lines is not None and ln < len(out_lines):
-            dst = out_lines[ln].strip()
-        missing = item.get("missing") or []
-        detail = item.get("detail") or (
-            f'占位符 {"、".join(missing)} 丢失' if missing else "占位符丢失")
-        hits.append({
-            'line_no': ln if ln is not None else -1,
-            'kind': '占位符缺失',
-            'src': src, 'dst': dst,
-            'detail': (detail + "；翻译时已保留原文，"
-                              "可在此双击手工修改，或勾选本类型重翻"),
-            'missing': list(missing),
-        })
-    if stale:
-        drop_placeholder_missing(stale)
-    log.info("载入占位符缺失记录 %d 条", len(hits))
-    return hits
-
-
 # ================================================================
 # 派生命中（方案 F）：报告里列出「术语词根派生词」命中，供抽查
 #   · 只提示，不改译文、不抑制这句的其它检查（info=True）
@@ -778,6 +651,113 @@ def _derived_term_hits(entries=None, out_lines=None):
     if hits:
         log.info("派生命中 %d 条（术语词根派生匹配）", len(hits))
     return hits
+
+def _unapplied_term_hits(entries=None, out_lines=None):
+    """
+    「术语未应用」：原文命中了术语表里的规范译名，译文里却没出现。
+
+    借鉴 LinguaGacha 的「术语未应用」校对警告 —— 只作提示：
+    · 不计入「共 N 处问题」（ADVISORY_KINDS）；
+    · 报告里默认不勾选，勾上才显示；
+    · info=True，不抑制该句的其它检查。
+
+    术语表不可用 / 没开术语替换时返回 []。
+    """
+    if not entries or not getattr(config, "APPLY_TERMS", True):
+        return []
+    try:
+        PR.load_terms()
+        if not PR._TERM_SINGLE and not PR._MULTI_RE:
+            return []
+    except Exception as e:
+        log.debug("术语未应用扫描跳过（术语表不可用）：%s", e)
+        return []
+
+    hits = []
+    for ln, src in entries:
+        try:
+            # 先 protect 再找：控制码 / 标签内部的词不算术语命中
+            # （与翻译时的匹配同源，避免误报）
+            safe, _maps = PR.protect(src)
+            found = PR.find_terms(safe)
+        except Exception as e:
+            log.debug("术语未应用扫描失败（跳过该行）：%s", e)
+            continue
+        if not found:
+            continue
+        dst = ""
+        if out_lines is not None and 0 <= ln < len(out_lines):
+            dst = out_lines[ln]
+        if not dst:
+            continue
+        missing = [(s, d) for s, d in found if d and d not in dst]
+        if not missing:
+            continue
+        detail = "；".join(f"{s} 应为 {d}" for s, d in missing[:5])
+        if len(missing) > 5:
+            detail += f"；…另 {len(missing) - 5} 处"
+        hits.append({
+            'line_no': ln,
+            'kind': '术语未应用',
+            'src': src,
+            'dst': dst,
+            'detail': f"术语未应用：{detail}",
+            # ★ info=True：只提示，不跳过这句的其它检查（checker.check 里认这个标记）
+            'info': True,
+        })
+    if hits:
+        log.info("术语未应用 %d 条（原文命中术语、译文未用规范译名）",
+                 len(hits))
+    return hits
+
+
+def _write_term_stats(src_path, stat_batches):
+    """
+    把各批的术语命中按句数合并，写 <aux 目录>/terms_stats.json。
+
+    用途：发现「提取了但游戏里根本没出现」的废术语、以及真正高频的
+    核心术语（后者值得在 prompt 里优先注入）。
+    """
+    counts = {}
+    for d in stat_batches or []:
+        for term, n in d.items():
+            counts[term] = counts.get(term, 0) + n
+    if not counts:
+        return None
+
+    total_terms = 0
+    try:
+        PR.load_terms()
+        total_terms = len(PR._TERMS)
+    except Exception as e:
+        log.debug("术语总数统计失败：%s", e)
+
+    data = {
+        "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "source": os.path.basename(src_path or ""),
+        "total_terms": total_terms,
+        "hit_terms": len(counts),
+        "unused_terms": max(0, total_terms - len(counts)),
+        "counts": dict(sorted(counts.items(),
+                              key=lambda kv: (-kv[1], kv[0]))),
+    }
+    aux = config.aux_dir(src_path, create=True)
+    path = os.path.join(aux, "terms_stats.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_replace(tmp, path)
+
+    top = list(data["counts"].items())[:5]
+    emit("  [术语统计] 高频术语："
+         + "，".join(f"{t}×{n}" for t, n in top))
+    if data["unused_terms"]:
+        emit(f"  [术语统计] 本次未命中 {data['unused_terms']} 条术语"
+             f"（详见 {path}）")
+    log.info("术语命中统计已写入：%s（命中 %d / 共 %d）",
+             path, len(counts), total_terms)
+    return path
+
 
 
 # 生成物后缀（选文件时要跳过 / 报告模式下要识别）
@@ -1083,23 +1063,30 @@ def _apply_lang_model(src_lang=None, tgt_lang=None, model=None):
 
 
 # ================================================================
-# 分批策略：条数 + 总字符数双限制
+# 分批策略：条数 + 总字符数 + 估算 token 三重限制
 # ================================================================
-def _make_batches(todo, batch_size=None, max_chars=None):
+def _make_batches(todo, batch_size=None, max_chars=None, max_tokens=None):
     """
     batch_size: 单批最多条数
     max_chars : 单批原文总字符上限（防止超长句挤爆上下文）
+    max_tokens: 单批原文估算 token 上限（借鉴 LinguaGacha 的 token 感知
+                分批；0 = 关闭，只按条数/字符）
     """
     batch_size = batch_size or config.BATCH_SIZE
     max_chars = max_chars or getattr(config, "MAX_BATCH_CHARS", 1400)
+    if max_tokens is None:
+        max_tokens = getattr(config, "MAX_BATCH_TOKENS", 0) or 0
 
-    batches, cur, cur_chars = [], [], 0
+    batches, cur, cur_chars, cur_tokens = [], [], 0, 0
     for txt in todo:
         cur.append(txt)
         cur_chars += len(txt) + 8
-        if len(cur) >= batch_size or cur_chars >= max_chars:
+        if max_tokens:
+            cur_tokens += estimate_tokens(txt)
+        if (len(cur) >= batch_size or cur_chars >= max_chars
+                or (max_tokens and cur_tokens >= max_tokens)):
             batches.append(cur)
-            cur, cur_chars = [], 0
+            cur, cur_chars, cur_tokens = [], 0, 0
     if cur:
         batches.append(cur)
     return batches
@@ -1111,70 +1098,77 @@ def _make_batches(todo, batch_size=None, max_chars=None):
 def _translate_batch(client, batch_texts, cache,
                      unknown_ctrl_hits, failed, extra_hits,
                      mode_of_entry=None, bi=1, conflict_records=None,
-                     ph_state=None):
+                     context_lines=None, term_stats=None):
     """
     翻译一批文本，写入缓存。返回成功条数。
 
-    ph_state: 占位符缺失记录的累积器（见 _translate_core）
-              {"records": [...], "known": {...}, "fixed": [...]}
+    context_lines: 可选 [上文原文, ...]（前几条已译句子的原文，仅供语境）
+    term_stats: 可选 list —— 本批的 {术语: 命中句数} 会 append 进去
+              （list.append 原子，可在多批并发时安全汇总）
     """
     if not batch_texts:
         return 0
 
     import prefix_dict as PFD
 
-    batch, maps_dict, breaks_dict = [], {}, {}
-    batch_terms = {}
+    batch, breaks_dict = [], {}
     hit_terms_all = {}
     prefix_list = {}
     new_prefixes = 0
     new_prefix_keys = []
+    term_counts = {}            # 本批术语命中句数（交给 term_stats 汇总）
 
     log.info("[批 %d] 开始  %d 条", bi, len(batch_texts))
 
     for k, txt in enumerate(batch_texts):
         # 前缀提取
+        # ★ 并发批翻译时 register_prefix / save 会同时读写
+        #   prefix_dict.json，用模块级锁串起来
         if getattr(config, "PREFIX_DICT_ENABLE", True):
-            prefix, body = PR.split_prefix(txt)
-            prefix_list[k] = prefix
-            if prefix and PFD.register_prefix(prefix):
-                new_prefixes += 1
-                new_prefix_keys.append(prefix)
+            with _PREFIX_LOCK:
+                prefix, body = PR.split_prefix(txt)
+                prefix_list[k] = prefix
+                if prefix and PFD.register_prefix(prefix):
+                    new_prefixes += 1
+                    new_prefix_keys.append(prefix)
         else:
             prefix_list[k] = ""
             body = txt
 
-        # 玩家名替换
-        if getattr(config, "PLAYER_TOKEN", None):
-            body = body.replace(config.PLAYER_TOKEN,
-                                config.PLAYER_PLACEHOLDER)
+        # ★ 译前替换（归一化游戏里的特殊写法，默认关）
+        body, n_pre = REPL.apply_pre(body)
+        if n_pre:
+            log.debug("[批 %d][%d] 译前替换命中 %d 条规则", bi, k, n_pre)
 
-        # 保护 + 术语查找
-        # ★ 占位符保护可关（config.PLACEHOLDER_PROTECT，游戏汉化页有开关）：
-        #   关掉后原文整句直接交给模型，不做 @0@ 脱敏、不做换行重排
-        if getattr(config, "PLACEHOLDER_PROTECT", True):
-            safe, maps, breaks, hit_terms = PR.prepare(body)
-        else:
-            safe = body
-            maps, breaks = [], None
-            hit_terms = PR.find_terms(safe)
+        # ★ 不做占位符脱敏：控制码 / 标签 / 换行符原样随正文交给模型，
+        #   翻完由「控制码检测」兜底 —— repair_missing_controls 按原文
+        #   把整个丢失的控制码补回，检查报告再列出符号不匹配的句。
+        #   breaks 仍按原文分析，finalize 会把译文里丢掉的 \n 补回原位。
+        safe = body
+        breaks = PR.analyze_breaks(body)
+        hit_terms = PR.find_terms(safe)
         batch.append((k, safe))
-        maps_dict[k] = maps
         breaks_dict[k] = breaks
-        ph_protect_on = bool(getattr(config, "PLACEHOLDER_PROTECT", True))
 
         log.debug("[批 %d][%d] 送模型=%r", bi, k, safe)
 
         for src_term, dst_term in hit_terms:
             hit_terms_all.setdefault(src_term, dst_term)
+            # 术语命中统计：按「句」计（一句里重复出现只算一次）
+            term_counts[src_term] = term_counts.get(src_term, 0) + 1
 
-        if ph_protect_on:
-            for token, ctx in PR.detect_unknown_ctrl(safe):
-                unknown_ctrl_hits.append((token, txt, ctx))
+        # ★ 控制码检测（源侧）：原文里出现「识别不出来的 \字母 命令」，
+        #   说明它可能被模型改坏，收进「未识别控制码」报告提醒用户
+        for token, ctx in PR.detect_unknown_ctrl(body):
+            unknown_ctrl_hits.append((token, txt, ctx))
+
+    if term_stats is not None and term_counts:
+        term_stats.append(term_counts)     # list.append 原子，可并发汇总
 
     if new_prefixes:
-        PFD.save()
-        filled = sum(1 for p in new_prefix_keys if PFD.get_translation(p))
+        with _PREFIX_LOCK:
+            PFD.save()
+            filled = sum(1 for p in new_prefix_keys if PFD.get_translation(p))
         msg = (f"  [前缀] 发现 {new_prefixes} 个新前缀，已加入 prefix_dict.json")
         if filled:
             msg += f"（其中 {filled} 个命中术语，已自动填入译文）"
@@ -1190,8 +1184,8 @@ def _translate_batch(client, batch_texts, cache,
     # ---------- 请求模型 ----------
     t_req = time.time()
     result = translate_with_retry(client, batch,
-                                  terms_out=batch_terms,
-                                  term_pairs=term_pairs_list)
+                                  term_pairs=term_pairs_list,
+                                  context_lines=context_lines)
     log.info("[批 %d] 模型返回 %d 条，耗时 %.1fs",
              bi, len(result), time.time() - t_req)
 
@@ -1212,8 +1206,8 @@ def _translate_batch(client, batch_texts, cache,
         for attempt in range(config.SINGLE_RETRIES):
             try:
                 r = translate_with_retry(client, [(k, safe)],
-                                         terms_out=batch_terms,
-                                         term_pairs=term_pairs_list)
+                                         term_pairs=term_pairs_list,
+                                         context_lines=context_lines)
                 v = r.get(k)
                 if v and v.strip() and v.strip() != safe.strip():
                     result[k] = v
@@ -1232,74 +1226,32 @@ def _translate_batch(client, batch_texts, cache,
             failed.append({'src': src, 'reason': '模型无返回'})
             continue
 
-        maps = maps_dict[k]
+        prefix = prefix_list.get(k, "")
+        src_body = (src[len(prefix):]
+                    if (prefix and src.startswith(prefix)) else src)
 
-        # 占位符校验
-        ok_ph, missing_ph = PR.verify(raw, maps)
-        if not ok_ph:
-            log.warning("[批 %d][%d] 占位符丢失 %s", bi, k, missing_ph)
-            retried = False
-            # ★ 针对性重试：明确告诉模型它丢了哪些占位符，必须原样保留
-            ph_hint = ("注意：你上一版译文丢失了占位符 "
-                       + "、".join(missing_ph)
-                       + "。请重新翻译，并务必原样保留每一个 @N@ / ⟦N⟧"
-                         "（数量、位置、数字都不变，不翻译 @ 和数字）。")
-            for attempt in range(config.SINGLE_RETRIES):
-                try:
-                    r = translate_with_retry(client, [(k, batch[k][1])],
-                                             terms_out=batch_terms,
-                                             term_pairs=term_pairs_list,
-                                             extra_instruction=ph_hint)
-                    if k in r and r[k].strip():
-                        ok3, _ = PR.verify(r[k], maps)
-                        if ok3:
-                            raw = r[k]
-                            retried = True
-                            break
-                except Exception:
-                    time.sleep(1.0)
-            if not retried:
-                # ★ 不再做占位符兜底补回：重试后仍缺占位符的句子一律
-                #   保留原文，并记入检查报告（类型「占位符缺失」）——
-                #   用户在菜单 3 里能按类型看到它，双击手工改或勾选重翻。
-                detail = (f'占位符 {"、".join(missing_ph)} 丢失，'
-                          f'重试后仍未补回；已保留原文')
-                log.error("[批 %d][%d] 占位符缺失 %s，保留原文并记入报告",
-                          bi, k, missing_ph)
-                failed.append({
-                    'src': src,
-                    'kind': '占位符缺失',
-                    'reason': detail,
-                    # 这句不会被替换，译文文件里保留的就是原文
-                    'dst': src,
-                })
-                if ph_state is not None:
-                    ph_state["records"].append({
-                        'src': src,
-                        'missing': list(missing_ph),
-                        'dst': raw,
-                        'detail': detail,
-                    })
-                continue
+        # ★ 译后「安全恢复层」：反斜杠连写长度、圆圈数字、成对标点
+        #   —— 能证明安全的才修，修不了的留给下面的控制码检测。
+        raw, restore_notes = RESTORE.safe_restore(raw, src_body)
+        for note in restore_notes:
+            log.info("[批 %d][%d] 安全恢复：%s", bi, k, note)
+
+        # ★ 译文里控制码是否齐全：由下面的 repair_missing_controls 按原文
+        #   补回，并由检查报告的「符号不匹配 / 译文残留控制码」兜底。
 
         # 还原 + 拼回前缀
         mode = "newline"
         if mode_of_entry:
             mode = mode_of_entry.get(src, "newline")
 
-        body_final = PR.finalize(raw, maps, breaks_dict.get(k), mode=mode)
-
-        if getattr(config, "PLAYER_TOKEN", None):
-            body_final = _restore_player_token(body_final)
+        body_final = PR.finalize(raw, [], breaks_dict.get(k), mode=mode)
 
         # ★ 控制码回退：译文里缺失/未原样保留的控制码，一律按原文补回
         #   前缀是交给前缀字典单独处理的（可能已被用户或术语改写成另一套控制码），
         #   所以校验时把前缀从原文侧剔除，只比真正参与翻译的正文部分：
         #     · 避免把字典已处理的前缀误判成"译文缺失控制码"（否则会谎报并回退原文）
         #     · 正文里真正丢失的控制码照样会被检测并补回
-        prefix = prefix_list.get(k, "")
-        src_body = (src[len(prefix):]
-                    if (prefix and src.startswith(prefix)) else src)
+        #   （prefix / src_body 已在校验前算好，见上面的安全恢复段）
 
         if prefix:
             # ★ 模型有时会把前缀原样回显；旧版缓存里也可能已经带过前缀。
@@ -1320,80 +1272,16 @@ def _translate_batch(client, batch_texts, cache,
                 'detail': f'译文缺失控制码 {fixed_ctrl}，已按原文原样补回',
             })
 
+        # ★ 译后替换（统一译文排版，默认开；发生在还原占位符之后）
+        final, n_post = REPL.apply_post(final)
+        if n_post:
+            log.debug("[批 %d][%d] 译后替换命中 %d 条规则", bi, k, n_post)
+
         log.debug("[批 %d][%d] 最终译文=%r", bi, k, final)
         cache.put(src, final)
         ok += 1
-        # ★ 这一句已经翻好了（初次翻译或重翻）：清掉它的占位符缺失记录
-        if ph_state is not None and src in ph_state["known"]:
-            ph_state["fixed"].append(src)
-
-    # ---------- 术语合并（内联提取） ----------
-    if getattr(config, "AUTO_EXTRACT_TERMS", True) and batch_terms:
-        try:
-            import auto_terms
-            conflicts = []
-            added = auto_terms.merge_from_translation(
-                batch_terms, PR, conflicts_out=conflicts
-            )
-            if added:
-                emit(f"  [术语] 新增 {added} 条，已应用到后续批次")
-                log.info("[批 %d] 术语新增 %d 条", bi, added)
-
-            if conflicts:
-                log.warning("[批 %d] 术语冲突 %d 条", bi, len(conflicts))
-                matched = {}          # 术语原文 → 命中的句子
-                for idx, terms in batch_terms.items():
-                    if not (0 <= idx < len(batch_texts)):
-                        continue
-                    info = _match_conflict(terms, conflicts)
-                    if not info:
-                        continue
-                    src_text = batch_texts[idx]
-                    matched.setdefault(info['src'], src_text)
-                    extra_hits.append({
-                        'src': src_text,
-                        'kind': '术语冲突',
-                        'dst': cache.get(src_text, ''),
-                        'detail': (f"术语冲突：{info['src']} "
-                                   f"已有 {info['old']}，"
-                                   f"模型返回 {info['new']}"),
-                        # ★ 结构化字段，供「解决术语冲突」面板使用
-                        'term_src': info['src'],
-                        'term_old': info['old'],
-                        'term_new': info['new'],
-                    })
-                if conflict_records is not None:
-                    for c in conflicts:
-                        conflict_records.append({
-                            "src": c.get("src", ""),
-                            "old": c.get("old", ""),
-                            "new": c.get("new", ""),
-                            "sentence": matched.get(c.get("src", ""), ""),
-                        })
-        except Exception as e:
-            log.warning("术语合并失败：%s", e)
 
     return ok
-
-
-def _restore_player_token(text):
-    """
-    把玩家名占位文本还原成控制码。
-    模型可能把它拆开（"玛 俐 大 小 姐"）或改写，除精确匹配外再做一次宽松匹配。
-    """
-    token = getattr(config, "PLAYER_TOKEN", None)
-    ph = getattr(config, "PLAYER_PLACEHOLDER", None)
-    if not token or not ph:
-        return text
-
-    if ph in text:
-        return text.replace(ph, token)
-
-    loose = re.compile(r"\s*".join(re.escape(ch) for ch in ph))
-    m = loose.search(text)
-    if m:
-        return text[:m.start()] + token + text[m.end():]
-    return text
 
 
 def _match_conflict(terms, conflicts):
@@ -1410,6 +1298,9 @@ def _match_conflict(terms, conflicts):
 # ================================================================
 def _translate_core(src_path, lines=None, newline=None, show_header=True):
     """对单个文件执行完整翻译流程（Runtime 已设置好 input/output/cache）。"""
+    # ★ 文本保护规则：按需装载（模式或规则文件改过才重新装载）
+    import text_rules
+    text_rules.ensure_applied()
     out_path = config.Runtime.output_file
     cache_path = config.Runtime.cache_file
 
@@ -1446,6 +1337,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
     seen, todo = set(), []
     skipped_pure = 0
     skipped_path = 0
+    skipped_prefilter = 0
     whole_hits = []           # ★ 整句命中手工术语：直接写缓存，不送模型
     for _, txt in entries:
         if txt in seen:
@@ -1472,6 +1364,14 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
             cache.put(txt, txt)
             skipped_path += 1
             continue
+        # ★ 预过滤（借鉴 LinguaGacha prefilter）：剥掉控制码/标签后
+        #   **不含源语言字符**的行（纯数字串、纯符号行、别国语言残留）
+        #   原文即译文，不送模型——省 token，也省报告噪音
+        if getattr(config, "PREFILTER_ENABLE", True) \
+                and not PR.has_translatable_text(txt):
+            cache.put(txt, txt)
+            skipped_prefilter += 1
+            continue
         todo.append(txt)
 
     if whole_hits:
@@ -1496,8 +1396,14 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         log.info("跳过资源路径句子 %d 条（已缓存原文）", skipped_path)
         emit(f"[过滤] 跳过 {skipped_path} 条资源路径（形如 A/B/C，不翻译）")
 
+    if skipped_prefilter:
+        cache.save()
+        log.info("预过滤跳过无可译文本 %d 条（已缓存原文）", skipped_prefilter)
+        emit(f"[过滤] 预过滤跳过 {skipped_prefilter} 条"
+             f"（纯数字/纯符号/非源语言残留，原文即译文）")
+
     n_cache = (len(seen) - len(todo) - skipped_pure - skipped_path
-               - len(whole_hits))
+               - skipped_prefilter - len(whole_hits))
     emit(f"[待翻] 唯一 {len(seen)}  需翻 {len(todo)}  缓存命中 {n_cache}")
 
     # ---------- 批量翻译 ----------
@@ -1505,9 +1411,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
     failed = []
     extra_hits = []
     conflict_records = []      # ★ 术语冲突：落盘后供检查报告 / 冲突面板复用
-    # ★ 占位符缺失：落盘后菜单 3 每次刷新报告都能按类型看到
-    ph_state = {"records": [], "known": set(load_placeholder_missing()),
-                "fixed": []}
+    term_stat_batches = []      # 每批一条 {术语: 命中句数}，跑完汇总落盘
 
     if todo:
         if getattr(config, "SORT_TODO_BY_LEN", True):
@@ -1519,27 +1423,111 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         t0 = time.time()
         total = len(todo)
 
-        for bi, batch_texts in enumerate(batches, 1):
-            if bridge.cancelled():
-                emit("\n[中断] 用户取消")
-                cache.save(force=True)
-                break
+        # ★ 上文注入：批与批之间的「上文」按**原文件顺序**取——取每批
+        #   第一条之前最近的若干条待翻句子（只收以句末标点结尾的，防止
+        #   把半句话当前文）。SORT_TODO_BY_LEN 开着时 todo 已按长度重排，
+        #   这里靠 ctx_pos 映射回原文件顺序；游戏对白最吃指代和语气，
+        #   有上文比换大模型更提升质量。
+        n_ctx = int(getattr(config, "CONTEXT_LINES", 0) or 0)
+        ctx_source, ctx_pos = None, {}
+        if n_ctx > 0:
+            todo_set = set(todo)
+            ctx_source, _ctx_seen = [], set()
+            for _, txt in entries:
+                if txt in _ctx_seen or txt not in todo_set:
+                    continue
+                _ctx_seen.add(txt)
+                ctx_source.append(txt)
+            ctx_pos = {t: i for i, t in enumerate(ctx_source)}
 
-            ok = _translate_batch(client, batch_texts, cache,
-                                  unknown_ctrl_hits, failed, extra_hits,
-                                  mode_of_entry=mode_of_entry,
-                                  bi=bi,
-                                  conflict_records=conflict_records,
-                                  ph_state=ph_state)
+        def _context_for(batch_texts):
+            if not ctx_source:
+                return None
+            first = min((ctx_pos.get(t, 0) for t in batch_texts),
+                        default=0)
+            ctx = []
+            # 往前多扫几倍，挑出「以句末标点结尾」的最近几条
+            for t in reversed(ctx_source[max(0, first - n_ctx * 4):first]):
+                s = (t or "").rstrip()
+                if s and s[-1] in _SENT_END_CHARS:
+                    ctx.insert(0, t)
+                    if len(ctx) >= n_ctx:
+                        break
+            return ctx or None
 
-            cache.tick()
-            done += len(batch_texts)
-            elapsed = time.time() - t0
-            rate = done / elapsed if elapsed > 0 else 0
-            eta = (total - done) / rate / 60 if rate > 0 else 0
-            log.info("[批 %d] 成功 %d/%d  累计 %d/%d  %.2f条/秒  ETA %.1f分",
-                     bi, ok, len(batch_texts), done, total, rate, eta)
-            bridge.progress(done, total, f"{done}/{total} 条")
+        # ★ 并发批翻译：resolve_concurrency() > 1 且批数 > 1 时开线程池。
+        #   调度（并发槽 / Key 轮换 / 429 降档）由 translator.ApiScheduler
+        #   负责，这里只管把批次丢进池子；cache / prefix_dict / auto_terms
+        #   的写路径都已加锁。
+        try:
+            conc = max(1, int(resolve_concurrency()))
+        except Exception:
+            conc = 1
+
+        if conc > 1 and len(batches) > 1:
+            if getattr(config, "AUTO_CONCURRENCY", True):
+                emit(f"[并发] 并发批数 {conc}（自适应：成功+1 / 429 减半）")
+            else:
+                emit(f"[并发] 并发批数 {conc}")
+            log.info("并发批翻译：%d 批，并发 %d", len(batches), conc)
+
+            def _run(bi, batch_texts):
+                return _translate_batch(
+                    client, batch_texts, cache,
+                    unknown_ctrl_hits, failed, extra_hits,
+                    mode_of_entry=mode_of_entry, bi=bi,
+                    conflict_records=conflict_records,
+                    context_lines=_context_for(batch_texts),
+                    term_stats=term_stat_batches)
+
+            with ThreadPoolExecutor(max_workers=conc) as ex:
+                futs = {}
+                for bi, batch_texts in enumerate(batches, 1):
+                    if bridge.cancelled():
+                        emit("\n[中断] 用户取消（已提交的批次会跑完）")
+                        cache.save(force=True)
+                        break
+                    futs[ex.submit(_run, bi, batch_texts)] = bi
+                for fut in as_completed(futs):
+                    bi = futs[fut]
+                    try:
+                        ok = fut.result()
+                    except Exception as e:
+                        log.error("[批 %d] 执行失败：%s", bi, e)
+                        ok = 0
+                    cache.tick()
+                    done += len(batches[bi - 1])
+                    elapsed = time.time() - t0
+                    rate = done / elapsed if elapsed > 0 else 0
+                    eta = (total - done) / rate / 60 if rate > 0 else 0
+                    log.info("[批 %d] 成功 %d/%d  累计 %d/%d  "
+                             "%.2f条/秒  ETA %.1f分",
+                             bi, ok, len(batches[bi - 1]), done, total,
+                             rate, eta)
+                    bridge.progress(done, total, f"{done}/{total} 条")
+        else:
+            for bi, batch_texts in enumerate(batches, 1):
+                if bridge.cancelled():
+                    emit("\n[中断] 用户取消")
+                    cache.save(force=True)
+                    break
+
+                ok = _translate_batch(client, batch_texts, cache,
+                                      unknown_ctrl_hits, failed, extra_hits,
+                                      mode_of_entry=mode_of_entry,
+                                      bi=bi,
+                                      conflict_records=conflict_records,
+                                      context_lines=_context_for(batch_texts),
+                                      term_stats=term_stat_batches)
+
+                cache.tick()
+                done += len(batch_texts)
+                elapsed = time.time() - t0
+                rate = done / elapsed if elapsed > 0 else 0
+                eta = (total - done) / rate / 60 if rate > 0 else 0
+                log.info("[批 %d] 成功 %d/%d  累计 %d/%d  %.2f条/秒  ETA %.1f分",
+                         bi, ok, len(batch_texts), done, total, rate, eta)
+                bridge.progress(done, total, f"{done}/{total} 条")
 
         # ★ 跑完把 HTTP 连接池关掉：长跑翻译时别让长连接一直堆着
         client.close()
@@ -1555,21 +1543,18 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
     else:
         cache.save(force=True)
 
+    # ---------- 术语命中统计落盘（aux 目录） ----------
+    if getattr(config, "TERM_STATS_ENABLE", True) and term_stat_batches:
+        try:
+            _write_term_stats(src_path, term_stat_batches)
+        except Exception as e:
+            log.warning("术语命中统计写入失败：%s", e)
+
     # ---------- 术语冲突记录落盘（供检查报告 / 冲突面板复用） ----------
     if conflict_records:
         _record_term_conflicts(conflict_records)
         emit(f"  [术语冲突] 记录 {len(conflict_records)} 条，"
              f"可在菜单 3 用「解决术语冲突」处理")
-
-    # ---------- 占位符缺失记录落盘（供检查报告 / 菜单 3 复用） ----------
-    if ph_state["records"]:
-        _record_placeholder_missing(ph_state["records"])
-        emit(f"  [占位符缺失] {len(ph_state['records'])} 条已记入检查报告，"
-             f"可在菜单 3 按类型「占位符缺失」手工修改或重翻")
-    if ph_state["fixed"]:
-        n = drop_placeholder_missing(ph_state["fixed"])
-        if n:
-            log.info("占位符缺失记录已清除 %d 条（这些句子已翻好）", n)
 
     # ---------- 回写 ----------
     translations = {txt: cache.get(txt) for _, txt in entries if cache.get(txt)}
@@ -1589,7 +1574,9 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         hits = checker.check(out_lines, entries, special, report_path,
                              extra_hits=(failed + extra_hits
                                          + _derived_term_hits(entries,
-                                                              out_lines)))
+                                                              out_lines)
+                                         + _unapplied_term_hits(entries,
+                                                                out_lines)))
         _print_summary(hits, report_path)
     except Exception as e:
         log.error("自动检查失败：%s", e)
@@ -1647,13 +1634,24 @@ def _update_snapshot():
 
 def _print_summary(hits, report_path):
     c = Counter(h['kind'] for h in hits)
-    # ★ 「共 N 处问题」不含「派生命中」这类提示（见 count_problems）
+    # ★ 「共 N 处问题」只数 PROBLEM_KINDS：提示类（派生命中 / 术语未应用 /
+    #   术语冲突）与需手动类（译文残留控制码 / 特殊行 / 控制码回退）都不算
     emit(f"  共 {count_problems(hits)} 处问题：")
-    for k in ('翻译失败', '占位符缺失', '术语冲突',
-              '疑似未翻译', '疑似异常句',
-              '符号不匹配', '译文残留控制码', '译文残留占位符', '特殊行'):
-        if c.get(k):
+    shown = 0
+    for k in REPORT_KIND_ORDER:
+        if k in PROBLEM_KINDS and c.get(k):
             emit(f"    {k}: {c[k]}")
+            shown += 1
+    if not shown:
+        emit("    （无）")
+    manual = [f"{k}: {c[k]}" for k in REPORT_KIND_ORDER
+              if k in NEVER_RETRANSLATE_KINDS and c.get(k)]
+    if manual:
+        emit("  需手工处理（不计入问题）：" + "  ".join(manual))
+    adv = [f"{k}: {c[k]}" for k in REPORT_KIND_ORDER
+           if k in ADVISORY_KINDS and c.get(k)]
+    if adv:
+        emit("  提示（不计入问题）：" + "  ".join(adv))
     emit(f"  报告：{report_path}")
 
 
@@ -1740,8 +1738,9 @@ def check_file(path, write_report=True):
     report_path = _report_path()
     hits = checker.check(out_lines, entries, special, report_path,
                          extra_hits=(_conflicts_as_hits(entries, out_lines)
-                                     + _placeholder_as_hits(entries, out_lines)
-                                     + _derived_term_hits(entries, out_lines)))
+                                     + _derived_term_hits(entries, out_lines)
+                                     + _unapplied_term_hits(entries,
+                                                            out_lines)))
     return hits
 
 
@@ -2537,20 +2536,15 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
             emit("\n[中断] 用户取消")
             break
 
-        items, maps_dict, src_safe_dict = [], {}, {}
-        ph_protect = bool(getattr(config, "PLACEHOLDER_PROTECT", True))
+        items, orig_dict, src_safe_dict = [], {}, {}
         for k, txt in enumerate(batch_texts):
-            if ph_protect:
-                safe, maps = PR.protect(cache.get(txt), drop_newline=False)
-                # ★ 原文一并保护后作为末尾参考提示词，供模型比对、避免润色跑偏
-                src_safe, _ = PR.protect(txt, drop_newline=False)
-            else:
-                # 占位符保护关闭：原文整句直接交给模型
-                safe, maps = cache.get(txt), []
-                src_safe = txt
-            items.append((k, safe, src_safe))
-            maps_dict[k] = maps
-            src_safe_dict[k] = src_safe
+            # ★ 不再做占位符脱敏：译文里的控制码原样交给模型（prompt
+            #   里已要求保留），润色完按「控制码检测」比对，不一致就
+            #   保留原译文（润色绝不冒险）。
+            cur = cache.get(txt) or ""
+            items.append((k, cur, txt))
+            orig_dict[k] = cur
+            src_safe_dict[k] = txt
 
         result = polish_with_retry(client, items)
 
@@ -2573,15 +2567,16 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
                 _mark_unchanged(txt)
                 continue
 
-            maps = maps_dict[k]
-            ok_ph, _ = PR.verify(raw, maps)
-            if not ok_ph:
-                # 润色绝不冒险：占位符不全就保留原译文
-                log.warning("[润色 %d][%d] 占位符不全，保留原译文", bi, k)
+            new_text = (raw or "").strip()
+            # ★ 控制码检测：润色前后控制码（含 \n）必须完全一致，
+            #   不一致说明模型改坏了 —— 一律保留原译文
+            if (PR.control_symbols(orig_dict[k], ignore_newline=False)
+                    != PR.control_symbols(new_text,
+                                          ignore_newline=False)):
+                log.warning("[润色 %d][%d] 控制码不一致，保留原译文",
+                            bi, k)
                 _mark_unchanged(txt)
                 continue
-
-            new_text = PR.restore(raw, maps).strip()
             if not new_text:
                 _mark_unchanged(txt)
                 continue
@@ -2637,10 +2632,9 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
 
 
 def polish_paths(paths, model=None, reset=False):
-    """中文润色重翻（无交互核心）。
-
-    reset=True → 清空各文件的润色进度，重新润色全部（不续翻）。
-    """
+    # ★ 文本保护规则：润色也要按当前规则处理控制码
+    import text_rules
+    text_rules.ensure_applied()
     _apply_lang_model(None, None, model)
 
     _announce_work_dir(paths)
@@ -2993,7 +2987,8 @@ def intl_extract_paths(game_dirs, out_path=None):
     return out
 
 
-def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True):
+def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True,
+                       lang_first=None):
     """
     编译文本：把 intl 格式的文本（单个文件、多个文件、或整个文件夹里的
     全部 .txt）编译成游戏语言文件 —— 等同于在游戏 debug 菜单里点
@@ -3002,8 +2997,8 @@ def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True):
     out_path 留空时按游戏版本自动定：
       旧版 → Settings::LANGUAGES 里那条（一般是 Data/Chinese.dat）
       新版 → Data/messages_<语言>_core.dat 与 …_game.dat
-    apply_language：编译完顺手把这条语言写进 Settings::LANGUAGES
-                    （复制第一条语言、把 English 改成 Chinese），省得自己改脚本。
+    apply_language：编译完顺手把这条语言写进 Settings::LANGUAGES，省得自己改脚本。
+    lang_first：把中文放到语言表第一条（游戏默认语言）。留空取 config。
     """
     import intl_text as IT
     emit("\n" + "=" * 55)
@@ -3018,14 +3013,32 @@ def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True):
         return {"ok": False, "error": str(e)}
     if apply_language:
         try:
-            rep["language"] = intl_apply_language(game_dir, emit=emit)
+            # ★ 旧版写的是单个语言 .dat（如 Data/Chinese.dat）：语言表里必须
+            #   写**同一个文件名**。写成 `chinese`（没 .dat）游戏会去找
+            #   Data/chinese，找不到就静默回退 messages.dat —— 界面毫无变化。
+            #   新版（core / game 两份）语言表里存的是片段，沿用原逻辑。
+            # ★ 旧方案：语言表那一格就是**文件名**（游戏拼 "Data/" + 它），
+            #   必须带 .dat；写成片段（chinese）游戏会去找 Data/chinese，
+            #   找不到就整份加载失败，界面毫无变化。
+            # ★ 新方案：语言表存的是片段（对应 messages_<片段>_core.dat）。
+            frag = None
+            if rep.get("outs"):
+                frag = rep["outs"][0].get("fragment")
+            elif rep.get("out"):
+                frag = os.path.basename(rep["out"])
+            if lang_first is None:
+                lang_first = bool(getattr(config, "LANG_ENTRY_FIRST", True))
+            rep["language"] = intl_apply_language(game_dir, fragment=frag,
+                                                  emit=emit,
+                                                  first=lang_first)
         except Exception as e:
             log.error("写入语言表失败：%s\n%s", e, traceback.format_exc())
             emit(f"  ⚠ 语言表没写成：{e}")
     return rep
 
 
-def intl_apply_language(game_dir, display="简体中文", fragment=None, emit=None):
+def intl_apply_language(game_dir, display="简体中文", fragment=None, emit=None,
+                        first=False):
     """
     编译完文本后调用：把这条语言写进游戏 Settings 的 LANGUAGES ——
     复制第一条语言条目、把 `English` 改成 `Chinese`（被注释的先取消注释）。
@@ -3033,7 +3046,8 @@ def intl_apply_language(game_dir, display="简体中文", fragment=None, emit=No
     """
     import game_scripts as GS
     return GS.apply_languages_entry(game_dir, display=display,
-                                    fragment=fragment, emit=emit)
+                                    fragment=fragment, emit=emit,
+                                    first=first)
 
 
 def plugin_inject_paths(game_dirs, font_file=None):

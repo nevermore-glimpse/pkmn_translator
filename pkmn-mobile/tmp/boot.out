@@ -1,0 +1,28 @@
+模拟 Chaquopy 环境启动手机版：
+  ✔ 打包目录已同步（core/shim/server/vendor 齐全）
+  ✔ mobile_main 可导入  — root=python
+  ✔ _import_app 不再用 except ImportError 掩盖错误  — 无
+  ✔ 通路①包形式 `server.app` 可用  — E:\pkmn_translator\pkmn-mobile\android\app\src\main\python\server\app.py
+  ✔ 通路②平铺形式 `app` 可用（server/ 在 sys.path 上）  — E:\pkmn_translator\pkmn-mobile\android\app\src\main\python\server\app.py
+  ✔ 两个 app 模块都指向 server/app.py，没有走错文件
+  ✔ mobile_main.start() 返回端口  — port=54860
+13:21:33 [INFO   ] ============================================================
+13:21:33 [INFO   ] 会话开始  日志文件：C:\Users\13122\AppData\Local\Temp\pkmn_boot_wc07zbjw\home\data\logs\translate_20261015.log
+13:21:33 [INFO   ] ============================================================
+  ✔ GET /api/health → 200  — 200
+  ✔ health 报告 core 模块齐全  — missing=[]
+  ✔ GET / 返回首页  — 200, 19744 字节
+  ✔ GET /api/save/open 有明确错误而不是崩栈  — 200, {"ok": false, "message": "缺少参数 path（存�
+  ✔ GET /fonts/lolita.ttf 可用  — 200, 11.4MB
+  ✔ health 报基准数据就位（PKMN_DATA_DIR 生效）  — data_dir=E:\pkmn_translator\pkmn-mobile\core_data
+  ✔ health 列出了内置基准版本  — versions=v16,v17,v18,v19.1,v19,v20.1,v20,v21.1,v21
+  ✔ 开启方式①–⑦ 齐全  — keys=main,keys,special,special_menu,repel,repel_menu,rewrite
+  ✔ 每个方式都带说明文字
+  ✔ 只有方式① 会写 $DEBUG（write_debug=(mode == "main")）
+  ✔ 安卓空路径返回起点列表（不再报没有读取权限）  — roots
+  ✔ 起点列表带使用说明
+  ✔ 能列出真实目录  — 12 个子目录
+
+==========================================================
+通过 20 项 / 失败 0 项
+==========================================================

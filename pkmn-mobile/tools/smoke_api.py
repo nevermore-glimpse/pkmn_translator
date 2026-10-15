@@ -126,6 +126,59 @@ def main():
            "POST /api/save/open（坏数据）返回明确错误",
            r.get("message", "")[:120])
 
+    # ---------- 4.5 PBS 编辑 ----------
+    print("\n[4.5] PBS 编辑接口")
+    real = r"E:/123移植游戏/宝可梦重聚"
+    if os.path.isdir(os.path.join(real, "Data")):
+        pbsgame = tempfile.mkdtemp(prefix="pbsgame_",
+                                   dir=os.path.join(ROOT, "tmp"))
+        os.makedirs(os.path.join(pbsgame, "Data"))
+        for fn in os.listdir(os.path.join(real, "Data")):
+            if fn.endswith(".dat"):
+                shutil.copy2(os.path.join(real, "Data", fn),
+                             os.path.join(pbsgame, "Data", fn))
+        q = urllib.parse.quote(pbsgame)
+        r = call(base, "GET", "/api/pbs/list?dir=" + q)
+        fam = (r.get("data") or {}).get("family")
+        report(r.get("ok") is True and fam == "v21",
+               "GET /api/pbs/list 认出 v21", f"family={fam}")
+        r = call(base, "POST", "/api/pbs/extract", {"dir": pbsgame})
+        # PBS编辑只开放 4 类文件（宝可梦 / 形态 / 道具 / 招式）
+        report(r.get("ok") is True and r["data"]["ok_count"] >= 4,
+               "POST /api/pbs/extract", f"{r.get('data', {}).get('ok_count')} 个")
+        r = call(base, "GET", "/api/pbs/list?dir=" + q)
+        files = (r.get("data") or {}).get("files") or []
+        items = [f for f in files if f["key"] == "items"]
+        report(bool(items), "列表里出现「道具」", str(len(files)) + " 个文件")
+        if items:
+            path = os.path.join(pbsgame, "PBS", items[0]["file"])
+            r = call(base, "GET", "/api/pbs/read?dir=" + q
+                     + "&path=" + urllib.parse.quote(path))
+            rows = (r.get("data") or {}).get("rows") or []
+            report(r.get("ok") is True and len(rows) > 10,
+                   "GET /api/pbs/read", f"{len(rows)} 条")
+            fields = rows[0]["fields"] if rows else []
+            report(bool(fields) and all("desc" in f for f in fields),
+                   "每条字段都带中文说明")
+            # 改一个字段再写回
+            if rows and len(rows[0]["fields"]) > 2:
+                rows[0]["fields"][2]["value"] = "测试改名"
+                r = call(base, "POST", "/api/pbs/write",
+                         {"dir": pbsgame, "path": path, "rows": rows})
+                report(r.get("ok") is True, "POST /api/pbs/write",
+                       str(r.get("message", ""))[:80])
+                r = call(base, "GET", "/api/pbs/read?dir=" + q
+                         + "&path=" + urllib.parse.quote(path))
+                v = ((r.get("data") or {}).get("rows") or [
+                    {"fields": [{"value": ""}]}])[0]["fields"][2]["value"]
+                report(v == "测试改名", "改动能读回来", v)
+        r = call(base, "POST", "/api/pbs/compile", {"dir": pbsgame})
+        report(r.get("ok") is True, "POST /api/pbs/compile",
+               f"ok_count={r.get('data', {}).get('ok_count')}")
+        shutil.rmtree(pbsgame, ignore_errors=True)
+    else:
+        report(True, "跳过 PBS 实测（没找到测试游戏）")
+
     # ---------- 5. 静态资源 ----------
     print("\n[5] 静态资源")
     idx = os.path.join(APP.WEB_DIR, "index.html")

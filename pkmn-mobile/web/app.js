@@ -148,6 +148,7 @@
     ow: "基准覆盖",
     font: "字体替换",
     save: "存档编辑",
+    pbs: "PBS 编辑",
     about: "关于",
   };
 
@@ -162,6 +163,7 @@
       if (p === "about") loadAbout();
       if (p === "ow") loadOwState();
       if (p === "font") loadFonts();
+      if (p === "pbs") loadPbs();
     });
   });
 
@@ -223,25 +225,34 @@
   // ------------------------------------------------------------
   // 夜间模式
   // ------------------------------------------------------------
-  // <body> 上的 .night 类由 index.html 里的一小段内联脚本提前挂好
-  // （CSS 之后、首屏之前，避免开屏先闪一下白）。
-  // 这里只负责：① 同步开关按钮文字 ② 点击切换并写 localStorage。
-  const NIGHT_KEY = "pkmn.night";
-
+  // 偏好存在后端（App 私有目录），不放在浏览器 localStorage —— 原因是
+  // WebView 每次启动都用随机端口起服务，源（http://127.0.0.1:<随机端口>）
+  // 每次都变，localStorage 按源隔离，重启就读不到，表现就是「退出再进又变白天」。
+  // 首屏的 .night 类由 index.html 内联脚本注入（值来自后端），这里只负责
+  // ① 同步开关按钮文字 ② 点击切换并写回后端落盘。
   function isNight() {
     return document.body.classList.contains("night");
   }
 
   function applyNight(on) {
-    document.body.classList.toggle("night", !!on);
+    on = !!on;
+    document.body.classList.toggle("night", on);
     $("btnNight").textContent = on ? "关闭" : "开启";
     // 安卓状态栏 / 最近任务里的主题色也跟着换
     const meta = $("metaTheme");
     if (meta) meta.setAttribute("content", on ? "#12181F" : "#0F4C86");
-    try { localStorage.setItem(NIGHT_KEY, on ? "1" : "0"); } catch (e) {}
+    window.__NIGHT__ = on;
+    // 持久化：写回后端落盘，重启后依然生效
+    try {
+      fetch("api/settings/set", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ night: on })
+      }).catch(function () {});
+    } catch (e) {}
   }
 
-  applyNight(isNight());   // 类已经挂过了，这次只是把按钮文字对上
+  applyNight(isNight());   // 类通常已由首屏脚本挂好，这里只是把按钮文字对上
 
   $("btnNight").addEventListener("click", () => {
     applyNight(!isNight());
@@ -249,9 +260,34 @@
   });
 
   // ------------------------------------------------------------
+  // 游戏定位：手机版**选游戏主程序（exe）**，由它推出游戏根目录
+  //   —— 手机上要一层层点进 Android/data/<包名>/ 找那一层文件夹太费劲，
+  //      直接点 Game.exe 更直观，根目录由后端 exe_root() 算出来。
+  //   所有后端接口仍收「游戏根目录」（gameDir() 返回的就是它）。
+  //   ★ 四个页面各有一个「游戏主程序」输入框，值保持同步；这一段要放在
+  //     浏览按钮绑定之前（const 有暂时性死区，晚了会直接报错）。
+  // ------------------------------------------------------------
+  let gameRoot = "";                    // 由 exe 解析出来的游戏根目录
+  const EXE_IDS = ["gameExe", "gameExeOw", "gameExeFont", "gameExeSave",
+    "gameExePbs"];
+  const gameExe = () => ($("gameExe").value || "").trim();
+  const gameDir = () => gameRoot;       // 兼容原来所有 gameDir() 调用点
+
+  function syncExe(v) {
+    EXE_IDS.forEach((id) => {
+      const el = $(id);
+      if (el && el.value !== v) el.value = v;
+    });
+  }
+
+  function isFontFile(name) {
+    return /\.(ttf|otf|ttc)$/i.test(String(name || ""));
+  }
+
+  // ------------------------------------------------------------
   // 目录 / 文件浏览
   // ------------------------------------------------------------
-  let browseMode = "dir";          // dir = 选目录，file = 选文件，exe = 选游戏主程序
+  let browseMode = "dir";          // dir / file / exe / font
   let browseTarget = null;
   let browseCwd = "";
 
@@ -295,21 +331,29 @@
       rows.push(`<div data-dir="${esc(d.path)}">📁 ${esc(d.name)}</div>`);
     });
     let files = r.data.files || [];
+    const isFont = browseMode === "font";
     // 选游戏主程序时，只把 exe / 启动脚本列出来 —— 手机上目录文件很多，
-    // 混在一起很难找（点错的概率也高）。
+    // 混在一起很难找（点错的概率也高）。选字体只列字体文件，同理。
     if (isExe) files = files.filter((f) => f.looks_like_exe);
+    if (isFont) files = files.filter((f) => isFontFile(f.name));
     if (isExe && browseCwd && !files.length) {
       rows.push(`<div class="hint" style="padding:11px 15px">` +
                 `这个目录里没有 .exe —— 游戏主程序一般在 Data 的<b>上一层</b>，` +
                 `试试返回上级。</div>`);
     }
+    if (isFont && browseCwd && !files.length) {
+      rows.push(`<div class="hint" style="padding:11px 15px">` +
+                `这个目录里没有 .ttf / .otf / .ttc 字体文件。</div>`);
+    }
     files.forEach((f) => {
       const kb = f.size != null ? (f.size / 1024).toFixed(0) + "K" : "";
       const pickable = (browseMode === "file") ||
-                       (isExe && f.looks_like_exe);
+                       (isExe && f.looks_like_exe) ||
+                       (isFont && isFontFile(f.name));
       const attr = pickable ? `data-pick="${esc(f.path)}"` : `data-dir="${esc(f.path)}"`;
       const icon = f.looks_like_exe ? "🎮"
-                 : (f.looks_like_save ? "💾" : "📄");
+                 : (isFontFile(f.name) ? "字"
+                 : (f.looks_like_save ? "💾" : "📄"));
       rows.push(`<div ${attr}>${icon} ${esc(f.name)}` +
                 `　<span class="sub">${kb}</span></div>`);
     });
@@ -337,8 +381,17 @@
     return i > 0 ? p.slice(0, i) : "";
   }
 
-  $("btnBrowseGame").addEventListener("click", () =>
-    openBrowse("exe", "gameExe", "选择游戏主程序（Game.exe）"));
+  // 「游戏主程序」浏览按钮：四个页面各一个，逻辑完全一样
+  ["btnBrowseGame", "btnBrowseGameOw", "btnBrowseGameFont",
+   "btnBrowseGameSave"].forEach((btn, i) => {
+    const el = $(btn);
+    if (el) el.addEventListener("click", () =>
+      openBrowse("exe", EXE_IDS[i], "选择游戏主程序（Game.exe）"));
+  });
+  $("btnBrowsePbsGame").addEventListener("click", () =>
+    openBrowse("exe", "gameExePbs", "选择游戏主程序（Game.exe）"));
+  $("btnBrowseFont").addEventListener("click", () =>
+    openBrowse("font", "fontPath", "选择字体文件"));
   $("btnBrowseSave").addEventListener("click", () =>
     openBrowse("file", "savePath", "选择存档文件"));
   $("browseClose").addEventListener("click", () =>
@@ -405,16 +458,6 @@
   }
 
   // ------------------------------------------------------------
-  // 游戏定位：手机版**选游戏主程序（exe）**，由它推出游戏根目录
-  //   —— 手机上要一层层点进 Android/data/<包名>/ 找那一层文件夹太费劲，
-  //      直接点 Game.exe 更直观，根目录由后端 exe_root() 算出来。
-  //   所有后端接口仍收「游戏根目录」（gameDir() 返回的就是它）。
-  // ------------------------------------------------------------
-  let gameRoot = "";                    // 由 exe 解析出来的游戏根目录
-  const gameExe = () => $("gameExe").value.trim();
-  const gameDir = () => gameRoot;       // 兼容原来所有 gameDir() 调用点
-
-  // ------------------------------------------------------------
   // 开启方式（①–⑦，清单由后端给，避免前后端各写一份）
   // ------------------------------------------------------------
   let DEBUG_MODES = [];
@@ -465,12 +508,20 @@
    * 解析「游戏主程序」→ 游戏根目录，并刷新各页状态。
    * 后端 `check_game?exe=` 会顺带做根目录校验（含 Data/）。
    */
+  function renderExeMini(text, bad) {
+    ["gameInfoOw", "gameInfoFont", "gameInfoSave"].forEach((id) => {
+      const el = $(id);
+      if (el) el.innerHTML = bad ? `<span class="err">${esc(text)}</span>` : esc(text);
+    });
+  }
+
   async function refreshGameInfo() {
     const exe = gameExe();
     rememberExe(exe);
     if (!exe) {
       gameRoot = "";
       $("gameInfo").innerHTML = `<div class="hint">还没选择游戏主程序</div>`;
+      renderExeMini("还没选择游戏主程序");
       loadOwState();
       return;
     }
@@ -478,6 +529,7 @@
     if (!r.ok) {
       gameRoot = "";
       $("gameInfo").innerHTML = `<div class="hint err">${esc(r.message)}</div>`;
+      renderExeMini(r.message || "识别失败", true);
       loadOwState();
       return;
     }
@@ -488,6 +540,7 @@
       ["游戏根目录", gameRoot || "（未解析出）"],
       ["说明", r.data.reason],
     ]);
+    renderExeMini(gameRoot ? ("游戏根目录：" + gameRoot) : "（未解析出游戏根目录）");
     // 存档页的「游戏根目录（数据源）」自动跟着填，用户不用再选一次
     if (gameRoot && (!$("saveRoot").value.trim() || $("saveRoot").dataset.auto === "1")) {
       $("saveRoot").value = gameRoot;
@@ -497,13 +550,15 @@
     if (sr) {
       sr.innerHTML = gameRoot
         ? ("数据源目录：<b>" + esc(gameRoot) + "</b>（自动来自游戏主程序）<br>" +
-           "名字 / 种族值会按这个目录里的数据显示。")
-        : ("<b>游戏数据可以不选</b> —— 不选也能照常编辑和写回，只是宝可梦 / " +
-           "道具的名字显示不全。<br>这时改「种族 / 道具 / 特性 / 招式 / " +
-           "训练家类型」请填 <b>英文内部名</b>（如 PIKACHU / POKEBALL）或<b>编号</b>。");
+           "宝可梦 / 道具的名字按这个目录里的数据显示。")
+        : ("<b>游戏数据可以不选</b>：" +
+           "名字显示不全，这时改「种族 / 道具 / 特性 / 招式 / 训练家类型」" +
+           "请填 <b>英文内部名</b>（如 PIKACHU / POKEBALL）或<b>编号</b>。");
     }
     if (r.data.valid) loadDebugStatus();
     loadOwState();
+    // 字体页：顺手刷一下当前装了什么插件
+    if (document.querySelector("#page-font.active")) loadFontScan();
   }
 
   async function loadDebugStatus() {
@@ -521,7 +576,15 @@
   }
 
   $("btnCheckGame").addEventListener("click", refreshGameInfo);
-  $("gameExe").addEventListener("change", refreshGameInfo);
+  // 四个页面的「游戏主程序」框都绑到同一套逻辑：改了哪个都同步到其它三个
+  EXE_IDS.forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      syncExe(el.value.trim());
+      refreshGameInfo();
+    });
+  });
   $("saveRoot").addEventListener("input", () => {
     $("saveRoot").dataset.auto = "0";     // 用户手动改过就别再自动覆盖
   });
@@ -691,10 +754,12 @@
   $("owVersion").addEventListener("change", loadOwState);
 
   // ------------------------------------------------------------
-  // 任务5：字体替换
+  // 任务5：字体替换（#fontPath 留空 = 用工具自带的萝莉体）
   // ------------------------------------------------------------
   let fontsCache = [];
-  let pickedFont = null;
+
+  const fontPath = () => ($("fontPath").value || "").trim();
+  const builtinFont = () => fontsCache.find((f) => f.builtin) || null;
 
   async function loadFonts() {
     const r = await API("/api/font/fonts");
@@ -703,14 +768,12 @@
       return;
     }
     fontsCache = r.data.fonts || [];
-    if (!pickedFont && fontsCache.length) {
-      pickedFont = fontsCache.find((f) => f.builtin) || fontsCache[0];
-    }
     if (!fontsCache.length) {
       $("fontList").innerHTML =
-        `<div class="hint">没找到字体。内置字体缺失，请检查 core_data/fonts/</div>`;
+        `<div class="hint">没找到可用字体（内置字体缺失：core_data/fonts/）</div>`;
       return;
     }
+    const cur = fontPath();
     $("fontList").innerHTML =
       `<div class="hint" style="margin-bottom:7px">点一个选中：</div>` +
       fontsCache.map((f, i) =>
@@ -718,27 +781,44 @@
         `<span class="tag ${f.builtin ? "on" : "off"}">${f.builtin ? "内置" : "自备"}</span>` +
         `<span class="grow">${esc(f.name)}` +
         `<div class="sub">${esc(f.family || "读不出族名")} · ${(f.size / 1048576).toFixed(1)}MB</div></span>` +
-        (pickedFont === f ? `<span class="tag on">已选</span>` : "")
+        ((cur ? f.path === cur : f.builtin) ? `<span class="tag on">已选</span>` : "")
         + `</div>`).join("");
     $("fontList").querySelectorAll("[data-font]").forEach((el) => {
       el.addEventListener("click", () => {
-        pickedFont = fontsCache[+el.dataset.font];
+        $("fontPath").value = fontsCache[+el.dataset.font].path;
         loadFonts();
       });
     });
   }
 
+  $("fontPath").addEventListener("change", loadFonts);
+  $("btnFontBuiltin").addEventListener("click", () => {
+    $("fontPath").value = "";
+    loadFonts();
+  });
+
+  async function loadFontScan() {
+    const dir = gameDir();
+    if (!dir) { $("fontInfo").innerHTML = ""; return; }
+    const r = await API("/api/font/scan?dir=" + encodeURIComponent(dir));
+    $("fontInfo").innerHTML = r.ok
+      ? kv([["当前插件", (r.data.plugins || []).join("、") || "未安装"]])
+      : "";
+  }
+
   $("btnFontInstall").addEventListener("click", async () => {
     const dir = gameDir();
-    if (!dir) return toast("先在「DEBUG」页选好游戏目录");
-    if (!pickedFont) { await loadFonts(); return toast("先选一个字体"); }
+    if (!dir) return toast("先选游戏主程序");
+    const picked = fontPath() || builtinFont();
+    const name = picked ? picked.name : "工具自带萝莉体";
     const ok = await confirmBox("替换游戏字体",
-      `将把游戏字体换成 <b>${esc(pickedFont.name)}</b>（${esc(pickedFont.family || "?")}）。\n\n` +
-      `会植入「中文文本处理」插件，并修改引擎里的字体定义。\n` +
+      `将把游戏字体换成 <b>${esc(name)}</b>。<br><br>` +
+      `会植入「中文文本处理」插件，并修改引擎里的字体定义。<br>` +
       `原文件会自动备份，可用「还原」撤销。`,
       "确认替换", true);
     if (!ok) return;
-    runTask("/api/font/install", { dir, font: pickedFont.path },
+    // font 留空 = 后端用内置萝莉体
+    runTask("/api/font/install", { dir, font: fontPath() },
             "fontLog", "fontBar", "btnFontCancel");
   });
 
@@ -751,16 +831,6 @@
             "fontLog", "fontBar", "btnFontCancel");
   });
   bindCancel("btnFontCancel", "fontLog");
-
-  // 游戏主程序变化时，字体页也要知道有没有可用字体
-  $("gameExe").addEventListener("change", async () => {
-    if (document.querySelector('#page-font.active')) {
-      const r = await API("/api/font/scan?dir=" + encodeURIComponent(gameDir()));
-      $("fontInfo").innerHTML = r.ok
-        ? kv([["当前插件", (r.data.plugins || []).join("、") || "未安装"]])
-        : "";
-    }
-  });
 
   // ------------------------------------------------------------
   // 存档编辑（对齐电脑版菜单 6：主角 / 同行 / 背包 / 箱子 / 开关变量）
@@ -1640,6 +1710,234 @@
       })();
     }
   } catch (e) {}
+
+  // ------------------------------------------------------------
+  // PBS 编辑
+  //   · 右侧「三个动作」= 提取 / 编译
+  //   · 文件列表 → 点一个文件 → 选条目 → 改字段（每个字段下面带中文说明）
+  //   ★ v16/v17/v18 老游戏的「编译」= 标记待重编译（游戏启动时自己重建 .dat）
+  // ------------------------------------------------------------
+  const pbs = { dir: "", family: "", legacy: false, path: "", rows: [],
+                idx: 0, name: "", query: "", vis: [] };
+
+  function pbsInfo(html) { $("pbsInfo").innerHTML = html; }
+  function pbsLog(html) { $("pbsLog").innerHTML = html; }
+
+  async function loadPbs() {
+    const dir = gameDir();
+    if (!dir) {
+      pbsInfo("还没选择游戏主程序（先在上面点「浏览」选 Game.exe）");
+      return;
+    }
+    const r = await API("/api/pbs/list?dir=" + encodeURIComponent(dir));
+    if (!r.ok) { pbsInfo("读取失败：" + r.message); return; }
+    pbs.dir = r.data.dir;
+    pbs.family = r.data.family || "";
+    pbs.legacy = !!r.data.legacy;
+    if (!pbs.family) {
+      pbsInfo("认不出版本：" + (r.data.why || ""));
+      renderPbsFiles([]);
+      return;
+    }
+    pbsInfo(kv([
+      ["游戏根目录", pbs.dir],
+      ["版本族", pbs.family, "on"],
+      ["PBS 目录", r.data.pbs_exists ? "已就绪" : "还没有",
+       r.data.pbs_exists ? "on" : "off"],
+      ["编译方式", pbs.legacy
+        ? "标记待重编译（游戏启动时自己重建 .dat）"
+        : "直接写回 Data/*.dat", pbs.legacy ? "warn" : "on"],
+    ]));
+    renderPbsFiles(r.data.files || []);
+  }
+
+  function renderPbsFiles(files) {
+    const box = $("pbsFiles");
+    if (!files.length) {
+      box.innerHTML = '<div class="hint">PBS 文件夹还是空的，先点「提取 PBS」。</div>';
+      return;
+    }
+    box.innerHTML = "";
+    files.forEach((f) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost pbs-file";
+      b.textContent = f.name;
+      b.addEventListener("click", () => openPbsFile(f));
+      box.appendChild(b);
+    });
+  }
+
+  async function openPbsFile(f) {
+    const path = (pbs.dir.replace(/[\\/]+$/, "")) + "/PBS/" + f.file;
+    const r = await API("/api/pbs/read?dir=" + encodeURIComponent(pbs.dir)
+      + "&path=" + encodeURIComponent(path));
+    if (!r.ok) { toast("打开失败：" + r.message); return; }
+    pbs.path = path;
+    pbs.rows = (r.data.rows || []).map((row) => ({
+      sid: row.sid, label: row.label,
+      fields: row.fields.map((x) => ({ ...x })),
+    }));
+    pbs.idx = 0;
+    pbs.query = "";
+    const sbox = $("pbsSearch");
+    if (sbox) sbox.value = "";
+    pbs.name = r.data.name || f.name;
+    $("pbsEditCard").style.display = "";
+    $("pbsSaveBar").style.display = "";
+    $("pbsEditTitle").textContent = r.data.name + "（" + r.data.file + "）";
+    $("pbsHint").innerHTML = (r.data.hint || "")
+      + (r.data.truncated ? "<br><b>条目太多，手机版只载入前 3000 条。</b>" : "");
+    renderPbsEntries();
+    renderPbsFields();
+    $("pbsEditCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  /* 列表上方搜索：按 名字 / 内部名 / 任意字段内容 过滤条目 */
+  function pbsRowMatches(row, q) {
+    if (!q) return true;
+    if ((row.label || "").toLowerCase().includes(q)) return true;
+    if ((row.sid || "").toLowerCase().includes(q)) return true;
+    return (row.fields || []).some((f) =>
+      (f.key || "").toLowerCase().includes(q)
+      || String(f.value == null ? "" : f.value).toLowerCase().includes(q));
+  }
+
+  function renderPbsEntries() {
+    const q = (pbs.query || "").trim().toLowerCase();
+    const sel = $("pbsEntry");
+    const old = pbs.idx;
+    sel.innerHTML = "";
+    pbs.vis = [];
+    pbs.rows.forEach((row, i) => {
+      if (!pbsRowMatches(row, q)) return;
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = row.label || row.sid || ("#" + (i + 1));
+      sel.appendChild(o);
+      pbs.vis.push(i);
+    });
+    if (!pbs.vis.length) {
+      const o = document.createElement("option");
+      o.value = "0";
+      o.textContent = "（没有匹配的条目）";
+      sel.appendChild(o);
+      $("pbsSearchInfo").textContent = q
+        ? ("搜索「" + pbs.query + "」：命中 0 / " + pbs.rows.length + " 条")
+        : "";
+      return;
+    }
+    if (pbs.vis.indexOf(old) < 0) pbs.idx = pbs.vis[0];
+    sel.value = String(pbs.idx);
+    $("pbsSearchInfo").textContent = q
+      ? ("搜索「" + pbs.query + "」：命中 " + pbs.vis.length
+         + " / " + pbs.rows.length + " 条")
+      : ("共 " + pbs.rows.length + " 条");
+  }
+
+  function renderPbsFields() {
+    const row = pbs.rows[pbs.idx];
+    const box = $("pbsFields");
+    box.innerHTML = "";
+    if (!row) return;
+    row.fields.forEach((f, i) => {
+      const wrap = document.createElement("div");
+      wrap.className = "pbs-field";
+      const lab = document.createElement("div");
+      lab.className = "pbs-label";
+      lab.textContent = f.key;
+      const inp = document.createElement("input");
+      inp.className = "inp";
+      inp.value = f.value;
+      inp.addEventListener("input", () => { f.value = inp.value; });
+      wrap.appendChild(lab);
+      wrap.appendChild(inp);
+      if (f.desc) {
+        const d = document.createElement("div");
+        d.className = "pbs-desc";
+        d.textContent = f.desc;
+        wrap.appendChild(d);
+      }
+      box.appendChild(wrap);
+    });
+  }
+
+  function pbsGo(delta) {
+    const order = (pbs.vis && pbs.vis.length) ? pbs.vis : null;
+    if (order) {
+      let at = order.indexOf(pbs.idx);
+      if (at < 0) at = 0;
+      at = Math.max(0, Math.min(order.length - 1, at + delta));
+      pbs.idx = order[at];
+    } else {
+      if (!pbs.rows.length) return;
+      pbs.idx = Math.max(0, Math.min(pbs.rows.length - 1, pbs.idx + delta));
+    }
+    const sel = $("pbsEntry");
+    sel.value = String(pbs.idx);
+    renderPbsFields();
+  }
+
+  async function savePbs() {
+    if (!pbs.path) return;
+    const r = await API("/api/pbs/write", {
+      dir: pbs.dir, path: pbs.path, rows: pbs.rows,
+    });
+    toast(r.ok ? "已保存到 " + r.data.file : "保存失败：" + r.message);
+    if (r.ok) pbsLog("已保存 " + r.data.file + "（" + r.data.count + " 条）");
+  }
+
+  async function pbsExtract() {
+    if (!pbs.dir) { toast("先选游戏主程序"); return; }
+    pbsLog("提取中…");
+    const r = await API("/api/pbs/extract", { dir: pbs.dir });
+    if (!r.ok) { pbsLog("提取失败：" + r.message); return; }
+    const lines = (r.data.results || []).map((x) =>
+      (x.ok ? "✔ " : "· ") + x.name + "  " + x.stat);
+    pbsLog("提取完成：" + r.data.ok_count + " 个文件<br>"
+      + lines.join("<br>").replace(/</g, "&lt;").replace(/&lt;br&gt;/g, "<br>"));
+    loadPbs();
+  }
+
+  async function pbsCompile() {
+    if (!pbs.dir) { toast("先选游戏主程序"); return; }
+    pbsLog("编译中…");
+    const r = await API("/api/pbs/compile", { dir: pbs.dir });
+    if (!r.ok) { pbsLog("编译失败：" + r.message); return; }
+    if (r.data.legacy) {
+      pbsLog("<b>已标记待重编译</b><br>" + r.data.message
+        + "<br>（v16~v18 的 .dat 由官方编译器在游戏启动时一次性重建）");
+    } else {
+      const lines = (r.data.results || []).map((x) =>
+        (x.ok ? "✔ " : "✘ ") + x.name + "  " + x.stat);
+      pbsLog("编译完成：" + r.data.ok_count + " 个<br>"
+        + lines.join("<br>"));
+    }
+  }
+
+  async function pbsCompileOne() {
+    if (!pbs.path) return;
+    const r = await API("/api/pbs/compile_one",
+      { dir: pbs.dir, path: pbs.path });
+    if (!r.ok) { toast("编译失败：" + r.message); return; }
+    toast(r.data.legacy ? "已标记待重编译" : ("已编译 " + r.data.name));
+  }
+
+  $("btnPbsLoad").addEventListener("click", loadPbs);
+  $("btnPbsExtract").addEventListener("click", pbsExtract);
+  $("btnPbsCompile").addEventListener("click", pbsCompile);
+  $("btnPbsSave").addEventListener("click", savePbs);
+  $("btnPbsCompileOne").addEventListener("click", pbsCompileOne);
+  $("btnPbsPrev").addEventListener("click", () => pbsGo(-1));
+  $("btnPbsNext").addEventListener("click", () => pbsGo(1));
+  $("pbsSearch").addEventListener("input", (e) => {
+    pbs.query = e.target.value || "";
+    renderPbsEntries();
+    renderPbsFields();
+  });
+  $("pbsEntry").addEventListener("change", (e) => {
+    pbs.idx = parseInt(e.target.value, 10) || 0;
+    renderPbsFields();
+  });
 
   loadHealth();
   loadOwState();

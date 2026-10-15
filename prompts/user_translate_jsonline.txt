@@ -1,0 +1,4 @@
+{terms_block}{context_block}把下面每条翻译成{tgt}，每行输出一条 JSON，格式：
+{"id":<编号>,"text":"<译文>"}
+输入：
+{body}

@@ -13,6 +13,7 @@ import commands
 import processor as PR
 import env_check
 import settings
+import text_rules
 
 
 BANNER = """\
@@ -213,6 +214,13 @@ def run_gui():
         run_cli()
         return
     gui.main()
+
+
+# 启动即装载文本保护规则（smart/custom 模式下生效）
+try:
+    text_rules.ensure_applied()
+except Exception as _e:
+    log.warning("文本保护规则装载失败（用内置规则继续）：%s", _e)
 
 
 def main(argv=None):

@@ -16,7 +16,7 @@
       顶部有「← 返回存档编辑」（见 SAVE_SUBMENUS）
     · 汉化子页面右侧带「待操作文件」勾选侧边栏；存档编辑各页右侧带「选择游戏
       存档」侧边栏
-    · 菜单 3「设置」 4「本地模型服务」右侧带侧边栏（适配清单 / 游戏根目录）
+    · 菜单 3「设置」 4「本地模型服务」右侧带侧边栏（适配清单）
     · 底部常驻状态条（进度 + 取消）
   菜单 7「日志」为日志页，任务启动后自动跳转过去。
 """
@@ -42,6 +42,7 @@ import commands
 import config
 import dict_editor as DE
 import env_check
+import pbs_edit
 import prefix_dict as PFD
 import processor as PR
 import providers as PV
@@ -99,6 +100,10 @@ C_HINT    = TEXT_FAINT    # 说明文字
 C_WARN    = WARN_COLOR    # 需要注意
 C_OK      = OK_COLOR      # 成功 / 正常
 
+# PBS 编辑界面：输入框用醒目的宝可蓝描边（聚焦时更深），一眼就能找到要改哪里
+FIELD_BORDER       = "#1667C4"   # 宝可蓝：够醒目但不刺眼
+FIELD_BORDER_FOCUS = POKE_RED    # 光标进去时变宝可红
+
 # llama.cpp 中层那句固定说明 —— 状态行会拼在它后面，两行刚好，
 # 不能塞太多文字，否则中层卡片（高度受挤压）装不下。
 PV_LLAMA_HINT = ("先指好「程序目录」和「模型目录」，启动时自动 -m 加载选中的"
@@ -111,27 +116,32 @@ BTN_PAD_Y = 16
 MENU_ITEMS = [
     ("1", "文本提取与编译"),
     ("2", "游戏汉化"),
-    ("3", "设置"),
+    ("3", "PBS编辑"),
     ("4", "本地模型服务"),
     ("5", "开启DEBUG"),
     ("6", "存档编辑"),
-    ("7", "日志"),
+    ("7", "设置"),
+    ("8", "日志"),
 ]
 
 # ★ 左侧菜单：序号 → 页面键。
 #   "0"（主页）**不进左侧菜单**（用户要求）：只留在这里，供 _build_content
 #   建页面用；进入方式是点左上角头像。
+#   ★ 顺序按用户要求：「设置」挪到「日志」上一位，「PBS编辑」紧挨「游戏汉化」下面。
 MENU_KEYS = {
     "0": "home",
-    "1": "intl", "2": "hanhua",
-    "3": "settings", "4": "provider", "5": "debug",
-    "6": "saveedit", "7": "log",
+    "1": "intl", "2": "hanhua", "3": "pbsedit",
+    "4": "provider", "5": "debug",
+    "6": "saveedit", "7": "settings", "8": "log",
 }
 
 # ★ 被「游戏汉化」统合的子页面：左侧菜单里**没有它们**，
 #   统一从「游戏汉化」页点进去（进去后顶部会出现「← 返回游戏汉化」）。
 #   (页面键, 名称, 一句话说明)
 HANHUA_SUBMENUS = [
+    ("termextract", "术语提取",
+     "从游戏文本里读名字文件（宝可梦/招式/道具/特性/属性/地图…），"
+     "交给模型翻好后写进术语表。"),
     ("translate", "翻译",
      "选好文件，把原文翻成目标语言，生成译文与检查报告。"),
     ("report", "重翻检查报告",
@@ -165,6 +175,13 @@ SAVE_SUBMENUS = [
      "按编号查看 / 修改全局开关与全局变量（编号从 1 开始，与游戏里一致）。"),
 ]
 
+# ★ 「PBS编辑」页里点「编辑 PBS 文件」进去的编辑窗口
+#   (页面键, 名称, 一句话说明)
+PBS_SUBMENUS = [
+    ("pbs_editor", "PBS 编辑窗口",
+     "左边挑一个 txt，右边按它的类型显示对应的编辑界面。"),
+]
+
 # 子页面的键集合 / 键 → 上级页面 / 键 → 名称
 #   （show() 靠 SUBMENU_PARENT 决定左侧高亮谁、顶部返回条写什么）
 SUBMENU_PARENT = {}
@@ -175,6 +192,9 @@ for _k, _n, _d in HANHUA_SUBMENUS:
 for _k, _n, _d in SAVE_SUBMENUS:
     SUBMENU_PARENT[_k] = "saveedit"
     SUBMENU_TITLES[_k] = _n
+for _k, _n, _d in PBS_SUBMENUS:
+    SUBMENU_PARENT[_k] = "pbsedit"
+    SUBMENU_TITLES[_k] = _n
 SUBMENU_KEYS = set(SUBMENU_PARENT)
 
 # 「存档编辑」的 5 个子页面（供 show() 判断该刷新哪个编辑界面）
@@ -184,6 +204,7 @@ SAVE_SUBMENUS_KEYS = {k for k, _n, _d in SAVE_SUBMENUS}
 BACK_TEXTS = {
     "hanhua": "← 返回游戏汉化",
     "saveedit": "← 返回存档编辑",
+    "pbsedit": "← 返回PBS编辑",
 }
 
 
@@ -1146,6 +1167,30 @@ def apply_window_effects(root):
 # ================================================================
 # 文件侧边栏
 # ================================================================
+def pick_game_exe_dialog(parent, initialdir=None,
+                         title="选择游戏主程序（如 Game.exe）"):
+    """
+    统一的「选游戏」对话框：让用户选**游戏主程序 exe**，自动推出游戏根目录。
+
+    ★ 为什么不让用户选目录：目录选到哪一层全靠猜（很多人会误选到 Data/ 里），
+      而 exe 只有那一个，选它最不容易出错。根目录由 exe 所在位置推出来。
+
+    返回 (game_root, exe_path)；用户取消返回 (None, None)。
+    """
+    import game_scripts as GS
+
+    p = filedialog.askopenfilename(
+        parent=parent, title=title,
+        initialdir=initialdir or config.BASE_DIR,
+        filetypes=[("游戏主程序", "*.exe"), ("所有文件", "*.*")])
+    if not p:
+        return None, None
+    root, note = GS.game_root_from_exe(p)
+    if note:
+        messagebox.showinfo("提示", note, parent=parent)
+    return root, p
+
+
 class FilePanel(tk.Frame):
     """
     右侧「待操作文件」侧边栏：单个文件 / 整个文件夹 + 勾选列表。
@@ -1212,7 +1257,7 @@ class FilePanel(tk.Frame):
         if allow_game_root:
             row3 = tk.Frame(self, bg=bg)
             row3.pack(fill="x", padx=10, pady=(4, 2))
-            GlassButton(row3, "游戏根目录", width=120, height=32, bg=bg,
+            GlassButton(row3, "游戏主程序", width=120, height=32, bg=bg,
                         font=FONT_SMALL,
                         command=self.pick_game_root).pack(side="left")
             self.root_lbl = tk.Label(row3, text="未选择", bg=bg, fg=C_HINT,
@@ -1264,7 +1309,7 @@ class FilePanel(tk.Frame):
             return "前缀字典固定放在工具目录下，不用选"
         text = "点击上方按钮选择文件\n（不限格式，自动跳过译文与检查报告）"
         if getattr(self, "allow_game_root", False):
-            text += "\n也可点「游戏根目录」自动扫描里面的 txt 文件"
+            text += "\n也可点「游戏主程序」自动扫描游戏目录里的 txt 文件"
         return text
 
     def _accept(self, name):
@@ -1340,10 +1385,10 @@ class FilePanel(tk.Frame):
         self.add_files(files)
 
     def pick_game_root(self):
-        """选择游戏根目录：自动扫描里面的 txt 文件（跳过译文与报告）。"""
-        folder = filedialog.askdirectory(
-            title="选择游戏根目录（会自动扫描里面的 .txt 文件）",
-            initialdir=self._initial())
+        """选游戏主程序 exe → 推出游戏根目录 → 扫描里面的 txt 文件。"""
+        folder, _exe = pick_game_exe_dialog(
+            self, initialdir=self._initial(),
+            title="选择游戏主程序（会自动扫描游戏目录里的 .txt）")
         if not folder:
             return
         config.Runtime.set_dir(folder)
@@ -1683,10 +1728,8 @@ class AntiDebugDialog(tk.Toplevel):
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left").pack(anchor="w", pady=(4, 2))
         tk.Label(body,
-                 text="下面这段每帧把 $DEBUG 摁回 false（或把场景踢掉），"
-                      "正是「开了 DEBUG 没效果」的原因。\n"
-                      "确认是反调试就注释掉；它是正常代码（比如按 F9 呼出调试"
-                      "菜单）就加白名单。",
+                 text="下面这段每帧把 $DEBUG 摁回 false（或把场景踢掉）。\n"
+                      "确认是反调试就注释掉；正常代码就加白名单。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=670).pack(anchor="w", pady=(2, 8))
 
@@ -2047,7 +2090,7 @@ class SavePanel(tk.Frame):
                  font=FONT_B).pack(anchor="w", padx=10)
         r1 = tk.Frame(self, bg=bg)
         r1.pack(fill="x", padx=10, pady=(2, 0))
-        GlassButton(r1, "选游戏根目录", width=124, height=34, bg=bg,
+        GlassButton(r1, "选游戏主程序", width=124, height=34, bg=bg,
                     font=FONT_SMALL,
                     command=self.pick_root).pack(side="left")
         self.root_lbl = tk.Label(self, text="", bg=bg, fg=C_HINT,
@@ -2124,9 +2167,9 @@ class SavePanel(tk.Frame):
         return d if d and os.path.isdir(d) else config.BASE_DIR
 
     def pick_root(self):
-        folder = filedialog.askdirectory(
-            title="选择游戏根目录（有 Data / Game.ini 的那一层）",
-            initialdir=self.root_dir or self._initial())
+        folder, _exe = pick_game_exe_dialog(
+            self, initialdir=(self.root_dir or self._initial()),
+            title="选择游戏主程序（用它的位置推游戏数据目录）")
         if folder:
             config.Runtime.set_dir(folder)
             self.set_root(folder)
@@ -3067,6 +3110,173 @@ class PokemonForm:
 
 
 # ================================================================
+# 编辑窗口里，每类文件给一句「这界面怎么用」的说明
+PBS_FORM_HINTS = {
+    "generic": "一行一个字段，改完点右上角「保存到 txt」；"
+               "「编译到 .dat」会顺手把它写进游戏。",
+    "trainers": "段名 = 训练家类型,名字,版本。\n"
+                "下面每一只宝可梦一块：种族、等级，以及招式／道具／努力值等。",
+    "encounters": "每一类遭遇一块：上面是「类型,步数概率」，\n"
+                  "下面一行一条槽位「概率,种族,最低级,最高级」。",
+    "townmap": "一个区域一段：编号 + 名字 + 图片文件名，\n地点写成「x,y,名字,说明」。",
+    "connections": "一张连接一行：地图A,边A(N/S/E/W),坐标A,地图B,边B,坐标B。",
+    "regional": "一个图鉴一段，名单里一行若干只（逗号分隔）。",
+    "phone": "消息一行一条（同一类可以有好几条）。",
+    "facility": "一组一个段：训练家名单文件 + 宝可梦名单文件。",
+    "metadata": "第 0 段是全局设置，后面是玩家角色。",
+}
+
+
+class PbsGamePanel(tk.Frame):
+    """
+    右侧「选择游戏主程序」侧边栏（PBS 编辑用）。
+
+    和存档编辑那块一样：**选 exe 不选目录**（exe 只有那一个，选它不会选错层，
+    根目录由 exe 位置推出）。选好后显示：
+      · 游戏名 / Data 目录在不在
+      · 识别到的 Essentials 版本族（v19 / v20 / v21）
+      · PBS 文件夹里已经有哪些 txt
+    """
+
+    def __init__(self, master, bg=CARD, width=340, app=None):
+        tk.Frame.__init__(self, master, bg=bg, width=width)
+        self.bg = bg
+        self.app = app
+        self.panel_w = width
+        self.root_dir = config.Runtime.game_root or ""
+        self.family = ""
+
+        tk.Label(self, text="选择游戏主程序", bg=bg, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 2))
+        tk.Label(self, text="PBS 的三个动作都在这一个游戏上进行 —— "
+                            "提取写到它的 PBS 文件夹，编译写回它的 Data 文件夹。",
+                 bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=width - 40).pack(anchor="w", padx=10, pady=(0, 6))
+
+        r1 = tk.Frame(self, bg=bg)
+        r1.pack(fill="x", padx=10, pady=(2, 0))
+        GlassButton(r1, "选游戏主程序", width=140, height=40, primary=True,
+                    bg=bg, font=FONT_B, command=self.pick_root).pack(side="left")
+        GlassButton(r1, "打开PBS文件夹", width=132, height=40, bg=bg,
+                    font=FONT_SMALL,
+                    command=self.open_pbs_dir).pack(side="left", padx=(8, 0))
+
+        self.root_lbl = tk.Label(self, text="", bg=bg, fg=C_HINT,
+                                 font=FONT_SMALL, anchor="w", justify="left",
+                                 wraplength=width - 40)
+        self.root_lbl.pack(fill="x", padx=10, pady=(6, 2))
+        bind_autowrap(self.root_lbl, pad=4)
+
+        self.info_lbl = tk.Label(self, text="", bg=bg, fg=TEXT_DIM,
+                                 font=FONT_SMALL, anchor="w", justify="left",
+                                 wraplength=width - 40)
+        self.info_lbl.pack(fill="x", padx=10, pady=(2, 0))
+        bind_autowrap(self.info_lbl, pad=4)
+
+        tk.Frame(self, bg=CARD_BORDER, height=1).pack(fill="x", padx=10,
+                                                      pady=8)
+        tk.Label(self, text="游戏里的 PBS 文件", bg=bg, fg=C_TITLE,
+                 font=FONT_B).pack(anchor="w", padx=10)
+
+        outer, inner = make_scroll_area(self, bg=bg)
+        outer.pack(fill="both", expand=True, padx=6, pady=(2, 4))
+        self.list_inner = inner
+        self._hint = tk.Label(
+            inner, text="先在上面选好游戏。\n\n支持的版本：Essentials v19 / "
+                        "v20 / v21（v16～v18 的老游戏\n自带 PBS 目录，"
+                        "交给游戏自己编译就行）。",
+            bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
+            wraplength=max(120, width - 62))
+        self._hint.pack(anchor="w", padx=6, pady=10)
+
+        self._sync()
+
+    # ---------- 选游戏 ----------
+    def _initial(self):
+        d = config.Runtime.last_dir
+        return d if d and os.path.isdir(d) else config.BASE_DIR
+
+    def pick_root(self):
+        folder, _exe = pick_game_exe_dialog(
+            self, initialdir=(self.root_dir or self._initial()),
+            title="选择游戏主程序（用它的位置推游戏目录）")
+        if folder:
+            config.Runtime.set_dir(folder)
+            self.set_root(folder)
+
+    def set_root(self, folder):
+        self.root_dir = folder or ""
+        config.Runtime.set_game_root(self.root_dir)
+        self._sync()
+        if self.app is not None:
+            self.app.on_pbs_root_changed()
+
+    def open_pbs_dir(self):
+        if not self.root_dir:
+            messagebox.showinfo("提示", "还没选游戏。")
+            return
+        d = pbs_edit.pbs_dir(self.root_dir)
+        try:
+            os.makedirs(d, exist_ok=True)
+            if hasattr(os, "startfile"):
+                os.startfile(d)
+            else:
+                subprocess.Popen(["xdg-open", d])
+        except Exception as e:                                  # noqa: BLE001
+            messagebox.showwarning("打开失败", str(e))
+
+    # ---------- 显示 ----------
+    def _sync(self):
+        if not self.root_dir:
+            self.root_lbl.config(text="未选择")
+            self.info_lbl.config(text="")
+            self._render_list([])
+            return
+        ok = os.path.isdir(os.path.join(self.root_dir, "Data"))
+        fam, why = (pbs_edit.detect_family(self.root_dir)
+                    if ok else ("", ""))
+        self.family = fam
+        title = ""
+        try:
+            title = ST.game_title(self.root_dir) or ""
+        except Exception:
+            pass
+        self.root_lbl.config(
+            text="%s%s" % (os.path.basename(self.root_dir),
+                           ("（%s）" % title) if title else "")
+            + ("　Data ✓" if ok else "　⚠ 这层没有 Data 目录"),
+            fg=C_HINT if ok else C_WARN)
+        if ok:
+            if fam:
+                self.info_lbl.config(text="版本族：%s（%s）" % (fam, why),
+                                     fg=C_KEY)
+            else:
+                self.info_lbl.config(
+                    text="⚠ 认不出版本：%s\n（支持 Essentials v16 ~ v21.1）" % why,
+                    fg=C_WARN)
+        else:
+            self.info_lbl.config(text="")
+        files = pbs_edit.list_pbs_txt(self.root_dir, fam) if fam else []
+        self._render_list(files)
+
+    def _render_list(self, files):
+        for w in self.list_inner.winfo_children():
+            if w is not self._hint:
+                w.destroy()
+        if not files:
+            self._hint.pack(anchor="w", padx=6, pady=10)
+            return
+        self._hint.pack_forget()
+        for f in files:
+            row = tk.Frame(self.list_inner, bg=CARD)
+            row.pack(fill="x", padx=4, pady=2)
+            tk.Label(row, text=f["name"], bg=CARD, fg=TEXT,
+                     font=FONT_SMALL, anchor="w").pack(side="left")
+            tk.Label(row, text=("%.1f KB" % (f["size"] / 1024.0)), bg=CARD,
+                     fg=C_HINT, font=FONT_SMALL).pack(side="right")
+
+
+# ================================================================
 # 主应用
 # ================================================================
 class App:
@@ -3085,6 +3295,15 @@ class App:
         self.save_panels = []      # 各页右侧的「选择游戏存档」侧边栏
         self.save_path = None      # 当前选中的存档
         self.save_obj = None       # 当前存档的 SaveFile（全局共用一份）
+
+        # PBS 编辑（菜单 3）
+        self.pbs_panel = None      # 右侧「选择游戏主程序」侧边栏
+        self.pbs_doc = None        # 编辑窗口里正在改的那份文档
+        self.pbs_doc_path = ""
+        self.pbs_cur_idx = None    # 当前条目下标
+        self.pbs_file_list = []    # 左侧 txt 列表
+        self.pbs_file_box = None
+        self.pbs_form_getters = [] # 表单里每个字段的「取当前值」回调
         self.save_dirty = False    # 有未保存的修改
 
         self.src_var = tk.StringVar(value=config.SOURCE_LANG)
@@ -3278,9 +3497,17 @@ class App:
                      lambda e, c=bgc: paint_bg(c, e.width, e.height))
             self.pages[key] = page
 
+        # ★ 文本保护规则：进界面就先装一次（smart/custom 模式下生效）
+        try:
+            import text_rules
+            text_rules.ensure_applied()
+        except Exception as _e:
+            log.warning("文本保护规则装载失败（用内置规则继续）：%s", _e)
+
         self._page_home()
         self._page_intl()
         self._page_hanhua()
+        self._page_termextract()
         self._page_translate()
         self._page_report()
         self._page_terms()
@@ -3297,6 +3524,8 @@ class App:
         self._page_save_bag()
         self._page_save_box()
         self._page_save_switch()
+        self._page_pbsedit()
+        self._page_pbs_editor()
         self._page_log()
 
     # ---------------- 状态条 ----------------
@@ -3354,6 +3583,11 @@ class App:
             self._refresh_save_overview()
         elif key in SAVE_SUBMENUS_KEYS:
             self._refresh_save_page(key)
+        elif key == "pbsedit":
+            if getattr(self, "pbs_panel", None) is not None:
+                self.pbs_panel._sync()
+        elif key == "pbs_editor":
+            self._pbs_reload_file_list()
         elif key == "log":
             pass
 
@@ -3858,6 +4092,12 @@ class App:
                                 "这类游戏暂时开不了调试", why)
                         else:
                             messagebox.showerror("生成调试启动器失败", why)
+                elif kind == "pbs_extract_done":
+                    out, _res = payload if isinstance(payload, tuple) \
+                        else ([], None)
+                    self._pbs_after_extract(out)
+                elif kind == "pbs_compile_done":
+                    self._pbs_after_compile(payload or [])
                 elif kind == "dbg_apply_report_done":
                     r = payload or {}
                     applied = r.get("applied") or []
@@ -4193,23 +4433,63 @@ class App:
                      justify="left", wraplength=520).grid(
                 row=i, column=1, sticky="w", padx=(14, 0))
 
-        # ★ 占位符保护开关（默认勾选，写回配置持久保存）：
-        #   勾选 = 翻译前把控制码/标签/数字换成 @0@ 占位符，翻完还原；
-        #   不勾 = 原文整句直接交给模型（个别模型对占位符过敏时用）
-        optrow = tk.Frame(body, bg=CARD)
-        optrow.pack(fill="x", pady=(14, 0))
-        self.ph_protect_var = tk.BooleanVar(
-            value=bool(getattr(config, "PLACEHOLDER_PROTECT", True)))
-        tk.Checkbutton(
-            optrow, text="占位符保护（推荐）", variable=self.ph_protect_var,
-            bg=CARD, activebackground=CARD, selectcolor="#FFFFFF",
-            font=FONT_SMALL, fg=TEXT,
-            command=self._toggle_ph_protect).pack(side="left")
-        tk.Label(optrow,
-                 text="勾选：控制码/标签/数字先换成 @0@ 占位符再翻译，翻完自动还原；"
-                      "不勾：原文整句直接交给模型。",
+        # ★ 翻译期开关（默认值以 config.py 为准，勾选状态写回配置持久保存）
+        optrow2 = tk.Frame(body, bg=CARD)
+        optrow2.pack(fill="x", pady=(14, 0))
+        self.hanhua_opt_vars = {}
+        for _key, _text in (("PREFILTER_ENABLE", "预过滤"),
+                            ("POST_REPLACEMENT_ENABLE", "译后替换"),
+                            ("PRE_REPLACEMENT_ENABLE", "译前替换"),
+                            ("THINKING_BLOCK", "思考块"),
+                            ("TERM_STATS_ENABLE", "术语命中统计")):
+            _var = tk.BooleanVar(value=bool(getattr(config, _key, False)))
+            self.hanhua_opt_vars[_key] = _var
+            tk.Checkbutton(
+                optrow2, text=_text, variable=_var,
+                bg=CARD, activebackground=CARD, selectcolor="#FFFFFF",
+                font=FONT_SMALL, fg=TEXT,
+                command=lambda k=_key, v=_var: self._toggle_config(k, v)
+            ).pack(side="left", padx=(0, 8))
+        tk.Label(body,
+                 text="预过滤：不含源语言字符的行不送模型、按原文缓存；译前/译后替换按 "
+                      "replacements/ 目录规则执行；思考块让模型先想再翻；"
+                      "术语命中统计写 terms_stats.json。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
-                 wraplength=430).pack(side="left", padx=(10, 0))
+                 wraplength=560).pack(anchor="w", pady=(4, 0))
+
+        # ★ 文本保护规则模式（见 text_preserve/README.md）：
+        #   自定义控制码写进 text_preserve/custom.json。
+        optrow3 = tk.Frame(body, bg=CARD)
+        optrow3.pack(fill="x", pady=(8, 0))
+        tk.Label(optrow3, text="文本保护规则：", bg=CARD, fg=TEXT,
+                 font=FONT_SMALL).pack(side="left")
+        self.tp_mode_combo = ttk.Combobox(
+            optrow3, values=list(self._TP_MODE_LABELS),
+            width=24, state="readonly", font=FONT_SMALL)
+        self.tp_mode_combo.current(self._TP_MODE_INDEX.get(
+            str(getattr(config, "TEXT_PRESERVE_MODE", "smart")).lower(), 1))
+        self.tp_mode_combo.pack(side="left")
+        self.tp_mode_combo.bind("<<ComboboxSelected>>", self._on_tp_mode)
+        GlassButton(optrow3, "重载规则", width=88, height=26, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._reload_tp_rules).pack(side="left",
+                                                        padx=(8, 0))
+        GlassButton(optrow3, "打开规则文件夹", width=118, height=26, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._open_tp_dir).pack(side="left", padx=(6, 0))
+        GlassButton(optrow3, "译前替换", width=84, height=26, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self._open_replacement_manager(
+                        "pre")).pack(side="left", padx=(12, 0))
+        GlassButton(optrow3, "译后替换", width=84, height=26, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self._open_replacement_manager(
+                        "post")).pack(side="left", padx=(6, 0))
+        tk.Label(body,
+                 text="控制码识别规则（text_preserve/ 下的 JSON）：off 只用内置；"
+                      "smart 再加项目自带规则集；custom 再叠加 custom.json。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=560).pack(anchor="w", pady=(4, 0))
 
         tk.Label(body,
                  text="进入某一项后，点左上角「← 返回游戏汉化」回到本页；"
@@ -4217,12 +4497,211 @@ class App:
                  bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=560).pack(anchor="w", pady=(12, 0))
 
-    def _toggle_ph_protect(self):
-        """占位符保护开关 → 写回配置（当前会话立即生效并持久保存）。"""
-        ok, _msg, val = settings.set_value(
-            "PLACEHOLDER_PROTECT", bool(self.ph_protect_var.get()))
+    def _toggle_config(self, key, var):
+        """勾选框 → 写回配置（当前会话立即生效并持久保存）。"""
+        ok, _msg, val = settings.set_value(key, bool(var.get()))
         if ok:
-            self.ph_protect_var.set(bool(val))
+            var.set(bool(val))
+
+    # ---- 文本保护规则（text_preserve） ----
+    _TP_MODE_LABELS = ("off（只用内置）", "smart（内置 + 自带规则集）",
+                       "custom（叠加自定义）")
+    _TP_MODE_VALUES = ("off", "smart", "custom")
+    _TP_MODE_INDEX = {"off": 0, "smart": 1, "custom": 2}
+
+    def _on_tp_mode(self, _e=None):
+        """切换文本保护规则模式 → 写回配置并立即重载规则。"""
+        i = self.tp_mode_combo.current()
+        mode = self._TP_MODE_VALUES[i if 0 <= i <= 2 else 1]
+        ok, msg, _val = settings.set_value("TEXT_PRESERVE_MODE", mode)
+        if not ok:
+            messagebox.showwarning("保存失败", msg)
+            return
+        n = self._reload_tp_rules(silent=True)
+        self.status_var.set(f"文本保护规则模式：{mode}（{n} 条规则生效）")
+
+    def _reload_tp_rules(self, silent=False):
+        """按当前配置重新装载规则（改完 JSON 点一下即可生效，不用重启）。"""
+        try:
+            import text_rules
+            n = text_rules.apply()
+        except Exception as e:
+            log.warning("文本保护规则重载失败：%s", e)
+            if not silent:
+                messagebox.showwarning("重载失败", str(e))
+            return 0
+        if not silent:
+            self.status_var.set(f"文本保护规则已重载：{n} 条生效")
+        return n
+
+    def _open_tp_dir(self):
+        """打开规则文件夹，方便用户编辑 custom.json。"""
+        try:
+            import text_rules
+            d = text_rules.rules_dir()
+            os.makedirs(d, exist_ok=True)
+            if hasattr(os, "startfile"):
+                os.startfile(d)          # Windows
+            else:
+                subprocess.Popen(["xdg-open", d])
+        except Exception as e:
+            messagebox.showwarning("打开失败", str(e))
+
+    # ---- 替换预设管理器（replacements/pre、replacements/post） ----
+    def _open_replacement_manager(self, kind):
+        import replacement as REPL
+
+        label = "译前" if kind == "pre" else "译后"
+        key = ("PRE_REPLACEMENT_PRESETS" if kind == "pre"
+               else "POST_REPLACEMENT_PRESETS")
+
+        win = tk.Toplevel(self.root)
+        win.title(f"{label}替换预设")
+        win.geometry("660x460")
+        win.configure(bg=BG_BASE)
+
+        tk.Label(win, text=f"目录：{REPL._presets_root(kind)}", bg=BG_BASE,
+                 fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=620).pack(anchor="w", padx=12, pady=(10, 4))
+        tk.Label(win, text="点一行切换启用/停用；双击打开该预设文件。"
+                          "留空名单 = 全部启用。",
+                 bg=BG_BASE, fg=C_HINT, font=FONT_SMALL).pack(anchor="w",
+                                                              padx=12)
+
+        box = tk.Frame(win, bg=BG_BASE)
+        box.pack(fill="both", expand=True, padx=12, pady=8)
+        lb = tk.Listbox(box, font=FONT_SMALL, activestyle="none",
+                        selectmode="extended",
+                        bg="#FFFFFF", highlightthickness=1)
+        lb.pack(fill="both", expand=True)
+
+        state = {"rows": []}
+
+        def enabled_set():
+            raw = getattr(config, key, "") or ""
+            names = [n.strip() for n in str(raw).replace("；", ",").split(",")
+                     if n.strip()]
+            return set(names) if names else None
+
+        def refresh():
+            lb.delete(0, "end")
+            rows = REPL.list_presets(kind)
+            state["rows"] = rows
+            on = enabled_set()
+            for p in rows:
+                mark = "[✓]" if (on is None or p["name"] in on) else "[  ]"
+                lb.insert("end", f"{mark} {p['name']}     （{p['count']} 条）")
+
+        def write_enabled(names):
+            ok, msg, _v = settings.set_value(key, ",".join(names))
+            if not ok:
+                messagebox.showwarning("保存失败", msg, parent=win)
+            refresh()
+
+        def toggle(_e=None):
+            sels = lb.curselection()
+            if not sels:
+                return
+            on = enabled_set()
+            allnames = [p["name"] for p in state["rows"]]
+            if on is None:
+                on = set(allnames)          # 从「全部启用」转成显式名单
+            for i in sels:
+                if i >= len(state["rows"]):
+                    continue
+                name = state["rows"][i]["name"]
+                if name in on:
+                    on.discard(name)
+                else:
+                    on.add(name)
+            write_enabled([n for n in allnames if n in on])
+
+        def open_file(_e=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            p = state["rows"][sel[0]]["file"]
+            try:
+                if hasattr(os, "startfile"):
+                    os.startfile(p)
+                else:
+                    subprocess.Popen(["xdg-open", p])
+            except Exception as e:
+                messagebox.showwarning("打开失败", str(e), parent=win)
+
+        lb.bind("<ButtonRelease-1>", toggle)
+        lb.bind("<Double-Button-1>", open_file)
+
+        bar = tk.Frame(win, bg=BG_BASE)
+        bar.pack(fill="x", padx=12, pady=(0, 10))
+
+        def do_import():
+            p = filedialog.askopenfilename(
+                parent=win, title=f"导入{label}替换规则",
+                filetypes=[("规则文件", "*.json *.xlsx"),
+                           ("JSON", "*.json"), ("Excel", "*.xlsx"),
+                           ("所有文件", "*.*")])
+            if not p:
+                return
+            rules = REPL.import_rules_file(p)
+            if not rules:
+                messagebox.showinfo("提示", "这个文件里没有可用的规则。",
+                                    parent=win)
+                return
+            name = filedialog.askstring(
+                "预设名称", "导入后存成哪个预设？", parent=win,
+                initialvalue=re.sub(
+                    r'[\\/:*?"<>|]', "_",
+                    os.path.splitext(os.path.basename(p))[0]) or "imported")
+            if not name:
+                return
+            REPL.save_preset(kind, name, rules)
+            refresh()
+            self.status_var.set(f"已导入 {label}替换预设：{name}（{len(rules)} 条）")
+
+        def do_export():
+            sel = lb.curselection()
+            if not sel:
+                messagebox.showinfo("提示", "先选中要导出的预设。", parent=win)
+                return
+            p = state["rows"][sel[0]]
+            out = filedialog.asksaveasfilename(
+                parent=win, title="导出预设（同时写出 .json 和 .xlsx）",
+                defaultextension=".json", initialfile=p["name"],
+                filetypes=[("JSON", "*.json")])
+            if not out:
+                return
+            base = os.path.splitext(out)[0]
+            j, x = REPL.export_preset_files(kind, p["name"],
+                                            REPL.read_rules_file(p["file"]),
+                                            base_path=base)
+            self.status_var.set(
+                f"已导出：{os.path.basename(j)}" + (f" + {os.path.basename(x)}"
+                                                    if x else "（Excel 跳过）"))
+
+        def do_open_dir():
+            d = REPL._presets_root(kind)
+            os.makedirs(d, exist_ok=True)
+            try:
+                if hasattr(os, "startfile"):
+                    os.startfile(d)
+                else:
+                    subprocess.Popen(["xdg-open", d])
+            except Exception as e:
+                messagebox.showwarning("打开失败", str(e), parent=win)
+
+        for text, cmd in (("导入 JSON / Excel", do_import),
+                          ("导出选中", do_export),
+                          ("全部启用", lambda: write_enabled([])),
+                          ("打开文件夹", do_open_dir),
+                          ("刷新", refresh)):
+            GlassButton(bar, text, width=118, height=30, bg=BG_BASE,
+                        font=FONT_SMALL, command=cmd).pack(side="left",
+                                                           padx=(0, 6))
+        GlassButton(bar, "关闭", width=76, height=30, bg=BG_BASE,
+                    font=FONT_SMALL, command=win.destroy).pack(side="right")
+
+        refresh()
 
     # ================================================================
     # 页面 1：文本提取与编译
@@ -4311,6 +4790,16 @@ class App:
             activebackground=CARD, activeforeground=TEXT,
             selectcolor="#FFFFFF", font=FONT_SMALL,
             cursor="hand2").pack(side="left", padx=12)
+        row3b = tk.Frame(c2.body, bg=CARD)
+        row3b.pack(fill="x", pady=(6, 0))
+        self.intl_lang_first_var = tk.BooleanVar(
+            value=bool(getattr(config, "LANG_ENTRY_FIRST", True)))
+        tk.Checkbutton(
+            row3b, text="中文设为默认语言（排语言表第一条）",
+            variable=self.intl_lang_first_var, bg=CARD, fg=TEXT,
+            activebackground=CARD, activeforeground=TEXT,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            cursor="hand2").pack(side="left")
         self.intl_compile_lbl = tk.Label(c2.body, text="", bg=CARD,
                                          fg=C_KEY, font=FONT_SMALL,
                                          justify="left", wraplength=560)
@@ -4380,7 +4869,7 @@ class App:
         body = fp_holder.body
         tk.Label(body, text="游戏文件夹", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 4))
-        GlassButton(body, "选择游戏根目录", width=132, height=36, bg=CARD,
+        GlassButton(body, "选择游戏主程序", width=132, height=36, bg=CARD,
                     font=FONT_SMALL,
                     command=self._intl_pick_folder).pack(anchor="w", padx=10)
         self.intl_folder_lbl = tk.Label(body, text="未选择", bg=CARD,
@@ -4398,7 +4887,7 @@ class App:
         self.intl_hint_lbl = tk.Label(
             body,
             text="提示：\n"
-                 "选游戏根目录（里面有 Data 文件夹和 .exe 启动程序）：提取出的"
+                 "选游戏主程序（Game.exe，Data 文件夹和它同一层）：提取出的"
                  "文本落在根目录的 Text_ 系列文件夹，翻译只改每条的译文行，"
                  "编译前自动备份，插件仅在中文语言下生效。",
             bg=CARD, fg=C_HINT, font=FONT_SMALL,
@@ -4408,12 +4897,13 @@ class App:
 
     # ---------- 菜单 1（文本提取与编译）：小工具 ----------
     def _intl_pick_folder(self):
-        d = filedialog.askdirectory(
-            title="选择游戏根目录（里面有 Data 文件夹和 .exe 启动程序）",
+        d, _exe = pick_game_exe_dialog(
+            self.root,
             initialdir=(config.Runtime.last_dir
                         if config.Runtime.last_dir
                         and os.path.isdir(config.Runtime.last_dir)
-                        else config.BASE_DIR))
+                        else config.BASE_DIR),
+            title="选择游戏主程序（Data 文件夹和它在同一层）")
         if not d:
             return
         import game_scripts as GS
@@ -4478,7 +4968,7 @@ class App:
         """取当前游戏目录；没选或不合格时提示并返回 None。"""
         d = getattr(self, "intl_folder", None)
         if not d or not os.path.isdir(d):
-            messagebox.showwarning("提示", "请先在右侧选择游戏根目录")
+            messagebox.showwarning("提示", "请先在右侧选择游戏主程序")
             return None
         import game_scripts as GS
         ok, why = GS.check_game_root(d)
@@ -4563,11 +5053,12 @@ class App:
                 return
             srcs = paths
         apply_lang = bool(self.intl_lang_var.get())
+        lang_first = bool(self.intl_lang_first_var.get())
         self.show("log")
 
         def work():
             res = commands.intl_compile_paths(
-                d, srcs, apply_language=apply_lang)
+                d, srcs, apply_language=apply_lang, lang_first=lang_first)
             self.q.put(("intl_compile_done", res))
             return res
 
@@ -4576,6 +5067,204 @@ class App:
     # ================================================================
     # 页面 2：翻译
     # ================================================================
+    # ================================================================
+    # 页面：术语提取（读名字文本文件 → 模型翻译 → 写术语表）
+    # ================================================================
+    def _page_termextract(self):
+        page = self.pages["termextract"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+
+        left = tk.Frame(page, bg=BG_BASE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_columnconfigure(0, weight=1)
+
+        # ---- 卡 1：说明 ----
+        c1 = RoundCard(left, radius=16, pad=18)
+        c1.pack(fill="x", pady=(0, 10))
+        tk.Label(c1.body, text="术语提取", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(c1.body,
+                 text="从名字文本文件里读专有名词，交给模型翻成目标语言，"
+                      "写进术语表的「自动提取区」。\n"
+                      "可选单个名字文本，也可选整个文本文件夹。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=560).pack(anchor="w", pady=(4, 0))
+
+        # ---- 卡 2：识别到的名字文件 ----
+        c2 = RoundCard(left, radius=16, pad=16)
+        c2.pack(fill="x", pady=(0, 10))
+        tk.Label(c2.body, text="识别到的名字文件", bg=CARD, fg=C_TITLE,
+                 font=FONT_B).pack(anchor="w")
+        self.te_files_lbl = tk.Label(
+            c2.body, text="（还没选文件）", bg=CARD, fg=TEXT,
+            font=FONT_SMALL, justify="left", anchor="w", wraplength=560)
+        self.te_files_lbl.pack(anchor="w", pady=(6, 0))
+        tk.Label(c2.body,
+                 text="读法（区块号优先）：① 开头的 [编号] 是名字区块（如 "
+                      "[1] 宝可梦名 / [5] 招式 / [7] 道具 / [12] 属性 / [30] 昵称）；"
+                      "② 文件名含独立的 NAME / NAMES / NICKNAMES 词。\n"
+                      "不读：「翻译中间文件」夹、*_translated 译文、描述 / 正文 / "
+                      "图鉴类文件。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=560).pack(anchor="w", pady=(6, 0))
+
+        # ---- 卡 3：预览 / 开始 ----
+        c3 = RoundCard(left, radius=16, pad=18)
+        c3.pack(fill="x")
+        row = tk.Frame(c3.body, bg=CARD)
+        row.pack(fill="x")
+        GlassButton(row, "预览待翻条数", width=150, height=42, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._te_preview).pack(side="left")
+        GlassButton(row, "开始提取并翻译", width=180, height=46, primary=True,
+                    bg=CARD, font=FONT_B,
+                    command=self._te_run).pack(side="left", padx=(10, 0))
+        self.te_stat_lbl = tk.Label(c3.body, text="", bg=CARD, fg=C_KEY,
+                                    font=FONT_SMALL, justify="left",
+                                    wraplength=560)
+        self.te_stat_lbl.pack(anchor="w", pady=(10, 0))
+        attach_label_copy(self.te_stat_lbl, self, "术语提取结果")
+
+        # ---- 右侧：文本文件来源 ----
+        holder = RoundCard(page, radius=16, pad=10, width=300)
+        holder.grid(row=0, column=1, sticky="nsew")
+        holder.grid_propagate(False)
+        body = holder.body
+        tk.Label(body, text="要翻译的文本文件", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", padx=8, pady=(8, 4))
+        GlassButton(body, "选择文本文件", width=150, height=38, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._te_pick_file).pack(anchor="w", padx=8)
+        GlassButton(body, "选择文件夹", width=150, height=38, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._te_pick_folder).pack(anchor="w", padx=8,
+                                                       pady=(6, 0))
+        self.te_src_lbl = tk.Label(body, text="未选择", bg=CARD, fg=C_KEY,
+                                   font=FONT_SMALL, wraplength=270,
+                                   justify="left")
+        self.te_src_lbl.pack(anchor="w", padx=8, pady=(6, 0))
+        attach_label_copy(self.te_src_lbl, self, "文本文件来源")
+        self.te_info_lbl = tk.Label(body, text="", bg=CARD, fg=C_HINT,
+                                    font=FONT_SMALL, wraplength=270,
+                                    justify="left")
+        self.te_info_lbl.pack(anchor="w", padx=8, pady=(8, 0))
+        tk.Label(body,
+                 text="选单个名字文本，或整个游戏文本文件夹（如 Text_chinese）。\n"
+                      "文件夹只读名字文件；单个文件按 [编号] 区块判定。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, wraplength=270,
+                 justify="left").pack(anchor="w", padx=8, pady=(10, 0))
+
+        self.te_target = ""
+
+    def _te_pick_file(self):
+        path = filedialog.askopenfilename(
+            title="选择要提取术语的文本文件",
+            initialdir=(os.path.dirname(self.te_target)
+                        if os.path.isfile(self.te_target)
+                        else (self.te_target or config.Runtime.last_dir
+                              or config.BASE_DIR)),
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
+        if not path:
+            return
+        config.Runtime.set_dir(os.path.dirname(path) or config.BASE_DIR)
+        self.te_target = path
+        self.te_src_lbl.config(text=os.path.basename(path))
+        self._te_preview()
+
+    def _te_pick_folder(self):
+        folder = filedialog.askdirectory(
+            title="选择放着名字文本的文件夹（如 Text_chinese）",
+            initialdir=(self.te_target
+                        if os.path.isdir(self.te_target)
+                        else (config.Runtime.last_dir or config.BASE_DIR)))
+        if not folder:
+            return
+        config.Runtime.set_dir(folder)
+        self.te_target = folder
+        self.te_src_lbl.config(text=folder)
+        self._te_preview()
+
+    def _te_preview(self):
+        """算一遍「有哪些要翻」但不调模型。"""
+        import term_extract as TE
+
+        target = getattr(self, "te_target", "")
+        if not target:
+            self.te_info_lbl.config(text="先选文本文件或文件夹。")
+            self.te_files_lbl.config(text="（还没选文件）")
+            return
+        try:
+            p = TE.plan(target)
+        except Exception as e:
+            self.te_stat_lbl.config(text=f"读文本文件失败：{e}")
+            self.te_info_lbl.config(text="")
+            self.te_files_lbl.config(text="（读取失败）")
+            return
+
+        if p["files"]:
+            rows = []
+            for f in p["files"]:
+                blk = (f"区块 {f['block']}" if f["block"] is not None
+                       else "无区块")
+                rows.append(f"· {os.path.basename(f['path'])}"
+                            f"　[{f['label']}／{blk}]　{f['count']} 条")
+            self.te_files_lbl.config(text="\n".join(rows))
+        else:
+            self.te_files_lbl.config(
+                text="（没找到名字文件 —— 需要文件名含 NAME / NAMES / NICKNAMES 词，"
+                     "或开头 [编号] 是名字区块）")
+
+        warn = ""
+        if p["problems"]:
+            warn = "\n⚠ " + "；".join(
+                f"{os.path.basename(a)}：{b}" for a, b in p["problems"][:2])
+
+        lines = [f"{TE.label_of(k)}：{len(v)}"
+                 for k, v in p["by_section"].items()]
+        self.te_stat_lbl.config(
+            text=f"共识别 {len(p['files'])} 个名字文件、{p['found']} 条候选；"
+                 f"术语表里还没有的有 {p['todo']} 条（只会翻这些）。\n"
+                 + ("　".join(lines) if lines else "　（都已有译名）")
+                 + warn)
+        self.te_info_lbl.config(text="已读取文本文件 ✔")
+
+    def _te_run(self):
+        import term_extract as TE
+
+        target = getattr(self, "te_target", "")
+        if not target:
+            messagebox.showwarning("提示", "请先在右侧选择文本文件或文件夹")
+            return
+        try:
+            p = TE.plan(target)
+        except Exception as e:
+            messagebox.showwarning("读不到文本文件", str(e))
+            return
+        if not p["files"]:
+            messagebox.showinfo(
+                "提示",
+                "没找到名字文件。\n可读的是名字类文本（如 ITEM_NAMES.txt /"
+                " TYPE_NAMES.txt / POKEMON_NICKNAMES.txt）：文件名含独立的 "
+                "NAME / NAMES / NICKNAMES 词，或开头 [编号] 是名字区块。")
+            return
+        if not p["todo"]:
+            messagebox.showinfo("提示", "术语表里已经有全部候选的译名，无需提取。")
+            return
+        if not messagebox.askyesno(
+                "确认", f"将从 {len(p['files'])} 个名字文件里读到的 "
+                        f"{p['todo']} 条术语送模型翻译，"
+                        f"翻完自动写进术语表（自动提取区）。\n（批量大小 "
+                        f"{getattr(config, 'TERM_EXTRACT_BATCH', 40)} 条/次）"
+                        f"\n继续？"):
+            return
+        self.show("log")
+        self.run_async(
+            lambda: TE.run_extract(target),
+            label=f"提取并翻译 {p['todo']} 条术语…",
+            done_label="术语提取完成",
+        )
+
     def _page_translate(self):
         page = self.pages["translate"]
         page.grid_columnconfigure(0, weight=1)
@@ -6444,7 +7133,7 @@ class App:
         tk.Label(c2.body, text="说明", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
         txt = ("· 逐条读取缓存中的中文译文，交给模型润色后覆盖原缓存\n"
-               "· 保留全部占位符与控制码；占位符不全的条目会保留原译文\n"
+               "· 保留全部控制码；控制码不一致的条目保留原译文\n"
                "· 短句、纯控制符句不参与润色\n"
                "· 断点续翻：进度存在 *_polish_cache.json，润色过的会跳过，"
                "中途改动的译文会自动重润（CLI 菜单 6 答 y 可清空进度全量重做）\n"
@@ -9265,16 +9954,17 @@ class App:
                 pass
 
     def _dbg_pick_folder(self):
-        """兼容旧入口：直接选目录（不指定 exe）。"""
-        d = filedialog.askdirectory(
-            title="选择游戏根目录（里面有 Data 文件夹和 .exe 启动程序）",
+        """选游戏主程序 exe → 推出游戏根目录（同时把 exe 记下来）。"""
+        d, exe = pick_game_exe_dialog(
+            self.root,
             initialdir=(config.Runtime.last_dir
                         if config.Runtime.last_dir
                         and os.path.isdir(config.Runtime.last_dir)
-                        else config.BASE_DIR))
+                        else config.BASE_DIR),
+            title="选择游戏主程序")
         if not d:
             return
-        self._dbg_apply_selection(d, exe_path=None)
+        self._dbg_apply_selection(d, exe_path=exe)
 
 
     def _dbg_refresh_folder_info(self):
@@ -9793,6 +10483,1225 @@ class App:
 
         self.run_async(work, label="生成调试启动器中…", done_label="生成完成")
 
+    # ================================================================
+    # 菜单 3：PBS编辑
+    # ================================================================
+    def _page_pbsedit(self):
+        """
+        PBS 编辑入口页：右侧选游戏，中间三个模块
+        （提取 PBS 文件 / 编辑 PBS 文件 / 编译 PBS 文件）。
+        """
+        page = self.pages["pbsedit"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_columnconfigure(1, weight=0)
+        page.grid_rowconfigure(0, weight=1)
+
+        left = tk.Frame(page, bg=BG_BASE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        holder = tk.Frame(page, bg=BG_BASE, width=340)
+        holder.grid(row=0, column=1, sticky="nsew")
+        holder.pack_propagate(False)
+        card = RoundCard(holder, radius=16, pad=12)
+        card.pack(fill="both", expand=True)
+        self.pbs_panel = PbsGamePanel(card.body, bg=CARD, app=self)
+        self.pbs_panel.pack(fill="both", expand=True)
+
+        outer, inner = make_scroll_area(left, bg=BG_BASE)
+        outer.pack(fill="both", expand=True)
+
+        c0 = RoundCard(inner, radius=18, pad=18, auto_height=True)
+        c0.pack(fill="x")
+        tk.Label(c0.body, text="PBS编辑", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        hint = tk.Label(c0.body,
+                        text="右侧先选好游戏主程序，再从下面点一个动作。\n"
+                             "只处理 4 个文件：宝可梦（pokemon）、宝可梦形态"
+                             "（pokemon_forms）、道具（items）、招式（moves）。\n"
+                             "提取和编译都按该游戏版本的官方引擎脚本走"
+                             "（v19 / v19.1 / v20 / v20.1 / v21 / v21.1 各自不同），"
+                             "产出与官方一致。",
+                        bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                        wraplength=620)
+        hint.pack(fill="x", pady=(4, 8))
+        bind_autowrap(hint, pad=4)
+
+        grid = tk.Frame(c0.body, bg=CARD)
+        grid.pack(fill="x")
+        grid.grid_columnconfigure(1, weight=1)
+        mods = [
+            ("1. 提取PBS文件", self._pbs_extract,
+             "把 Data 里的 .dat 还原成 txt，写到游戏根目录的 PBS 文件夹"
+             "（没有就新建）。"),
+            ("2. 编辑PBS文件", self._pbs_open_editor,
+             "打开 PBS 窗口：左边挑一个 txt，右边按它自己的类型显示编辑界面，"
+             "列表上方可以搜索条目。"),
+            ("3. 编译PBS文件", self._pbs_compile,
+             "把 PBS 文件夹里的 txt 编译回 Data/*.dat（第一次编译会留 .orig）。"),
+        ]
+        for i, (name, cmd, desc) in enumerate(mods):
+            GlassButton(grid, name, width=210, height=46, bg=CARD,
+                        primary=(i == 0), font=FONT_B,
+                        command=cmd).grid(row=i, column=0, sticky="w", pady=5)
+            lb = tk.Label(grid, text=desc, bg=CARD, fg=C_HINT,
+                          font=FONT_SMALL, justify="left", wraplength=430)
+            lb.grid(row=i, column=1, sticky="w", padx=(14, 0))
+            bind_autowrap(lb, pad=4)
+
+        warn = tk.Label(c0.body,
+                        text="★ 编译会改游戏的 Data 目录（原文件留成 .dat.orig），"
+                             "改内部名／顺序还可能让旧存档对不上 —— 动手前建议先备份。",
+                        bg=CARD, fg=C_WARN, font=FONT_SMALL, justify="left",
+                        wraplength=620)
+        warn.pack(fill="x", pady=(12, 0))
+        bind_autowrap(warn, pad=4)
+
+        old = tk.Label(c0.body,
+                       text="★ v16 / v17 / v18 的老游戏（.dat 是数组/二进制、"
+                            "一半数据是衍生缓存）不建议使用此功能 "
+                            "会出现未知BUG \n"
+                            "★ 老版本的 .dat 里不存名字/描述， "
+                            "所以会出现字段错位等问题",
+                       bg=CARD, fg=C_KEY, font=FONT_SMALL, justify="left",
+                       wraplength=620)
+        old.pack(fill="x", pady=(6, 0))
+        bind_autowrap(old, pad=4)
+
+        # 结果区
+        c1 = RoundCard(inner, radius=18, pad=18, auto_height=True)
+        c1.pack(fill="x", pady=(10, 0))
+        tk.Label(c1.body, text="上一次操作", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        self.pbs_result = tk.Text(c1.body, height=10, wrap="word",
+                                  font=FONT_MONO, bg="#FFFFFF", fg=TEXT_DIM,
+                                  relief="flat", borderwidth=0)
+        self.pbs_result.pack(fill="x", pady=(6, 0))
+        self.pbs_result.insert("1.0", "（还没有操作）")
+        self.pbs_result.config(state="disabled")
+
+    def _pbs_game(self):
+        """当前选中的游戏根目录（没选或认不出版本就提示）。"""
+        root = getattr(self, "pbs_panel", None)
+        root = root.root_dir if root else config.Runtime.game_root
+        if not root or not os.path.isdir(root):
+            messagebox.showinfo("提示", "请先在右侧「选择游戏主程序」。")
+            return None, "", ""
+        fam, why = pbs_edit.detect_family(root)
+        if not fam:
+            messagebox.showwarning(
+                "认不出版本",
+                "这个游戏识别为：%s\n\nPBS 提取／编译支持 Essentials "
+                "v16 ~ v21.1 的游戏。" % (why or "未知"))
+            return None, "", ""
+        return root, fam, why
+
+    def _pbs_show(self, lines):
+        try:
+            self.pbs_result.config(state="normal")
+            self.pbs_result.delete("1.0", "end")
+            self.pbs_result.insert("1.0", "\n".join(lines))
+            self.pbs_result.config(state="disabled")
+        except Exception:
+            pass
+
+    def _pbs_extract(self):
+        root, fam, _why = self._pbs_game()
+        if not root:
+            return
+        if os.path.isdir(pbs_edit.pbs_dir(root)):
+            n = len(pbs_edit.list_pbs_txt(root, fam))
+            if n and not messagebox.askyesno(
+                    "覆盖确认",
+                    "PBS 文件夹里已经有 %d 个 txt 了。\n\n"
+                    "提取会用 .dat 的内容重新生成同名文件（覆盖）。继续吗？" % n):
+                return
+        self.show("log")
+        if log:
+            log.info("PBS 提取：%s（%s）", root, fam)
+
+        def work():
+            out = []
+            res = pbs_edit.extract_all(root, fam,
+                                       emit=lambda r: out.append(r))
+            self.q.put(("pbs_extract_done", (out, res)))
+            return res
+
+        self.run_async(work, label="提取 PBS 文件中…", done_label="提取完成")
+
+    def _pbs_compile(self):
+        root, fam, _why = self._pbs_game()
+        if not root:
+            return
+        pbs = pbs_edit.pbs_dir(root)
+        if not os.path.isdir(pbs):
+            messagebox.showinfo("提示", "PBS 文件夹还没有，请先「提取PBS文件」。")
+            return
+        if pbs_edit.is_legacy(fam):
+            # ★ 老版本（v16/v17/v18）：不硬写 .dat，改成「标记待重编译」
+            if not messagebox.askyesno(
+                    "确认编译（%s 老版本）" % fam,
+                    "v16 / v17 / v18 的 .dat 里有一半是官方编译器的衍生缓存"
+                    "（种族表、进化表、招式机表…），拆开单个写容易造成"
+                    "「一半新一半旧」。\n\n"
+                    "本工具的做法：把 Data 里的 .dat 标记成「比 PBS 旧」，"
+                    "游戏下次启动时用它自己的编译器一次性重建全部 .dat。\n"
+                    "（只改时间戳、不删文件，随时可以重来）\n\n"
+                    "现在就把 %s 里的 txt 标记为待编译吗？" % pbs):
+                return
+            self.show("log")
+            if log:
+                log.info("PBS 标记待重编译：%s（%s）", root, fam)
+
+            def work():
+                import pbs_legacy
+                n, msg = pbs_legacy.mark_for_recompile(root, fam)
+                out = [("标记待重编译", "_mark", True, "", msg)]
+                self.q.put(("pbs_compile_done", out))
+                return out
+
+            self.run_async(work, label="标记待重编译…", done_label="标记完成")
+            return
+        if not messagebox.askyesno(
+                "确认编译",
+                "要把 %s 里的 txt 编译回 Data/*.dat 吗？\n\n"
+                "· 原 .dat 会备份成 .dat.orig（只留第一版）\n"
+                "· 改过内部名/顺序的话，旧存档可能识别不了" % pbs):
+            return
+        self.show("log")
+        if log:
+            log.info("PBS 编译：%s（%s）", root, fam)
+
+        def work():
+            out = []
+            for spec in pbs_edit.list_specs(fam):
+                ok, msg, stat = pbs_edit.compile_spec(spec, fam, root)
+                out.append((spec["name"], spec["key"], ok, msg, stat))
+            self.q.put(("pbs_compile_done", out))
+            return out
+
+        self.run_async(work, label="编译 PBS 文件中…", done_label="编译完成")
+
+    def _pbs_open_editor(self):
+        root, fam, _why = self._pbs_game()
+        if not root:
+            return
+        if not os.path.isdir(pbs_edit.pbs_dir(root)):
+            messagebox.showinfo("提示",
+                                "PBS 文件夹还没有。\n先「提取PBS文件」再来编辑。")
+            return
+        self.show("pbs_editor")
+
+    def on_pbs_root_changed(self):
+        """侧边栏换游戏后：清掉编辑窗口里的旧文档。"""
+        self.pbs_doc = None
+        self.pbs_doc_path = ""
+        if getattr(self, "pbs_file_list", None) is not None:
+            try:
+                self._pbs_reload_file_list()
+            except Exception:
+                pass
+
+    # ---- 提取 / 编译的结果 ----
+    def _pbs_after_extract(self, results):
+        lines = []
+        ok_n = 0
+        for r in results:
+            if r.get("ok"):
+                ok_n += 1
+                lines.append("✔ %-10s %-26s %s" % (
+                    r["name"], r["file"], r.get("stat") or ""))
+            else:
+                lines.append("· %-10s 跳过（%s）" % (
+                    r["name"], (r.get("stat") or "没有这个 .dat")[:40]))
+        self._pbs_show(lines or ["（没有可提取的文件）"])
+        self.status_var.set("PBS 提取完成：%d 个文件" % ok_n)
+        if getattr(self, "pbs_panel", None):
+            self.pbs_panel._sync()
+        self._pbs_reload_file_list()
+
+    def _pbs_after_compile(self, results):
+        lines = []
+        ok_n = 0
+        for name, _key, ok, msg, stat in results:
+            if ok:
+                ok_n += 1
+                lines.append("✔ %-10s %s" % (name, stat))
+            else:
+                txt = (msg or "").strip()
+                if "找不到" in txt and txt.endswith(".txt"):
+                    lines.append("· %-10s 跳过（PBS 里没有这个 txt）" % name)
+                elif "找不到" in txt:
+                    lines.append("· %-10s 跳过（%s）" % (name, txt))
+                else:
+                    lines.append("✘ %-10s %s" % (name, txt))
+        self._pbs_show(lines or ["（没有可编译的文件）"])
+        self.status_var.set("PBS 编译完成：%d 个" % ok_n)
+
+    # ================================================================
+    # 子页面：PBS 编辑窗口
+    #   左边是游戏 PBS 文件夹里的 txt（显示中文名），
+    #   右边按这个 txt 的类型显示对应的编辑界面。
+    # ================================================================
+    def _page_pbs_editor(self):
+        page = self.pages["pbs_editor"]
+        page.grid_columnconfigure(0, weight=0)
+        page.grid_columnconfigure(1, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+
+        # ---- 左：文件列表 ----
+        lcol = tk.Frame(page, bg=BG_BASE, width=320)
+        lcol.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        lcol.pack_propagate(False)
+        lcard = RoundCard(lcol, radius=16, pad=12)
+        lcard.pack(fill="both", expand=True)
+        tk.Label(lcard.body, text="PBS 文件", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", padx=8, pady=(2, 4))
+        tk.Label(lcard.body, text="点一个文件，右边就是它自己的编辑界面：",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=280).pack(anchor="w", padx=8, pady=(0, 6))
+
+        # ★ 底部按钮先按 side="bottom" 钉住，再让列表 expand（否则被挤出卡片）
+        row = tk.Frame(lcard.body, bg=CARD)
+        row.pack(side="bottom", fill="x", pady=(6, 0))
+        GlassButton(row, "刷新", width=76, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pbs_reload_file_list).pack(side="left")
+        GlassButton(row, "打开文件夹", width=110, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pbs_open_dir).pack(side="left", padx=(6, 0))
+
+        fouter, finner = make_scroll_area(lcard.body, bg=CARD)
+        fouter.pack(fill="both", expand=True, pady=(4, 0))
+        self.pbs_file_box = finner
+        self.pbs_file_list = []
+
+        # ---- 右：条目 + 表单 ----
+        right = tk.Frame(page, bg=BG_BASE)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_columnconfigure(0, weight=0)
+        right.grid_columnconfigure(1, weight=1)
+        right.grid_rowconfigure(0, weight=1)
+
+        # 条目列表
+        ecol = tk.Frame(right, bg=BG_BASE, width=300)
+        ecol.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        ecol.pack_propagate(False)
+        ecard = RoundCard(ecol, radius=16, pad=12)
+        ecard.pack(fill="both", expand=True)
+        self.pbs_entry_title = tk.Label(ecard.body, text="（选一个文件）",
+                                        bg=CARD, fg=C_TITLE,
+                                        font=FONT_B, anchor="w")
+        self.pbs_entry_title.pack(fill="x", padx=6, pady=(2, 4))
+        # ★ 搜索框：按 中文名 / 内部名 / 字段内容 过滤当前文件的条目
+        srow = tk.Frame(ecard.body, bg=CARD)
+        srow.pack(fill="x", padx=6, pady=(0, 4))
+        tk.Label(srow, text="搜索", bg=CARD, fg=TEXT,
+                 font=FONT_SMALL).pack(side="left")
+        self.pbs_search_var = tk.StringVar(value="")
+        sent = tk.Entry(srow, textvariable=self.pbs_search_var,
+                        font=FONT_SMALL, bg="#FFFFFF", relief="flat",
+                        highlightthickness=2,
+                        highlightbackground=FIELD_BORDER,
+                        highlightcolor=FIELD_BORDER_FOCUS)
+        sent.pack(side="left", fill="x", expand=True, padx=(6, 4))
+        self.pbs_search_var.trace_add("write", self._pbs_on_search_change)
+        GlassButton(srow, "清空", width=52, height=26, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pbs_clear_search).pack(side="left")
+        self.pbs_search_info = tk.Label(ecard.body, text="", bg=CARD,
+                                        fg=C_HINT, font=FONT_SMALL,
+                                        anchor="w")
+        self.pbs_search_info.pack(fill="x", padx=6)
+        # ★ 增删按钮先按 side="bottom" 钉在底部，再让表格 expand —— 否则表格
+        #   会把空间吃光，把按钮挤出卡片下沿（用户截图里按钮被切了一半）。
+        erow = tk.Frame(ecard.body, bg=CARD)
+        erow.pack(side="bottom", fill="x", pady=(6, 0))
+        GlassButton(erow, "新增", width=64, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pbs_add_entry).pack(side="left")
+        GlassButton(erow, "复制", width=64, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pbs_dup_entry).pack(side="left", padx=(4, 0))
+        GlassButton(erow, "删除", width=64, height=32, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pbs_del_entry).pack(side="left", padx=(4, 0))
+
+        tree_holder = tk.Frame(ecard.body, bg=CARD)
+        tree_holder.pack(fill="both", expand=True)
+        self.pbs_entry_tree = ttk.Treeview(
+            tree_holder, columns=("name",), show="headings", height=12)
+        self.pbs_entry_tree.heading("name", text="条目")
+        self.pbs_entry_tree.column("name", width=250, anchor="w",
+                                   stretch=True)
+        sb = ttk.Scrollbar(tree_holder, orient="vertical",
+                           command=self.pbs_entry_tree.yview)
+        self.pbs_entry_tree.configure(yscrollcommand=sb.set)
+        self.pbs_entry_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        bind_tree_wheel(self.pbs_entry_tree)
+        self.pbs_entry_tree.bind("<<TreeviewSelect>>",
+                                 self._pbs_on_entry_select)
+
+        # 表单区
+        fcol = tk.Frame(right, bg=BG_BASE)
+        fcol.grid(row=0, column=1, sticky="nsew")
+        fcard = RoundCard(fcol, radius=16, pad=12)
+        fcard.pack(fill="both", expand=True)
+        bar = tk.Frame(fcard.body, bg=CARD)
+        bar.pack(fill="x")
+        self.pbs_form_title = tk.Label(bar, text="", bg=CARD, fg=C_TITLE,
+                                       font=FONT_TITLE, anchor="w")
+        self.pbs_form_title.pack(side="left")
+        GlassButton(bar, "保存到 txt", width=118, height=36, primary=True,
+                    bg=CARD, font=FONT_SMALL,
+                    command=self._pbs_save_doc).pack(side="right")
+        GlassButton(bar, "编译到 .dat", width=118, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._pbs_compile_current).pack(side="right",
+                                                            padx=(0, 6))
+        self.pbs_hint = tk.Label(fcard.body, text="", bg=CARD, fg=C_HINT,
+                                 font=FONT_SMALL, justify="left",
+                                 wraplength=520, anchor="w")
+        self.pbs_hint.pack(fill="x", pady=(4, 0))
+        outer, inner = make_scroll_area(fcard.body, bg=CARD)
+        outer.pack(fill="both", expand=True, pady=(4, 0))
+        self.pbs_form_box = inner
+        self.pbs_form_getters = []
+
+    # ---- 左侧文件列表 ----
+    def _pbs_open_dir(self):
+        root = getattr(self, "pbs_panel", None)
+        root = root.root_dir if root else config.Runtime.game_root
+        if not root:
+            return
+        try:
+            d = pbs_edit.pbs_dir(root)
+            os.makedirs(d, exist_ok=True)
+            os.startfile(d) if hasattr(os, "startfile") else None
+        except Exception as e:                                  # noqa: BLE001
+            messagebox.showwarning("打开失败", str(e))
+
+    def _pbs_reload_file_list(self):
+        box = getattr(self, "pbs_file_box", None)
+        if box is None:
+            return
+        for w in box.winfo_children():
+            w.destroy()
+        self.pbs_file_list = []
+        root = getattr(self, "pbs_panel", None)
+        root = root.root_dir if root else config.Runtime.game_root
+        if not root:
+            tk.Label(box, text="（还没选游戏）", bg=CARD, fg=C_HINT,
+                     font=FONT_SMALL).pack(anchor="w", padx=6, pady=8)
+            return
+        fam, _why = pbs_edit.detect_family(root)
+        files = pbs_edit.list_pbs_txt(root, fam)
+        if not files:
+            tk.Label(box, text="PBS 文件夹是空的，\n先回上一页「提取PBS文件」。",
+                     bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                     justify="left").pack(anchor="w", padx=6, pady=8)
+            return
+        self.pbs_file_list = files
+        for i, f in enumerate(files):
+            btn = GlassButton(box, f["name"], width=270, height=38,
+                              bg=CARD, font=FONT_SMALL,
+                              command=lambda idx=i: self._pbs_open_file(idx))
+            btn.pack(fill="x", pady=2)
+
+    def _pbs_open_file(self, idx):
+        if idx >= len(self.pbs_file_list):
+            return
+        f = self.pbs_file_list[idx]
+        root = self.pbs_panel.root_dir if getattr(self, "pbs_panel", None) \
+            else config.Runtime.game_root
+        fam, _why = pbs_edit.detect_family(root)
+        spec = pbs_edit.spec_for(f["key"], fam) if f["key"] else None
+        doc = pbs_edit.Doc.load(spec, fam, f["path"])
+        if spec is None:
+            # 没登记的类型（对战设施引用的文件等）用最简单的段式界面打开
+            doc.style = "section"
+            doc.editor = "generic"
+        self.pbs_doc = doc
+        self.pbs_doc_path = f["path"]
+        self._pbs_clear_search_quiet()
+        self._pbs_refresh_entries(keep_sel=0)
+
+    def _pbs_entry_matches(self, entry, query):
+        """条目是否命中搜索词（中文名 / 内部名 / 任意字段内容）。"""
+        if not query:
+            return True
+        q = query.lower()
+        if q in (entry.label() or "").lower() or q in (entry.sid or "").lower():
+            return True
+        for k, v in entry.fields:
+            if q in k.lower() or q in str(v).lower():
+                return True
+        return False
+
+    def _pbs_clear_search(self):
+        self.pbs_search_var.set("")
+
+    def _pbs_clear_search_quiet(self):
+        """清空搜索框但不触发刷新（调用方自己接着刷新条目表）。"""
+        var = getattr(self, "pbs_search_var", None)
+        if var is None:
+            return
+        self._pbs_suppress_search = True
+        try:
+            var.set("")
+        finally:
+            self._pbs_suppress_search = False
+
+    def _pbs_on_search_change(self, *_a):
+        if getattr(self, "_pbs_suppress_search", False):
+            return
+        doc = getattr(self, "pbs_doc", None)
+        if doc is None:
+            return
+        self._pbs_refresh_entries(keep_sel=None)
+
+    def _pbs_refresh_entries(self, keep_sel=None):
+        doc = getattr(self, "pbs_doc", None)
+        tree = self.pbs_entry_tree
+        for iid in tree.get_children():
+            tree.delete(iid)
+        if doc is None:
+            self.pbs_entry_title.config(text="（选一个文件）")
+            self.pbs_form_title.config(text="")
+            if getattr(self, "pbs_search_info", None) is not None:
+                self.pbs_search_info.config(text="")
+            for w in self.pbs_form_box.winfo_children():
+                w.destroy()
+            return
+        query = ""
+        var = getattr(self, "pbs_search_var", None)
+        if var is not None:
+            try:
+                query = var.get().strip()
+            except tk.TclError:
+                query = ""
+        hit = 0
+        first = None
+        for i, e in enumerate(doc.entries):
+            if not self._pbs_entry_matches(e, query):
+                continue
+            tree.insert("", "end", iid="e%d" % i,
+                        values=(e.label() or "(空)",))
+            hit += 1
+            if first is None:
+                first = i
+        self.pbs_entry_title.config(
+            text="%s：%d 条（%s）" % (doc.name, len(doc.entries),
+                                     os.path.basename(doc.path)))
+        if getattr(self, "pbs_search_info", None) is not None:
+            if query:
+                self.pbs_search_info.config(
+                    text="搜索「%s」：命中 %d / %d 条" % (query, hit,
+                                                         len(doc.entries)))
+            else:
+                self.pbs_search_info.config(
+                    text="共 %d 条" % len(doc.entries))
+        if hit:
+            if keep_sel is not None and ("e%d" % keep_sel) in tree.get_children():
+                sel = "e%d" % keep_sel
+            else:
+                sel = "e%d" % (first if first is not None else 0)
+            tree.selection_set(sel)
+            tree.focus(sel)
+            tree.see(sel)
+            self._pbs_on_entry_select()
+        else:
+            self.pbs_form_title.config(text="没有匹配的条目")
+            self.pbs_form_getters = []
+            for w in self.pbs_form_box.winfo_children():
+                w.destroy()
+
+    def _pbs_on_entry_select(self, _e=None):
+        self._pbs_apply_form()          # 先把当前表单写回内存
+        doc = getattr(self, "pbs_doc", None)
+        if doc is None:
+            return
+        sel = self.pbs_entry_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0][1:])
+        if idx >= len(doc.entries):
+            return
+        self.pbs_cur_idx = idx
+        self._pbs_build_form(doc.entries[idx])
+
+    # ---- 表单：按文件类型造界面 ----
+    def _pbs_build_form(self, entry):
+        doc = self.pbs_doc
+        for w in self.pbs_form_box.winfo_children():
+            w.destroy()
+        self.pbs_form_getters = []
+        self.pbs_form_title.config(text=entry.label() or entry.sid)
+        kind = doc.editor
+        if kind == "trainers":
+            self._pbs_form_trainer(entry)
+        elif kind == "encounters":
+            self._pbs_form_encounter(entry)
+        elif kind == "townmap":
+            self._pbs_form_townmap(entry)
+        elif kind == "connections":
+            self._pbs_form_connections(entry)
+        elif kind == "regional":
+            self._pbs_form_regional(entry)
+        elif kind == "phone":
+            self._pbs_form_phone(entry)
+        else:
+            self._pbs_form_generic(entry)
+        self.pbs_hint.config(text=PBS_FORM_HINTS.get(kind, PBS_FORM_HINTS["generic"]))
+
+    # ---- 通用字段控件 ----
+    #   ★ 输入框统一用醒目的宝可蓝描边（2px），鼠标不用找；每个字段下面
+    #     再跟一行灰色中文说明，讲这个字段是干什么的。
+    def _row(self, parent, label, desc=""):
+        r = tk.Frame(parent, bg=CARD)
+        r.pack(fill="x", pady=(4, 0))
+        tk.Label(r, text=label, bg=CARD, fg=TEXT, font=FONT_SMALL,
+                 width=16, anchor="w").pack(side="left")
+        return r
+
+    def _desc(self, parent, text):
+        if not text:
+            return
+        lb = tk.Label(parent, text="　　" + text, bg=CARD, fg=C_HINT,
+                      font=FONT_SMALL, justify="left", anchor="w")
+        lb.pack(fill="x", padx=(0, 4))
+        bind_autowrap(lb, pad=4)
+
+    def _f_entry(self, parent, label, value, width=28, desc=""):
+        r = self._row(parent, label)
+        var = tk.StringVar(value=value)
+        ent = tk.Entry(r, textvariable=var, width=width, font=FONT_SMALL,
+                       bg="#FFFFFF", relief="flat",
+                       highlightthickness=2,
+                       highlightbackground=FIELD_BORDER,
+                       highlightcolor=FIELD_BORDER_FOCUS)
+        ent.pack(side="left", fill="x", expand=True)
+        self.pbs_form_getters.append((label, var.get))
+        self._desc(parent, desc)
+        return ent
+
+    def _f_combo(self, parent, label, value, options, width=26, desc=""):
+        r = self._row(parent, label)
+        var = tk.StringVar(value=value)
+        box = tk.Frame(r, bg=FIELD_BORDER, padx=1, pady=1)
+        box.pack(side="left")
+        cb = ttk.Combobox(box, textvariable=var, width=width,
+                          font=FONT_SMALL, values=list(options))
+        cb.pack(side="left")
+        self.pbs_form_getters.append((label, var.get))
+        self._desc(parent, desc)
+        return cb
+
+    def _f_bool(self, parent, label, value, desc=""):
+        r = self._row(parent, label)
+        var = tk.BooleanVar(value=str(value).strip().lower() in
+                            ("1", "true", "yes", "y"))
+        tk.Checkbutton(r, variable=var, bg=CARD, activebackground=CARD,
+                       selectcolor="#FFFFFF").pack(side="left")
+        self.pbs_form_getters.append(
+            (label, lambda: "true" if var.get() else "false"))
+        self._desc(parent, desc)
+        return r
+
+    def _f_text(self, parent, label, value, height=3, desc=""):
+        r = tk.Frame(parent, bg=CARD)
+        r.pack(fill="x", pady=(4, 0))
+        tk.Label(r, text=label, bg=CARD, fg=TEXT, font=FONT_SMALL,
+                 anchor="w").pack(anchor="w")
+        txt = tk.Text(r, height=height, wrap="word", font=FONT_SMALL,
+                      bg="#FFFFFF", relief="flat", highlightthickness=2,
+                      highlightbackground=FIELD_BORDER,
+                      highlightcolor=FIELD_BORDER_FOCUS)
+        txt.insert("1.0", value)
+        txt.pack(fill="x")
+        self.pbs_form_getters.append(
+            (label, lambda: txt.get("1.0", "end").strip()))
+        self._desc(parent, desc)
+        return txt
+
+    def _f_lines(self, parent, label, value, height=5, desc=""):
+        """多值字段：一行一个（写回时用逗号连接）。"""
+        r = tk.Frame(parent, bg=CARD)
+        r.pack(fill="x", pady=(4, 0))
+        tk.Label(r, text=label + "（一行一个）", bg=CARD, fg=TEXT,
+                 font=FONT_SMALL, anchor="w").pack(anchor="w")
+        txt = tk.Text(r, height=height, wrap="none", font=FONT_SMALL,
+                      bg="#FFFFFF", relief="flat", highlightthickness=2,
+                      highlightbackground=FIELD_BORDER,
+                      highlightcolor=FIELD_BORDER_FOCUS)
+        txt.insert("1.0", "\n".join(
+            x.strip() for x in value.split(",") if x.strip()))
+        txt.pack(fill="x")
+        self.pbs_form_getters.append(
+            (label, lambda: ",".join(
+                ln.strip() for ln in txt.get("1.0", "end").splitlines()
+                if ln.strip())))
+        self._desc(parent, desc)
+        return txt
+
+    def _f_stats(self, parent, label, value, order, desc=""):
+        """六项能力值 / 努力值。"""
+        r = self._row(parent, label)
+        parts = [x.strip() for x in value.split(",")]
+        vars_ = []
+        for st in order:
+            sub = tk.Frame(r, bg=CARD)
+            sub.pack(side="left", padx=(0, 6))
+            tk.Label(sub, text=pbs_edit.STAT_LABELS.get(st, st), bg=CARD,
+                     fg=C_HINT, font=FONT_SMALL).pack(side="left")
+            v = tk.StringVar(value=parts[len(vars_)] if len(parts) >
+                             len(vars_) else "0")
+            tk.Entry(sub, textvariable=v, width=4, font=FONT_SMALL,
+                     bg="#FFFFFF", relief="flat", highlightthickness=2,
+                     highlightbackground=FIELD_BORDER,
+                     highlightcolor=FIELD_BORDER_FOCUS).pack(side="left")
+            vars_.append((st, v))
+        self.pbs_form_getters.append(
+            (label, lambda: ",".join(v.get() or "0" for _s, v in vars_)))
+        self._desc(parent, desc)
+        return r
+
+    def _f_evs(self, parent, label, value, order, desc=""):
+        """努力值：PBS 里写成 属性,值 一对一对。"""
+        r = tk.Frame(parent, bg=CARD)
+        r.pack(fill="x", pady=(4, 0))
+        tk.Label(r, text=label + "（只写不为 0 的）", bg=CARD, fg=TEXT,
+                 font=FONT_SMALL, anchor="w").pack(anchor="w")
+        row = tk.Frame(r, bg=CARD)
+        row.pack(fill="x")
+        vals = [x.strip() for x in value.split(",") if x.strip()]
+        pairs = {}
+        for i in range(0, len(vals) - 1, 2):
+            pairs[vals[i]] = vals[i + 1]
+        vars_ = []
+        for st in order:
+            sub = tk.Frame(row, bg=CARD)
+            sub.pack(side="left", padx=(0, 8))
+            tk.Label(sub, text=pbs_edit.STAT_LABELS.get(st, st), bg=CARD,
+                     fg=C_HINT, font=FONT_SMALL).pack(side="left")
+            v = tk.StringVar(value=pairs.get(st, "0"))
+            tk.Entry(sub, textvariable=v, width=4, font=FONT_SMALL,
+                     bg="#FFFFFF", relief="flat", highlightthickness=2,
+                     highlightbackground=FIELD_BORDER,
+                     highlightcolor=FIELD_BORDER_FOCUS).pack(side="left")
+            vars_.append((st, v))
+
+        def get():
+            out = []
+            for st, v in vars_:
+                n = (v.get() or "").strip()
+                if n and n != "0":
+                    out.append("%s,%s" % (st, n))
+            return ",".join(out)
+        self.pbs_form_getters.append((label, get))
+        self._desc(parent, desc)
+        return r
+
+    def _f_pairs(self, parent, label, value, n, sub_labels=None, desc=""):
+        """定长数组（ii / uuu / vuuu …）：一格一个值。"""
+        r = self._row(parent, label)
+        parts = [x.strip() for x in value.split(",")]
+        vars_ = []
+        for i in range(n):
+            sub = tk.Frame(r, bg=CARD)
+            sub.pack(side="left", padx=(0, 6))
+            if sub_labels and i < len(sub_labels):
+                tk.Label(sub, text=sub_labels[i], bg=CARD, fg=C_HINT,
+                         font=FONT_SMALL).pack(side="left")
+            v = tk.StringVar(value=parts[i] if i < len(parts) else "")
+            tk.Entry(sub, textvariable=v, width=10, font=FONT_SMALL,
+                     bg="#FFFFFF", relief="flat", highlightthickness=2,
+                     highlightbackground=FIELD_BORDER,
+                     highlightcolor=FIELD_BORDER_FOCUS).pack(side="left")
+            vars_.append(v)
+        self.pbs_form_getters.append(
+            (label, lambda: ",".join(v.get() for v in vars_)))
+        self._desc(parent, desc)
+        return r
+
+    def _f_table(self, parent, label, value, cols, per_row, desc=""):
+        """表格型字段（升级招式 / 进化）：一行一条，逗号分隔。"""
+        r = tk.Frame(parent, bg=CARD)
+        r.pack(fill="x", pady=(4, 0))
+        tk.Label(r, text="%s（一行一条：%s）" % (label, ",".join(cols)),
+                 bg=CARD, fg=TEXT, font=FONT_SMALL,
+                 anchor="w").pack(anchor="w")
+        txt = tk.Text(r, height=6, wrap="none", font=FONT_SMALL,
+                      bg="#FFFFFF", relief="flat", highlightthickness=2,
+                      highlightbackground=FIELD_BORDER,
+                      highlightcolor=FIELD_BORDER_FOCUS)
+        vals = [x.strip() for x in value.split(",") if x.strip()]
+        lines = []
+        for i in range(0, len(vals) - per_row + 1, per_row):
+            lines.append(",".join(vals[i:i + per_row]))
+        txt.insert("1.0", "\n".join(lines))
+        txt.pack(fill="x")
+        self.pbs_form_getters.append(
+            (label, lambda: ",".join(
+                x.strip() for x in
+                txt.get("1.0", "end").replace("\n", ",").split(",")
+                if x.strip())))
+        self._desc(parent, desc)
+        return txt
+
+
+    @staticmethod
+    def _field_desc(key: str, doc) -> str:
+        """这个字段的中文说明（按文件覆盖优先）。"""
+        fk = getattr(doc, "key", "") or ""
+        hit = pbs_edit.FIELD_DESC_BY_FILE.get((fk, key))
+        return hit or pbs_edit.field_desc(key)
+
+    def _pbs_form_generic(self, entry):
+        doc = self.pbs_doc
+        schema = pbs_edit.schema_of(doc.spec, doc.family) if doc.spec else []
+        box = self.pbs_form_box
+        # 段名（内部名 / 编号 / 形态）
+        if doc.style == "kv":
+            self._f_entry(box, "键名", entry.sid)
+        elif doc.style == "line":
+            pass                      # 行式文件的段名就是整行，下面按字段改
+        else:
+            self._f_entry(box, "段名", entry.sid, width=34)
+        known = set()
+        for key, _ivar, ctype, enum in schema:
+            known.add(key)
+            val = entry.get(key, "")
+            base = ctype[1:] if ctype[0] in "*^" else ctype
+            desc = self._field_desc(key, doc)
+            if ctype[0] == "^" or base in ("ue", "ses", "ees"):
+                cols = {"ue": ("等级", "招式"),
+                        "ses": ("目标", "方式", "参数"),
+                        "ees": ("目标", "方式", "参数")}.get(base, ("值",))
+                self._f_table(box, key, val, cols,
+                              2 if base == "ue" else 3, desc=desc)
+            elif base in ("uuuuuu", "vvvvvv"):
+                self._f_stats(box, key, val, pbs_edit.stat_order(doc.family),
+                              desc=desc)
+            elif base == "ev":
+                self._f_evs(box, key, val, pbs_edit.stat_order(doc.family),
+                            desc=desc)
+            elif base in ("player", "ball"):
+                self._f_entry(box, key, val, desc=desc)
+            elif re.fullmatch(r"[a-zA-Z]{2,}", base) and \
+                    base[0] not in ("s", "q", "n", "m"):
+                self._f_pairs(box, key, val, len(base), desc=desc)
+            elif ctype[0] in "*^":
+                self._f_lines(box, key, val, desc=desc)
+            elif base == "b":
+                self._f_bool(box, key, val, desc=desc)
+            elif base == "q":
+                self._f_text(box, key, val, height=4, desc=desc)
+            elif enum:
+                self._f_combo(box, key, val,
+                              [""] + sorted(enum.keys()), desc=desc)
+            else:
+                self._f_entry(box, key, val, desc=desc)
+        # 文件里有但表里没有的键也列出来，别丢
+        for k, v in entry.fields:
+            if k in known:
+                continue
+            self._f_entry(box, k + "（未登记）", v,
+                          desc=pbs_edit.field_desc(k))
+
+    def _pbs_form_trainer(self, entry):
+        box = self.pbs_form_box
+        self._f_entry(box, "段名（类型,名字,版本）", entry.sid, width=34,
+                      desc="这段的标识：训练家类型内部名,名字[,版本号]。"
+                           "版本号用于同一训练家的多套队伍（0 可省略）")
+        schema = pbs_edit.schema_of(self.pbs_doc.spec, self.pbs_doc.family)
+        for key, _i, ctype, _e in schema:
+            d = self._field_desc(key, self.pbs_doc)
+            if ctype == "q":
+                self._f_text(box, key, entry.get(key, ""), height=3, desc=d)
+            else:
+                self._f_lines(box, key, entry.get(key, ""), height=2, desc=d)
+        sub = self.pbs_doc.spec.get("sub_schema", {}).get(
+            self.pbs_doc.family) or []
+        tk.Label(box, text="队伍（每只一块；改完点右上角保存）", bg=CARD,
+                 fg=C_TITLE, font=FONT_B).pack(anchor="w", pady=(10, 2))
+        self.pbs_pkmn_rows = []
+        for i, p in enumerate(entry.data.get("pokemon", [])):
+            self._pbs_pkmn_block(box, i, p, sub)
+        self._desc(box, "整行的书写格式（看懂这个就不用怕）：段名开头的"
+                        "方括号里是「类型,名字,版本」，Items/LoseText 属于训练家本人；"
+                        "下面每条 Pokemon = 种族,等级 是一只，缩进的键属于那一只。")
+
+    def _pbs_pkmn_block(self, box, idx, p, sub):
+        f = tk.LabelFrame(box, text="#%d" % (idx + 1), bg=CARD, fg=TEXT,
+                          font=FONT_SMALL)
+        f.pack(fill="x", pady=4)
+        row = tk.Frame(f, bg=CARD)
+        row.pack(fill="x")
+        sp = tk.StringVar(value=p.get("species", ""))
+        lv = tk.StringVar(value=p.get("level", "1"))
+        tk.Label(row, text="种族", bg=CARD, fg=C_HINT,
+                 font=FONT_SMALL).pack(side="left")
+        tk.Entry(row, textvariable=sp, width=18, font=FONT_SMALL,
+                 bg="#FFFFFF", relief="flat", highlightthickness=2,
+                 highlightbackground=FIELD_BORDER,
+                 highlightcolor=FIELD_BORDER_FOCUS).pack(side="left", padx=4)
+        tk.Label(row, text="等级", bg=CARD, fg=C_HINT,
+                 font=FONT_SMALL).pack(side="left", padx=(8, 0))
+        tk.Entry(row, textvariable=lv, width=5, font=FONT_SMALL,
+                 bg="#FFFFFF", relief="flat", highlightthickness=2,
+                 highlightbackground=FIELD_BORDER,
+                 highlightcolor=FIELD_BORDER_FOCUS).pack(side="left", padx=4)
+        rest = {}
+        for key, _i, ctype, _e in sub:
+            if key in ("species", "level"):
+                continue
+            r = tk.Frame(f, bg=CARD)
+            r.pack(fill="x", pady=(3, 0))
+            tk.Label(r, text=key, bg=CARD, fg=TEXT, font=FONT_SMALL,
+                     width=16, anchor="w").pack(side="left")
+            if ctype == "b":
+                v = tk.BooleanVar(value=p.get(key, "").lower() in
+                                  ("1", "true", "yes", "y"))
+                tk.Checkbutton(r, variable=v, bg=CARD,
+                               activebackground=CARD,
+                               selectcolor="#FFFFFF").pack(side="left")
+                rest[key] = v
+            elif ctype == "uuuuuu":
+                parts = [x.strip() for x in p.get(key, "").split(",")]
+                vs = []
+                for i2, st in enumerate(pbs_edit.stat_order(
+                        self.pbs_doc.family)):
+                    vv = tk.StringVar(value=parts[i2] if i2 < len(parts)
+                                      else "0")
+                    tk.Entry(r, textvariable=vv, width=4, font=FONT_SMALL,
+                             bg="#FFFFFF", relief="flat",
+                             highlightthickness=2,
+                             highlightbackground=FIELD_BORDER,
+                             highlightcolor=FIELD_BORDER_FOCUS).pack(
+                                 side="left")
+                    vs.append(vv)
+                rest[key] = vs
+            elif ctype == "*e":
+                v = tk.StringVar(value=p.get(key, ""))
+                tk.Entry(r, textvariable=v, width=40, font=FONT_SMALL,
+                         bg="#FFFFFF", relief="flat", highlightthickness=2,
+                         highlightbackground=FIELD_BORDER,
+                         highlightcolor=FIELD_BORDER_FOCUS).pack(side="left")
+                rest[key] = v
+            else:
+                v = tk.StringVar(value=p.get(key, ""))
+                tk.Entry(r, textvariable=v, width=22, font=FONT_SMALL,
+                         bg="#FFFFFF", relief="flat", highlightthickness=2,
+                         highlightbackground=FIELD_BORDER,
+                         highlightcolor=FIELD_BORDER_FOCUS).pack(side="left")
+                rest[key] = v
+            self._desc(f, pbs_edit.FIELD_DESC_SUB.get(key, ""))
+
+        def apply_(_p=p, _sp=sp, _lv=lv, _rest=rest, _sub=sub):
+            _p["species"] = _sp.get()
+            _p["level"] = _lv.get()
+            for key, _i, ctype, _e in _sub:
+                if key in ("species", "level") or key not in _rest:
+                    continue
+                w = _rest[key]
+                if isinstance(w, list):
+                    _p[key] = ",".join(x.get() or "0" for x in w)
+                elif isinstance(w, tk.BooleanVar):
+                    _p[key] = "yes" if w.get() else ""
+                else:
+                    _p[key] = w.get()
+        self.pbs_form_getters.append(("队伍#%d" % (idx + 1), apply_))
+
+    def _pbs_form_encounter(self, entry):
+        box = self.pbs_form_box
+        m = tk.StringVar(value=entry.data.get("map", "0"))
+        v = tk.StringVar(value=entry.data.get("version", "0"))
+        r = tk.Frame(box, bg=CARD)
+        r.pack(fill="x", pady=(4, 0))
+        tk.Label(r, text="地图编号", bg=CARD, fg=TEXT, font=FONT_SMALL,
+                 width=16, anchor="w").pack(side="left")
+        tk.Entry(r, textvariable=m, width=8, font=FONT_SMALL, bg="#FFFFFF",
+                 relief="flat", highlightthickness=2,
+                 highlightbackground=FIELD_BORDER,
+                 highlightcolor=FIELD_BORDER_FOCUS).pack(side="left")
+        tk.Label(r, text="版本", bg=CARD, fg=TEXT, font=FONT_SMALL,
+                 anchor="w").pack(side="left", padx=(10, 0))
+        tk.Entry(r, textvariable=v, width=6, font=FONT_SMALL, bg="#FFFFFF",
+                 relief="flat", highlightthickness=2,
+                 highlightbackground=FIELD_BORDER,
+                 highlightcolor=FIELD_BORDER_FOCUS).pack(side="left")
+        self._desc(box, "地图编号 = 游戏里那张地图的编号（和 RPG Maker 里一致）；"
+                        "版本用于同一张地图的多套遇敌表，没有就填 0")
+        self.pbs_form_getters.append(("地图", m.get))
+        self.pbs_form_getters.append(("版本", v.get))
+
+        tk.Label(box, text="遭遇类型", bg=CARD,
+                 fg=C_TITLE, font=FONT_B).pack(anchor="w", pady=(10, 2))
+        self._desc(box, "每种遭遇一块：Land 草丛、Water 水面、OldRod 旧钓竿…；"
+                        "「步数概率」是踩一步遇到它的概率（0 = 只靠钓竿/道具触发）。"
+                        "槽位一行一条：概率,种族,最低等级,最高等级")
+        self.pbs_enc_types = []
+        for i, (tname, chance, slots) in enumerate(
+                entry.data.get("types", [])):
+            f = tk.LabelFrame(box, text=tname, bg=CARD, fg=TEXT,
+                              font=FONT_SMALL)
+            f.pack(fill="x", pady=4)
+            row = tk.Frame(f, bg=CARD)
+            row.pack(fill="x")
+            tv = tk.StringVar(value=tname)
+            cv = tk.StringVar(value=chance)
+            tk.Label(row, text="类型", bg=CARD, fg=C_HINT,
+                     font=FONT_SMALL).pack(side="left")
+            tk.Entry(row, textvariable=tv, width=16, font=FONT_SMALL,
+                     bg="#FFFFFF", relief="flat", highlightthickness=2,
+                     highlightbackground=FIELD_BORDER,
+                     highlightcolor=FIELD_BORDER_FOCUS).pack(side="left")
+            tk.Label(row, text="步数概率", bg=CARD, fg=C_HINT,
+                     font=FONT_SMALL).pack(side="left", padx=(8, 0))
+            tk.Entry(row, textvariable=cv, width=6, font=FONT_SMALL,
+                     bg="#FFFFFF", relief="flat", highlightthickness=2,
+                     highlightbackground=FIELD_BORDER,
+                     highlightcolor=FIELD_BORDER_FOCUS).pack(side="left")
+            tk.Label(f, text="槽位：概率,种族,最低级,最高级（一行一条）",
+                     bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                     anchor="w").pack(anchor="w")
+            st = tk.Text(f, height=max(2, len(slots) + 1), wrap="none",
+                         font=FONT_SMALL, bg="#FFFFFF", relief="flat",
+                         highlightthickness=2,
+                         highlightbackground=FIELD_BORDER,
+                         highlightcolor=FIELD_BORDER_FOCUS)
+            st.insert("1.0", "\n".join(",".join(s) for s in slots))
+            st.pack(fill="x")
+            self.pbs_enc_types.append((tv, cv, st))
+
+            def apply(_tv=tv, _cv=cv, _st=st, _slots=slots):
+                _slots[:] = [
+                    [x.strip() for x in ln.split(",") if x.strip() != ""]
+                    for ln in _st.get("1.0", "end").splitlines()
+                    if ln.strip()]
+                return _tv.get(), _cv.get()
+            self.pbs_form_getters.append(("遭遇%s" % tname, apply))
+
+    def _pbs_form_townmap(self, entry):
+        box = self.pbs_form_box
+        self._f_entry(box, "区域编号", entry.sid, width=10,
+                      desc="这块区域地图的编号（0 = 第一张区域地图）")
+        for k, v in entry.fields:
+            self._f_entry(box, k, v, desc=self._field_desc(k, self.pbs_doc))
+        tk.Label(box, text="地点", bg=CARD,
+                 fg=C_TITLE, font=FONT_B).pack(anchor="w", pady=(10, 2))
+        self._desc(box, "一行一个地点：x,y,地点名,说明文字"
+                        "（说明可以不写；再往后还能接 跳转地图,地图x,地图y）")
+        txt = tk.Text(box, height=12, wrap="none", font=FONT_SMALL,
+                      bg="#FFFFFF", relief="flat", highlightthickness=2,
+                      highlightbackground=FIELD_BORDER,
+                      highlightcolor=FIELD_BORDER_FOCUS)
+        txt.insert("1.0", "\n".join(
+            ",".join(p) for p in entry.data.get("points", [])))
+        txt.pack(fill="x")
+
+        def get():
+            entry.data["points"] = [
+                [x.strip() for x in ln.split(",")]
+                for ln in txt.get("1.0", "end").splitlines() if ln.strip()]
+            return ""
+        self.pbs_form_getters.append(("地点", get))
+
+    def _pbs_form_connections(self, entry):
+        box = self.pbs_form_box
+        labels = ("地图A", "边A(N/S/E/W)", "坐标A", "地图B", "边B", "坐标B")
+        vals = [v for _k, v in entry.fields]
+        self._f_pairs(box, "连接", ",".join(vals), 6, labels,
+                      desc="一张地图连接：地图A,从哪条边出去,在那条边上的坐标,"
+                           "地图B,接到它的哪条边,坐标")
+        self._desc(box, "方向写法：N 北 / S 南 / E 东 / W 西；"
+                        "A 的边和 B 的边必须相对（北对南、东对西）")
+
+    def _pbs_form_regional(self, entry):
+        box = self.pbs_form_box
+        self._f_entry(box, "图鉴编号", entry.sid, width=10,
+                      desc="第几本地区图鉴（0 = 第一本，和 metadata 里的"
+                           "MapPosition 第一个数字对应）")
+        self._desc(box, "按图鉴顺序写宝可梦的内部名（或编号），一行若干只、"
+                        "逗号分隔；顺序就是图鉴里的排列顺序")
+        txt = tk.Text(box, height=14, wrap="word", font=FONT_SMALL,
+                      bg="#FFFFFF", relief="flat", highlightthickness=2,
+                      highlightbackground=FIELD_BORDER,
+                      highlightcolor=FIELD_BORDER_FOCUS)
+        txt.insert("1.0", "\n".join(entry.data.get("species", [])))
+        txt.pack(fill="x")
+
+        def get():
+            entry.data["species"] = [
+                x.strip() for x in
+                txt.get("1.0", "end").replace("\n", ",").split(",")
+                if x.strip()]
+            return ""
+        self.pbs_form_getters.append(("名单", get))
+
+    def _pbs_form_phone(self, entry):
+        box = self.pbs_form_box
+        self._f_entry(box, "段名", entry.sid, width=34,
+                      desc="Default = 所有训练家通用的来电；"
+                           "也可以写「训练家类型,名字,版本」给某个训练家专属")
+        msgs = entry.data.get("msgs", {})
+        if isinstance(msgs, dict):
+            for k, lst in msgs.items():
+                self._f_text(box, k + "（一行一条）", "\n".join(lst),
+                             height=max(2, len(lst)),
+                             desc=pbs_edit.field_desc(k))
+        else:
+            self._f_text(box, "消息（一行一条）", "\n".join(msgs), height=14)
+        self._desc(box, "台词里的转义：\\PN 玩家名、\\TN 训练家名、"
+                        "\\TP 玩家首发宝可梦、\\TE 对手宝可梦、\\m 换行")
+
+    # ---- 应用 / 保存 / 编译 ----
+    def _pbs_apply_form(self):
+        """把表单里的内容写回内存里的条目。"""
+        doc = getattr(self, "pbs_doc", None)
+        if doc is None or not self.pbs_form_getters:
+            return
+        idx = getattr(self, "pbs_cur_idx", None)
+        if idx is None or idx >= len(doc.entries):
+            return
+        entry = doc.entries[idx]
+        for label, getter in self.pbs_form_getters:
+            try:
+                val = getter()
+            except Exception:
+                continue
+            if val is None:
+                continue
+            if label == "段名" or label == "键名" or label == "图鉴编号" \
+                    or label == "区域编号":
+                entry.sid = val
+            elif label == "段名（类型,名字,版本）":
+                entry.sid = val
+            elif label == "地图":
+                entry.data["map"] = val
+            elif label == "版本":
+                entry.data["version"] = val
+            elif label == "地图写入":
+                pass
+            elif label == "地点" or label == "名单":
+                pass                     # 回调内部已经写进 data
+            elif label.startswith("遭遇"):
+                tname, chance = val
+                for i, blk in enumerate(entry.data.get("types", [])):
+                    if i == int(label[2:]) if label[2:].isdigit() else False:
+                        blk[0] = tname
+                        blk[1] = chance
+                        break
+            elif label.startswith("队伍"):
+                pass                     # 回调内部已经写进 data
+            else:
+                entry.set(label, val)
+        doc.dirty = True
+
+    def _pbs_save_doc(self):
+        self._pbs_apply_form()
+        doc = getattr(self, "pbs_doc", None)
+        if doc is None:
+            return
+        try:
+            doc.save()
+            self.status_var.set("已保存 %s" % os.path.basename(doc.path))
+            if log:
+                log.info("PBS 保存：%s", doc.path)
+        except Exception as e:                                  # noqa: BLE001
+            messagebox.showerror("保存失败", str(e))
+
+    def _pbs_compile_current(self):
+        self._pbs_apply_form()
+        doc = getattr(self, "pbs_doc", None)
+        if doc is None:
+            return
+        try:
+            doc.save()
+        except Exception as e:                                  # noqa: BLE001
+            messagebox.showerror("保存失败", str(e))
+            return
+        root = self.pbs_panel.root_dir if getattr(self, "pbs_panel", None) \
+            else config.Runtime.game_root
+        fam = doc.family
+        if pbs_edit.is_legacy(fam):
+            # 老版本：只标记，让游戏自己编译（避免写坏 .dat）
+            import pbs_legacy
+            n, msg = pbs_legacy.mark_for_recompile(root, fam)
+            self.status_var.set("已标记待重编译")
+            messagebox.showinfo(
+                "已标记（%s 老版本）" % fam,
+                "txt 已保存。\n\n" + msg + "\n\n"
+                "（v16/v17/v18 的 .dat 由官方编译器在游戏启动时一次性重建，"
+                "这样不会出现「一半新一半旧」）")
+            return
+        if not doc.spec:
+            messagebox.showinfo("提示", "这个文件没有对应的 .dat，不用编译。")
+            return
+        ok, msg, stat = pbs_edit.compile_spec(doc.spec, fam, root)
+        if ok:
+            self.status_var.set("已编译 %s（%s）" % (doc.name, stat))
+            messagebox.showinfo("编译完成",
+                                "%s 已写回游戏的 Data（%s）" % (doc.name, stat))
+        else:
+            messagebox.showerror("编译失败", msg or "未知错误")
+
+    # ---- 条目的增删改 ----
+    def _pbs_add_entry(self):
+        doc = getattr(self, "pbs_doc", None)
+        if doc is None:
+            return
+        self._pbs_apply_form()
+        sid = _AskText.ask(self.root, "新增条目",
+                           "新的段名（内部名 / 编号）：", "NEWSPECIES")
+        if not sid:
+            return
+        e = pbs_edit.DocEntry(sid)
+        if doc.spec:
+            for key, _i, _c, _e in pbs_edit.schema_of(doc.spec, doc.family):
+                e.fields.append([key, ""])
+        doc.entries.append(e)
+        self._pbs_clear_search_quiet()
+        self._pbs_refresh_entries(keep_sel=len(doc.entries) - 1)
+
+    def _pbs_dup_entry(self):
+        doc = getattr(self, "pbs_doc", None)
+        if doc is None:
+            return
+        idx = getattr(self, "pbs_cur_idx", None)
+        if idx is None or idx >= len(doc.entries):
+            return
+        self._pbs_apply_form()
+        src = doc.entries[idx]
+        new = pbs_edit.DocEntry(src.sid + "_COPY")
+        new.fields = [list(x) for x in src.fields]
+        new.data = {}
+        for k, v in src.data.items():
+            if isinstance(v, list):
+                new.data[k] = [list(x) if isinstance(x, (list, tuple))
+                               else x for x in v]
+            else:
+                new.data[k] = v
+        doc.entries.insert(idx + 1, new)
+        self._pbs_clear_search_quiet()
+        self._pbs_refresh_entries(keep_sel=idx + 1)
+
+    def _pbs_del_entry(self):
+        doc = getattr(self, "pbs_doc", None)
+        if doc is None:
+            return
+        idx = getattr(self, "pbs_cur_idx", None)
+        if idx is None or idx >= len(doc.entries):
+            return
+        name = doc.entries[idx].label()
+        if not messagebox.askyesno("删除", "确定删掉「%s」吗？" % name):
+            return
+        doc.entries.pop(idx)
+        self._pbs_clear_search_quiet()
+        self._pbs_refresh_entries(keep_sel=min(idx, len(doc.entries) - 1)
+                                  if doc.entries else None)
+
     def _do_debug_restore(self):
         d = self._dbg_folder_data()
         if not d:
@@ -10122,9 +12031,8 @@ class App:
                 row=i, column=1, sticky="w", padx=(14, 0))
 
         hint2 = tk.Label(body,
-                         text="★ 数据来源：优先读游戏 Data 目录里编译好的 .dat"
-                              "（汉化版常常只有 .dat、没有 PBS），读不到才退回 PBS。"
-                              "宝可梦／道具／招式名按游戏的语言包显示。",
+                         text="★ 数据来源：优先读游戏 Data 目录里的 .dat，"
+                              "读不到才退回 PBS。宝可梦／道具／招式名按游戏的语言包显示。",
                          bg=CARD, fg=C_WARN, font=FONT_SMALL, justify="left",
                          wraplength=620)
         hint2.pack(fill="x", pady=(12, 0))

@@ -4,8 +4,14 @@ Ollama 客户端 + 批量翻译 / 中文润色。
   · 翻译与术语提取一次完成（术语以 @@T: 行内联返回）
   · 整批失败 → 重试 → 拆分两半 → 递归
   · 无推理模式（think=False），旧版 Ollama 自动降级
+  · 提示词模板外置到 prompts/ 目录（按目标语言覆盖），文件缺失用内置默认
+  · 输出格式固定 JSON：每行 {"id":N,"text":"译文"}（术语提取已改为
+    从名字文本文件抽取，见 term_extract.py）
+  · 云端 API：多 Key 轮换 + 冷却阶梯 + 并发自适应（429 减半 / 成功 +1）
 """
+import os
 import re
+import threading
 import time
 
 import requests
@@ -17,9 +23,9 @@ log = get_logger("translator")
 
 
 # ================================================================
-# 提示词
+# 提示词模板（外置到 prompts/，内置常量是兜底默认）
 # ================================================================
-# ★ 提示词设计原则（改之前先读一遍）：
+# ★ 模板设计原则（改之前先读一遍）：
 #   1. 稳定规则全放 system：system 是每批都一模一样的前缀，
 #      llama.cpp / Ollama 会复用它的 KV 缓存，前缀越长省得越多；
 #      而 user 里每批都变（术语表 + 正文），放那里的规则等于每批重发。
@@ -28,53 +34,8 @@ log = get_logger("translator")
 #      省掉一半输出 token。
 #   4. 优先级顺序要显式：先准确、再通顺、后生动 —— 小模型最容易为了
 #      "生动" 添油加醋，明确写"不增不删"比抽象要求有效。
-SYSTEM_PROMPT = r"""你是专业游戏本地化译者，负责把游戏文本翻译成{tgt}。
-
-【占位符】
-@0@ @1@等占位符必须原样保留：数量、位置、数字不变，不新增。
-每句话中的占位符都不能丢；不同句子的占位符重复出现也完整保留。
-短句（只有几个字）也要完整保留占位符。
-输出前请先核对：译文里 @N@ 的数量与输入是否完全一致，再提交。
-
-【翻译】
-准确第一：语义、语气、人物性格随人物变化
-生动第二：对话、感叹、拟声词可有画面感，可用成语/口语，但不改原意。
-通顺第三：语义连贯，语句通顺，可读性强，可以适当调整句子的长度、语序等
-
-【术语表】
-用户提供则必须遵守；遇到表内词，无论大小写/数量，都用表内中文。
-表内词为词根的派生词、复合词（+s 复数，或 +ite/+ites/+nite/+ium/+Z 等道具、进化石命名）也用同一个译名，再按词义把后缀补成中文。
-例：Altarianite=七夕青鸟进化石 → Altarianites 译作「七夕青鸟进化石」；不要音译成别的词。
-
-【术语提取】
-每条译文后紧跟一行：
-<编号>@@T:原文术语1=译文术语1|原文术语2=译文术语2
-无专有名词写：<编号>@@T:
-只能提取以下类型的名词：训练家/NPC名、宝可梦名、地名/城镇名/道路名/地区名、道具名、招式名、特性名、组织/队伍名、建筑名。
-绝不能提取以下类型的词：-形容词、副词、代词、冠词、介词、连词、动词、助动词、情态动词、数词、量词、感叹词、拟声词、语气词、纯数字
--时间、日期、货币、单位、百分比、年龄、顺序词、颜色词、普通描述词、动作、情感、评价、已是中文的普通词。
-编号一致，每行只有一个 @@T: 前缀。
-
-【输出】
-每条两行：
-<编号>译文
-<编号>@@T:原文术语1=译文术语1|原文术语2=译文术语2...
-输入里有多少个编号，就必须输出多少行译文：一个都不能少、不能合并、
-不能只翻译前几条；也不要输出输入里没有的编号。
-不要解释，不要空行，不要markdown，不要注释；原文有引号才加引号。
-正文里若出现 <数字> 字样的游戏内容，那是台词本身，原样保留在译文里。
-
-【示例】
-输入：
-<0>¡Hola!Enfermera¿Cómo estás?
-输出：
-<0>你好！护士。你怎么样？
-<0>@@T:Enfermera=护士
-"""
-
-_USER_TEMPLATE = r"""{terms_block}翻译下面各条，编号对应，严格按上面的格式输出：
-{body}
-"""
+#   5. 模板文件在 prompts/ 下，按目标语言放 prompts/{zh,en,ja}/ 可覆盖
+#      默认版本；改模板不用动代码，exe 旁放同名文件即可热替换。
 
 # ---------------- 中文润色 ----------------
 POLISH_SYSTEM_PROMPT = r"""你的任务是把已经译成中文的游戏台词润色成更地道的{tgt}。
@@ -85,8 +46,9 @@ POLISH_SYSTEM_PROMPT = r"""你的任务是把已经译成中文的游戏台词�
 不要解释、空行、markdown，不要输出【参考原文】。
 
 【必须遵守】
-1. 占位符（@0@ ⟦0⟧ 等）与控制码原样保留，数量、位置、顺序都不变。
-2. 保留换行控制码 \\n；不要在 \\n 前后新增标点。
+1. 控制码（\n \c[3] \v[10] \tg[Owen] 等）原样保留，不翻译、不改写、不移动，
+   数量、位置、大小写都不变。
+2. 保留换行控制码 \n；不要在 \n 前后新增标点。
 3. 不改变原意、事实、情绪方向、人物关系；不新增动作、心理活动或设定；
    不改变句子数量，不删减内容，可以适当调整句子长度和语序。
 4. 输入里有多少个编号，就必须输出多少行，一个都不能少、不能合并；
@@ -102,6 +64,118 @@ POLISH_SYSTEM_PROMPT = r"""你的任务是把已经译成中文的游戏台词�
 _POLISH_TEMPLATE = r"""{body}
 """
 
+# 翻译用 system 提示词（输出格式固定 JSON）
+SYSTEM_PROMPT_JSONLINE = r"""你是专业游戏本地化译者，负责把游戏文本翻译成{tgt}。
+
+【控制码】
+输入里的控制码必须原样保留、不翻译、不改写、不移动：
+· 反斜杠命令：\n \N \PN \c[3] \v[10] \tg[Owen] \w[speech hgss 3] \xn[Leticia] 等
+· 尖括号标签：<ar> </ar> <<n>> 等；HTML 实体：&quot; 等
+数量、位置、大小写都不变，不新增也不删除。
+例：\c[3]你好\n再见 → 译文里 \c[3] 与 \n 必须还在原来的位置。
+
+【翻译】
+准确第一：语义、语气、人物性格随人物变化
+生动第二：对话、感叹、拟声词可有画面感，可用成语/口语，但不改原意。
+通顺第三：语义连贯，语句通顺，可读性强，可以适当调整句子的长度、语序等
+
+【术语表】
+用户提供则必须遵守；遇到表内词，无论大小写/数量，都用表内中文。
+表内词为词根的派生词、复合词（+s 复数，或 +ite/+ites/+nite/+ium/+Z 等道具、进化石命名）也用同一个译名，再按词义把后缀补成中文。
+例：Altarianite=七夕青鸟进化石 → Altarianites 译作「七夕青鸟进化石」；不要音译成别的词。
+
+【输出】
+每行输出一条 JSON，编号与输入一一对应，一个都不能少、不能合并：
+{"id":<编号>,"text":"<译文>"}
+不要解释，不要空行，不要 markdown 代码围栏，不要注释。
+JSON 字符串里的双引号必须转义成 \"；换行必须转义成 \n。
+正文里若出现 <数字> 字样的游戏内容，那是台词本身，原样保留在译文里。
+"""
+
+_USER_TEMPLATE_JSONLINE = r"""{terms_block}{context_block}把下面每条翻译成{tgt}，每行输出一条 JSON，格式：
+{"id":<编号>,"text":"<译文>"}
+输入：
+{body}
+"""
+
+# ---------------- 术语提取（从名字文本文件提名字后丢给模型翻） ----------------
+SYSTEM_PROMPT_TERMS = r"""你是游戏术语本地化专家。用户给你一批游戏专有名词（宝可梦名 /
+招式名 / 道具名 / 特性名 / 属性名 / 训练家类型 / 性格名等），请逐个翻译成{tgt}。
+
+【要求】
+1. 用**官方或社区通行译名**：宝可梦、招式、道具、特性、属性都用大家熟知的译名
+   （例：Pikachu→皮卡丘、Thunderbolt→十万伏特、Leftovers→剩饭）。
+2. 拿不准的按「意译优先、音译兜底」，译文必须落在{tgt}，不要保留英文原文。
+3. 译文里不要出现控制码、括号注释、原文、罗马音，也不要加引号或序号。
+
+【输出】
+每行输出一条 JSON，输入有几条就输出几行，一个都不能少、不能合并：
+{"src":"<原文>","dst":"<译文>"}
+不要解释，不要空行，不要 markdown 代码围栏，不要注释。
+"""
+
+_USER_TEMPLATE_TERMS = r"""{header}把下面这些词条翻译成{tgt}，每行输出一条 JSON，格式：
+{"src":"<原文>","dst":"<译文>"}
+输入：
+{body}
+"""
+
+# <why> 结构化思考块（config.THINKING_BLOCK=True 时追加到 system 末尾）
+THINKING_BLOCK = r"""输出结果前，在<why></why>块内按格式进行极简的**结构化思考**：
+<why>
+- 语境：影响理解的语境、指代、语气和主谓关系
+- 决策：结合当前指令，明确关键约束、歧义或翻译难点的处理方式
+</why>
+"""
+
+# 目标语言显示名 → prompts/ 子目录代码
+_LANG_CODE_BY_NAME = (
+    (("简体", "中文", "汉语"), "zh"),
+    (("繁体",), "zh-Hant"),
+    (("英文", "英语"), "en"),
+    (("日文", "日语"), "ja"),
+    (("韩文", "朝鲜"), "ko"),
+)
+
+
+def _lang_code():
+    for names, code in _LANG_CODE_BY_NAME:
+        if any(n in str(config.TARGET_LANG) for n in names):
+            return code
+    return "default"
+
+
+_TEMPLATE_CACHE = {}      # (code, name) → 模板文本
+
+
+def load_template(name, default):
+    """
+    读 prompts/ 下的模板文件；找不到用内置默认。
+
+    查找顺序：prompts/<语言代码>/<name> → prompts/<name> → default。
+    ★ 每次调用都做 os.path.isfile 探测（打包后 exe 旁边放同名文件
+       即可热替换，不该被缓存挡住），但读到的内容按 (code, name) 缓存。
+    """
+    code = _lang_code()
+    ck = (code, name)
+    for rel in (os.path.join(config.PROMPT_DIR, code, name),
+                os.path.join(config.PROMPT_DIR, name)):
+        p = config.resource_path(rel)
+        if p and os.path.isfile(p):
+            hit = _TEMPLATE_CACHE.get(ck)
+            if hit is not None:
+                return hit
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    text = f.read()
+                _TEMPLATE_CACHE[ck] = text
+                log.info("提示词模板：%s", p)
+                return text
+            except Exception as e:
+                log.warning("提示词模板读取失败（用内置默认）：%s：%s", p, e)
+                break
+    return default
+
 
 
 # ================================================================
@@ -112,17 +186,62 @@ _TERMS_PREFIX = "@@T:"
 # 模型偶尔包一层 markdown 代码围栏
 _FENCE_RE = re.compile(r'^\s*```[a-zA-Z]*\s*$')
 
-# <think> ... <think> / <think> ... </think>
-_THINK_RE = re.compile(r'<think\b[^>]*>.*?(?:</think>|<think>|$)', re.DOTALL)
+# 思考块：**只在响应开头**剥离（借鉴 LinguaGacha 的 /^\s*<why>/i）。
+#   ★ 不要写成全篇贪婪匹配（旧版 `.*?(?:</think>|<think>|$)`+DOTALL）：
+#     · 模型漏写 </think> 时那个 `|$` 会把后面**整篇译文**当思考内容吃掉；
+#     · 正文里本来就有 "<think>" 字样的台词也会被误删。
+#     实测："正文里有 <think> 这个字样的台词。" → 旧版剥离后只剩 "正文里有 "。
+_THINK_OPEN_RE = re.compile(r'^\s*<think\b[^>]*>', re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(r'</think>', re.IGNORECASE)
+_THINK_ALT_CLOSE_RE = re.compile(r'<think\b[^>]*>', re.IGNORECASE)
+
+
+def _first_think_close(rest):
+    """在 rest 里找最近的思考块收尾符（</think> 或下一个 <think>）。
+
+    返回收尾符之后的偏移；一个都没有时返回 None。
+    """
+    close = _THINK_CLOSE_RE.search(rest)
+    alt = _THINK_ALT_CLOSE_RE.search(rest)
+    if close is None and alt is None:
+        return None
+    if close is None:
+        return alt.end()
+    if alt is None:
+        return close.end()
+    return min(close.end(), alt.end())
+
+
+def split_leading_think(raw):
+    """
+    剥掉响应**开头**的思考块，返回 (正文, 出现过思考块没有)。
+
+    · 只在开头循环剥：正文中间出现的 <think> 属于译文本身，一律不动；
+    · 开头的块没有闭合 → 认为整篇都是思考内容，正文返回空串
+      （随后会被判成「模型无返回」走重试，而不是悄悄截断译文）。
+    """
+    text = raw or ""
+    seen = False
+    while True:
+        m = _THINK_OPEN_RE.match(text)
+        if not m:
+            break
+        seen = True
+        rest = text[m.end():]
+        end = _first_think_close(rest)
+        if end is None:
+            return "", seen
+        text = rest[end:]
+    return text, seen
 
 
 def _strip_noise(raw):
-    """去掉思考块、代码围栏、首尾空白。"""
+    """去掉**开头**的思考块、代码围栏、首尾空白。"""
     if not raw:
         return ""
-    raw = _THINK_RE.sub("", raw)
+    text, _had_think = split_leading_think(raw)
     lines = []
-    for line in raw.splitlines():
+    for line in text.splitlines():
         if _FENCE_RE.match(line):
             continue
         lines.append(line)
@@ -136,6 +255,94 @@ def _nothink_hint():
         return PV.nothink_hint(PV.current())
     except Exception:
         return "Ollama 用 think=false，其余服务请在服务端关闭"
+
+
+_TERM_LINE_RE = re.compile(
+    r'"src"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"dst"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _unescape_json_piece(s):
+    """JSON 字符串片段反转义（只处理常见几种，其余原样留下）。"""
+    return (s.replace('\\"', '"')
+             .replace("\\n", "\n")
+             .replace("\\t", "\t")
+             .replace("\\\\", "\\"))
+
+
+def _parse_term_lines(raw):
+    """
+    解析「术语名翻译」的输出，返回 {原文: 译文}。
+
+    主格式（prompt 要求的）：每行 {"src":"原文","dst":"译文"}
+    兜底格式：`原文=译文`（模型偶尔不听话）
+    译文为空 / 与原文相同 → 丢弃（交给上层的长度与中文校验再筛一遍）。
+    """
+    out = {}
+    if not raw:
+        return out
+    text, _had = split_leading_think(raw)
+    for line in text.splitlines():
+        line = line.strip().rstrip(",").strip()
+        if not line or _FENCE_RE.match(line):
+            continue
+        m = _TERM_LINE_RE.search(line)
+        if m:
+            k = _unescape_json_piece(m.group(1)).strip()
+            v = _unescape_json_piece(m.group(2)).strip()
+        elif "=" in line and not line.startswith("{"):
+            k, _, v = line.partition("=")
+            k = k.strip().strip('"').strip()
+            v = v.strip().strip('"').strip()
+        else:
+            continue
+        if not k or not v or k == v:
+            continue
+        out[k] = v
+    return out
+
+
+def _clean_terms(obj):
+    """术语 dict 归一：丢掉空值 / 原文==译文 / 占位符型 key。"""
+    out = {}
+    if not isinstance(obj, dict):
+        return out
+    for k, v in obj.items():
+        k, v = str(k).strip(), str(v).strip()
+        if not k or not v or k == v:
+            continue
+        # 占位符 token（@0@ / ⟦0⟧）不是术语，丢弃，避免污染术语表与 prompt
+        if re.fullmatch(r'[@\u27e6]\d+[@\u27e7]', k):
+            continue
+        out[k] = v
+    return out
+
+
+def _extract_terms_obj(line):
+    """从一行（可能残缺的）JSON 文本里抠出 "terms" 对象；失败返回 {}。
+
+    用括号配平扫描，避免正则被嵌套花括号带偏。
+    """
+    import json as _json
+    i = line.find('"terms"')
+    if i < 0:
+        return {}
+    j = line.find("{", i)
+    if j < 0:
+        return {}
+    depth = 0
+    for k in range(j, len(line)):
+        c = line[k]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = _json.loads(line[j:k + 1])
+                except Exception:
+                    return {}
+                return obj if isinstance(obj, dict) else {}
+    return {}
 
 
 def _parse_terms_line(content):
@@ -187,6 +394,43 @@ def _format_terms_block(term_pairs, limit=None):
     return "\n".join(lines) + "\n"
 
 
+def _decode_by_line_count(raw, items):
+    """
+    按「每条源文本的行数」把响应切回条目（Sakura 式对齐）。
+
+    很多小模型根本不理 <编号> / JSON，只是**照着输入的行数逐行输出译文**。
+    这种情况下：
+
+      · 逐行扫描：源码的每条 item 占 `len(src.splitlines())` 行，
+        响应里对应位置的同样行数就是它的译文（空行也占位置）；
+      · **整批行数必须正好对上**（消耗完的 == 总行数）；
+      · 任何一条切出来是空的 → 整体不接受。
+
+    只要对不上就返回 {}，让上层的缩块重试去处理 —— 位置猜错了比不翻更糟。
+
+    items: [(idx, src_text), ...]
+    返回 {idx: text}；对不上返回 {}。
+    """
+    if not raw or not items:
+        return {}
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out = {}
+    offset = 0
+    for idx, src in items:
+        n = len(str(src).splitlines()) or 1
+        chunk = lines[offset:offset + n]
+        offset += n
+        if offset > len(lines):
+            return {}
+        text = "\n".join(chunk).strip()
+        if not text:
+            return {}
+        out[idx] = text
+    if offset != len(lines):
+        return {}
+    return out
+
+
 def _parse_model_output(raw, expected=None):
     """
     逐行解析模型输出。
@@ -200,6 +444,11 @@ def _parse_model_output(raw, expected=None):
 
     ★ 同一编号重复出现时保留「第一条非空」结果：
       模型偶尔先输出草稿再输出终稿，取第一条更稳。
+
+    ★ 翻译走 JSON（{"id":N,"text":"...","terms":{...}}）：逐行 json.loads，
+      失败走逐字段抠取兜底（模型漏转义引号 / 多逗号都能救）。
+    ★ 同时保留 tag 行（<N>译文 / <N>@@T:术语）的解析：润色流程用的就是
+      <编号>译文，模型偶尔也会不听话输出这个格式。
     """
     translations = {}
     terms_map = {}
@@ -208,6 +457,24 @@ def _parse_model_output(raw, expected=None):
         return translations, terms_map
 
     for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        # ---------- JSON（唯一输出格式） ----------
+        if line.startswith("{"):
+            idx, text, terms = _parse_json_line(line)
+            if idx is None:
+                continue          # 修不好的残行：丢弃，交给重试
+            if expected is not None and idx not in expected:
+                continue
+            if terms:
+                terms_map.setdefault(idx, {}).update(terms)
+            if text:
+                translations.setdefault(idx, text)
+            continue
+
+        # ---------- tag 格式 ----------
         m = re.match(r"<\s*(\d+)\s*>(.*)", line)
         if not m:
             continue
@@ -234,7 +501,154 @@ def _parse_model_output(raw, expected=None):
             continue          # ★ 保留第一条非空结果
         translations[idx] = content
 
+    # ---------- 兜底：整个响应就是一个 JSON 对象 ----------
+    # 模型把**真换行**（而不是 \n 转义）写进 text 里时，逐行解析全废；
+    # 这时把整段当一个 JSON 抠还能救回来。
+    # 只在响应里只有一个 "id" 时才敢这么干，多条时抠出来必然张冠李戴。
+    if not translations:
+        stripped = raw.strip()
+        if (stripped.startswith("{")
+                and len(re.findall(r'"id"\s*:', stripped)) == 1):
+            _idx, _text, _terms = _parse_json_line(stripped)
+            if _idx is not None and (expected is None or _idx in expected):
+                if _terms:
+                    terms_map.setdefault(_idx, {}).update(_terms)
+                if _text:
+                    translations[_idx] = _text
+
     return translations, terms_map
+
+
+def _json_str(s):
+    """把文本安全地编码成 JSON 字符串字面量（含外层引号）。"""
+    import json as _json
+    return _json.dumps(str(s), ensure_ascii=False)
+
+
+# jsonline 行的两个字段（兜底抽取用）
+_JSON_ID_RE = re.compile(r'"id"\s*:\s*"?(\d+)"?')
+_JSON_TEXT_START_RE = re.compile(r'"text"\s*:\s*"')
+
+
+def _parse_json_line(line):
+    """
+    解析一条 {"id":N,"text":"...","terms":{...}}。
+    返回 (idx, text, terms)；完全解析不出来时返回 (None, None, {})。
+
+    先 json.loads；失败（常见原因：译文里的引号没转义、行尾多逗号）
+    退回「逐字段抠取」：id 用正则，text 用引号扫描（认 \" 转义），
+    terms 用括号配平扫描。
+    """
+    import json as _json
+    try:
+        obj = _json.loads(line)
+        if isinstance(obj, dict) and "id" in obj:
+            idx = int(obj["id"])
+            text = obj.get("text")
+            if text is None:
+                text = obj.get("translation", "")
+            return (idx, ("" if text is None else str(text)),
+                    _clean_terms(obj.get("terms")))
+    except Exception:
+        pass
+
+    m_id = _JSON_ID_RE.search(line)
+    if not m_id:
+        return None, None, {}
+    try:
+        idx = int(m_id.group(1))
+    except ValueError:
+        return None, None, {}
+    text = _extract_text_field(line)
+    if text is None:
+        return None, None, {}
+    return idx, text.strip(), _clean_terms(_extract_terms_obj(line))
+
+
+def _extract_text_field(line):
+    """从容错路径的 JSON 行里抠出 "text" 的字符串值；失败返回 None。
+
+    ★ 有 terms 字段时：text 的结束引号 = terms 之前最后一个引号 ——
+      这样 text 里带未转义的引号也能正确截断（旧版贪心匹配会把
+      terms 一起吞进去）。
+    ★ 没有 terms 时：退到行尾 } 之前的最后一个引号（旧版行为）。
+    """
+    m = _JSON_TEXT_START_RE.search(line)
+    if not m:
+        return None
+    i = m.end()
+
+    t = line.find('"terms"', i)
+    if t >= 0:
+        seg = line[i:t]
+        j = len(seg) - 1
+        while j >= 0 and seg[j] in " \t,":
+            j -= 1
+        if j >= 0 and seg[j] == '"':
+            seg = seg[:j]
+        else:
+            seg = seg.rstrip().rstrip(",")
+        return _unescape_json_str(seg)
+
+    k = line.rfind('"')
+    if k <= i:
+        return None
+    return _unescape_json_str(line[i:k])
+
+
+def _unescape_json_str(raw):
+    """JSON 字符串反转义（只处理常见几种，其余原样留下）。"""
+    return (raw.replace('\\"', '"')
+               .replace("\\n", "\n")
+               .replace("\\t", "\t")
+               .replace("\\\\", "\\"))
+
+
+# ================================================================
+# token 估算（分批用；借鉴 LinguaGacha 的 token 感知切块）
+# ================================================================
+_TIKTOKEN = None          # 延迟导入：装了 tiktoken 就用 o200k_base 精确计数
+_TIKTOKEN_TRIED = False
+
+
+def _get_tiktoken():
+    global _TIKTOKEN, _TIKTOKEN_TRIED
+    if _TIKTOKEN_TRIED:
+        return _TIKTOKEN
+    _TIKTOKEN_TRIED = True
+    try:
+        import tiktoken
+        _TIKTOKEN = tiktoken.get_encoding("o200k_base")
+    except Exception:
+        _TIKTOKEN = None
+    return _TIKTOKEN
+
+
+def estimate_tokens(text):
+    """
+    估算一段文本的 token 数。
+
+    · 装了 tiktoken → o200k_base 精确计数（与 LinguaGacha 同款）；
+    · 没装 → 经验值：CJK 每字 1 token、其余每 4 字符 1 token
+      （中英混排的台词误差在一两成以内，用来切批足够）。
+    """
+    if not text:
+        return 0
+    enc = _get_tiktoken()
+    if enc is not None:
+        try:
+            return len(enc.encode(text))
+        except Exception:
+            pass
+    cjk = 0
+    other = 0
+    for ch in text:
+        if '\u2e80' <= ch <= '\u9fff' or '\uac00' <= ch <= '\ud7af' \
+                or '\uff00' <= ch <= '\uffef' or '\u3000' <= ch <= '\u303f':
+            cjk += 1
+        else:
+            other += 1
+    return cjk + (other + 3) // 4
 
 
 # ================================================================
@@ -268,6 +682,177 @@ def _api_max_tokens(want):
     return limit if want <= 0 else min(want, limit)
 
 
+# ================================================================
+# 云端 API 调度器：多 Key 轮换 + 冷却 + 并发自适应
+#   （借鉴 LinguaGacha translation-request-scheduler / request-rate）
+# ================================================================
+def _split_api_keys():
+    """
+    收集可用 API Key：config.API_KEYS（每行一个）优先，
+    为空则退回 config.API_KEY 单 key。去空行、去重、保序。
+    """
+    raw = str(getattr(config, "API_KEYS", "") or "")
+    keys = [k.strip() for k in raw.splitlines() if k.strip()]
+    single = str(getattr(config, "API_KEY", "") or "").strip()
+    if single and single not in keys:
+        keys.insert(0, single)
+    return keys
+
+
+def _parse_retry_after(resp):
+    """从 429 响应头读 Retry-After（秒）；读不到返回 None。"""
+    try:
+        v = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+        if v is None:
+            return None
+        return max(0.0, float(str(v).strip()))
+    except Exception:
+        return None
+
+
+class ApiScheduler:
+    """
+    单客户端共用的 API 调度器（线程安全）。
+
+    · 并发槽：acquire() 阻塞拿槽，release() 归还；
+      AUTO_CONCURRENCY 开启时，429 → 并发减半，成功 → +1（限 min~max）；
+    · Key 状态机：ready → cooling（失败进冷却）→ probing（冷却结束试探）。
+      连续失败按 KEY_COOLDOWN_STEPS 阶梯 [15s, 30s, 60s] 加长冷却；
+      429 额外尊重服务端 Retry-After。
+    """
+
+    def __init__(self, keys=None, concurrency=None, auto=None):
+        self._keys = keys if keys is not None else _split_api_keys()
+        if not self._keys:
+            self._keys = [""]
+        n = len(self._keys)
+        self._key_state = [{"fail": 0, "until": 0.0} for _ in range(n)]
+        self._rr = 0                     # 轮询游标
+        c_min = max(1, int(getattr(config, "CONCURRENCY_MIN", 1) or 1))
+        c_max = max(c_min, int(getattr(config, "CONCURRENCY_MAX", 16) or 16))
+        explicit = concurrency is not None
+        if not explicit:
+            concurrency = resolve_concurrency()
+        self._conc = max(c_min, min(c_max, int(concurrency or 1)))
+        self._auto = (getattr(config, "AUTO_CONCURRENCY", True)
+                      if auto is None else bool(auto))
+        self._c_min, self._c_max = c_min, c_max
+        # ★ 本地服务（Ollama / llama.cpp / LM Studio）恒串行：
+        #   自适应会在请求成功后一路 +1（上限 CONCURRENCY_MAX），把「并发 1」
+        #   悄悄顶上去。这里只在**自动解析**时压到 1、并关掉自适应；
+        #   显式传了 concurrency / auto 的调用方按它给的来。
+        if _is_local_provider():
+            if auto is None:
+                self._auto = False
+            if not explicit:
+                self._conc = 1
+        self._active = 0
+        self._cond = threading.Condition()
+
+    # ---------- 查询 ----------
+    @property
+    def concurrency(self):
+        with self._cond:
+            return self._conc
+
+    def stats(self):
+        with self._cond:
+            cooling = sum(1 for s in self._key_state
+                          if s["until"] > time.time())
+            return {"keys": len(self._keys), "cooling": cooling,
+                    "concurrency": self._conc, "active": self._active}
+
+    # ---------- 槽位 + Key ----------
+    def acquire(self, timeout=None):
+        """
+        拿一个并发槽和一个可用 Key，返回 (key, index)。
+        冷却中的 Key 不占槽；全部 Key 都在冷却时等到最早恢复的那个。
+        """
+        deadline = None if timeout is None else time.time() + timeout
+        with self._cond:
+            while True:
+                now = time.time()
+                # ① 有空闲槽 → 找一个 ready 的 Key
+                if self._active < self._conc:
+                    for _ in range(len(self._keys)):
+                        i = self._rr % len(self._keys)
+                        self._rr += 1
+                        if self._key_state[i]["until"] <= now:
+                            self._active += 1
+                            return self._keys[i], i
+                # ② 没有 ready 的 Key：等到最早恢复点（或空槽出现）
+                waits = [s["until"] - now for s in self._key_state
+                         if s["until"] > now]
+                if deadline is None:
+                    self._cond.wait(max(0.05, min(waits) if waits else 0.05))
+                else:
+                    left = deadline - time.time()
+                    if left <= 0:
+                        raise TimeoutError("等待 API 调度槽超时")
+                    self._cond.wait(max(0.05, min(min(waits) if waits
+                                                  else 0.05, left)))
+
+    def release(self, index, ok=True, rate_limited=False, retry_after=None):
+        """归还槽位并汇报结果（ok=False 时按情况冷却该 Key）。"""
+        steps = list(getattr(config, "KEY_COOLDOWN_STEPS", None)
+                     or [15, 30, 60])
+        with self._cond:
+            self._active = max(0, self._active - 1)
+            st = self._key_state[index]
+
+            if rate_limited:
+                # 429：并发减半（在途请求不受影响，下一批才降档）
+                if self._auto:
+                    self._conc = max(self._c_min, self._conc // 2)
+                st["fail"] += 1
+                cool = steps[min(st["fail"] - 1, len(steps) - 1)]
+                if retry_after:
+                    cool = max(cool, min(retry_after, 300.0))
+                st["until"] = time.time() + cool
+                log.warning("API 429：并发降至 %d，Key#%d 冷却 %.0fs",
+                            self._conc, index + 1, cool)
+            elif not ok:
+                st["fail"] += 1
+                cool = steps[min(st["fail"] - 1, len(steps) - 1)]
+                st["until"] = time.time() + cool
+                log.warning("API 请求失败：Key#%d 冷却 %.0fs（第 %d 次）",
+                            index + 1, cool, st["fail"])
+            else:
+                st["fail"] = 0
+                st["until"] = 0.0
+                if self._auto and self._conc < self._c_max:
+                    self._conc += 1
+            self._cond.notify()
+
+
+def _is_local_provider():
+    """
+    当前是不是**本机**服务：Ollama / llama.cpp / LM Studio。
+
+    ★ 这三个都是本机单卡（或 CPU）推理，请求并发发过去只是在服务端排队，
+      既不会更快，还容易撑爆显存 / 上下文；所以本地一律串行。
+      「custom」可能是本机也可能是远端，不在这里判定。
+    """
+    try:
+        import providers as PV
+        return PV.current() in ("ollama", "llamacpp", "lmstudio")
+    except Exception:
+        return not _is_api_mode()
+
+
+def resolve_concurrency():
+    """
+    实际并发批数：TRANSLATE_CONCURRENCY > 0 就用它；
+    = 0（默认）→ 本地服务（Ollama / llama.cpp / LM Studio）1，云端 API 4。
+    """
+    n = int(getattr(config, "TRANSLATE_CONCURRENCY", 0) or 0)
+    if n > 0:
+        return n
+    if _is_local_provider():
+        return 1
+    return 4
+
+
 class OllamaClient:
     """翻译客户端：本地 Ollama 与云端 OpenAI 兼容 API 共用同一套接口。"""
 
@@ -280,11 +865,15 @@ class OllamaClient:
             self.model = (config.API_MODEL if self.api_mode
                           else config.MODEL)
         self._think_supported = True
+        # 云端 API 调度器（多 Key 轮换 + 并发自适应）；本地 Ollama 不需要
+        self._sched = ApiScheduler() if self.api_mode else None
         proto = ""
         if self.api_mode:
             base = str(getattr(config, "API_BASE_URL", "") or "")
             proto = ("，协议=Anthropic Messages"
                      if _is_anthropic_base(base) else "，协议=OpenAI 兼容")
+            n_keys = len(_split_api_keys())
+            proto += f"，Key×{n_keys}，并发{self._sched.concurrency}"
         log.info("翻译客户端初始化  模式=%s%s  模型=%s",
                  "云端API" if self.api_mode else "本地Ollama", proto, self.model)
 
@@ -383,8 +972,32 @@ class OllamaClient:
             payload["ttl"] = ttl
         timeout = getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
 
-        resp = self.session.post(url, json=payload, headers=headers,
-                                 timeout=timeout)
+        if self._sched is None:
+            resp = self.session.post(url, json=payload, headers=headers,
+                                     timeout=timeout)
+            if resp.status_code >= 400:
+                raise requests.HTTPError(
+                    self._http_hint(resp, url, "OpenAI 兼容"),
+                    response=resp)
+            return resp.json()
+
+        # 调度器路径：拿槽 + 轮换 Key，按结果反馈（429 降并发 / 冷却 Key）
+        key, idx = self._sched.acquire()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        try:
+            resp = self.session.post(url, json=payload, headers=headers,
+                                     timeout=timeout)
+        except Exception:
+            self._sched.release(idx, ok=False)
+            raise
+        if resp.status_code == 429:
+            self._sched.release(idx, ok=False, rate_limited=True,
+                                retry_after=_parse_retry_after(resp))
+        elif resp.status_code >= 400:
+            self._sched.release(idx, ok=False)
+        else:
+            self._sched.release(idx, ok=True)
         if resp.status_code >= 400:
             raise requests.HTTPError(
                 self._http_hint(resp, url, "OpenAI 兼容"),
@@ -426,8 +1039,31 @@ class OllamaClient:
 
         timeout = getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
 
-        resp = self.session.post(url, json=payload, headers=headers,
-                                 timeout=timeout)
+        if self._sched is None:
+            resp = self.session.post(url, json=payload, headers=headers,
+                                     timeout=timeout)
+            if resp.status_code >= 400:
+                raise requests.HTTPError(
+                    self._http_hint(resp, url, "Anthropic 兼容"),
+                    response=resp)
+            return resp.json()
+
+        key, idx = self._sched.acquire()
+        if key:
+            headers["x-api-key"] = key
+        try:
+            resp = self.session.post(url, json=payload, headers=headers,
+                                     timeout=timeout)
+        except Exception:
+            self._sched.release(idx, ok=False)
+            raise
+        if resp.status_code == 429:
+            self._sched.release(idx, ok=False, rate_limited=True,
+                                retry_after=_parse_retry_after(resp))
+        elif resp.status_code >= 400:
+            self._sched.release(idx, ok=False)
+        else:
+            self._sched.release(idx, ok=True)
         if resp.status_code >= 400:
             raise requests.HTTPError(
                 self._http_hint(resp, url, "Anthropic 兼容"),
@@ -496,43 +1132,90 @@ class OllamaClient:
 
     # ---------- 翻译 ----------
     def _system_prompt(self):
-        return (SYSTEM_PROMPT
-                .replace("{src}", config.SOURCE_LANG)
-                .replace("{tgt}", config.TARGET_LANG))
+        """system 提示词：模板外置（prompts/ 可覆盖）+ 可选 <why> 思考块。"""
+        text = load_template("system_translate_jsonline.txt",
+                             SYSTEM_PROMPT_JSONLINE)
+        text = (text.replace("{src}", config.SOURCE_LANG)
+                    .replace("{tgt}", config.TARGET_LANG))
+        if getattr(config, "THINKING_BLOCK", False):
+            text = text.rstrip() + "\n\n" + load_template(
+                "thinking.txt", THINKING_BLOCK).rstrip()
+        return text
 
-    def translate_batch(self, items, terms_out=None, term_pairs=None,
-                        extra_instruction=None):
+    def translate_batch(self, items, term_pairs=None, context_lines=None):
         """
         items:      [(idx, safe_text), ...]
-        terms_out:  可选 dict，被填充为 {idx: {src: dst}}
         term_pairs: 可选 [(原文, 译文), ...]，作为 prompt 里的术语表
-        extra_instruction: 可选，追加到用户消息末尾的強化指令
-                           （如占位符丢失时提醒模型必须保留 @N@）
+        context_lines: 可选 [上文原文, ...]（前几条已译句子的原文），
+                       拼在术语表与正文之间，明确标注「只提供语境、不要翻译」
         返回:       {idx: translation}
         """
         if not items:
             return {}
 
-        body = "\n".join(f"<{i}>{t}" for i, t in items)
         terms_block = _format_terms_block(term_pairs)
-        user_msg = (_USER_TEMPLATE
+        context_block = ""
+        if context_lines:
+            ctx = "\n".join(context_lines)
+            context_block = (
+                "【上文】以下是紧接在本批之前的剧情原文，仅供理解语境，"
+                "不要翻译、不要输出、不要模仿其格式：\n" + ctx + "\n\n")
+
+        # 输出固定 JSON：每行一条 {"id":N,"text":"..."}
+        body = "\n".join(
+            '{"id":%d,"text":%s}' % (i, _json_str(t))
+            for i, t in items)
+        template = load_template("user_translate_jsonline.txt",
+                                 _USER_TEMPLATE_JSONLINE)
+
+        user_msg = (template
                     .replace("{terms_block}", terms_block)
+                    .replace("{context_block}", context_block)
                     .replace("{tgt}", config.TARGET_LANG)
                     .replace("{body}", body))
-        if extra_instruction:
-            user_msg = user_msg.rstrip() + "\n\n" + extra_instruction
-
         raw = self.chat(self._system_prompt(), user_msg)
 
-        translations, terms_map = _parse_model_output(
+        translations, _ = _parse_model_output(
             raw, expected={i for i, _t in items})
 
-        if terms_out is not None:
-            for idx, terms in terms_map.items():
-                if terms:
-                    terms_out.setdefault(idx, {}).update(terms)
+        if not translations:
+            # ★ 兜底：模型完全不吐编号时，按「每条源文本的行数」把响应切回来
+            #   （Sakura 式对齐）。整批行数正好对得上才接受，否则交给上层
+            #   缩块重试 —— 宁可靠重试，也不瞎猜哪一行属于哪一条。
+            aligned = _decode_by_line_count(raw, items)
+            if aligned:
+                log.info("按行数对齐解码成功：%d 条", len(aligned))
+                translations = aligned
 
         return translations
+
+    # ---------- 术语名批量翻译（术语提取页用） ----------
+    def translate_terms(self, names, header=""):
+        """
+        把一批「术语名」翻成译文，返回 {原文: 译文}。
+
+        和逐句翻译分开：prompt 短、批大、不需要上下文，
+        用的是 prompts/system_term_extract.txt 专用提示词。
+        （术语提取页 —— 从名字文本文件提出名字后丢给模型）
+        """
+        items = [str(n).strip() for n in (names or []) if str(n).strip()]
+        if not items:
+            return {}
+        body = "\n".join(items)
+        user_msg = (load_template("user_term_extract.txt",
+                                  _USER_TEMPLATE_TERMS)
+                    .replace("{header}", header or "")
+                    .replace("{tgt}", config.TARGET_LANG)
+                    .replace("{body}", body))
+        system = load_template("system_term_extract.txt",
+                               SYSTEM_PROMPT_TERMS)
+        system = (system.replace("{src}", config.SOURCE_LANG)
+                        .replace("{tgt}", config.TARGET_LANG))
+        raw = self.chat(system, user_msg,
+                        temperature=getattr(config,
+                                            "TERM_EXTRACT_TEMPERATURE",
+                                            0.2))
+        return _parse_term_lines(raw)
 
     # ---------- 中文润色 ----------
     def polish_batch(self, items):
@@ -561,8 +1244,10 @@ class OllamaClient:
                      "不要输出这一段，也不要照抄其中的控制码。\n"
                      + "\n".join(ref_lines))
 
-        user_msg = _POLISH_TEMPLATE.replace("{body}", body)
-        system = POLISH_SYSTEM_PROMPT.replace("{tgt}", config.TARGET_LANG)
+        user_msg = load_template("user_polish.txt",
+                                 _POLISH_TEMPLATE).replace("{body}", body)
+        system = load_template("system_polish.txt", POLISH_SYSTEM_PROMPT)
+        system = system.replace("{tgt}", config.TARGET_LANG)
 
         raw = self.chat(
             system, user_msg,
@@ -577,14 +1262,17 @@ class OllamaClient:
 # 带重试的封装
 # ================================================================
 def translate_with_retry(client, batch, depth=0,
-                         terms_out=None, term_pairs=None,
-                         extra_instruction=None):
+                         term_pairs=None, context_lines=None):
     """
     batch:      [(idx, safe_text), ...]
-    terms_out:  可选 dict，被填充为 {idx: {src: dst}}
     term_pairs: 可选 [(原文, 译文), ...]，作为 prompt 里的术语表
-    extra_instruction: 占位符丢失等场景下的強化指令（透传给模型）
+    context_lines: 可选 [上文原文, ...]（透传给模型）
     返回:       {idx: translation}
+
+    ★ 重试策略（借鉴 LinguaGacha）：整批失败 → 原样重试 BATCH_RETRIES 次
+      → 按 2^depth 几何缩块（2 → 4 → 8 → 16 块）逐级重试，
+      比逐半拆更快触底、又比直接单条省请求；depth 到顶后逐条重试，
+      单条也失败才放弃（调用方记「翻译失败」进报告）。
     """
     if not batch:
         return {}
@@ -593,8 +1281,8 @@ def translate_with_retry(client, batch, depth=0,
     for attempt in range(config.BATCH_RETRIES + 1):
         try:
             return client.translate_batch(
-                batch, terms_out=terms_out, term_pairs=term_pairs,
-                extra_instruction=extra_instruction,
+                batch, term_pairs=term_pairs,
+                context_lines=context_lines,
             )
         except Exception as e:
             last_err = e
@@ -603,14 +1291,17 @@ def translate_with_retry(client, batch, depth=0,
             time.sleep(min(2.0 * (attempt + 1), 6.0))
 
     if len(batch) > 1 and depth < 4:
-        mid = len(batch) // 2
-        log.info("整批失败，拆分为 %d + %d 重试", mid, len(batch) - mid)
-        r1 = translate_with_retry(client, batch[:mid], depth + 1,
-                                  terms_out, term_pairs, extra_instruction)
-        r2 = translate_with_retry(client, batch[mid:], depth + 1,
-                                  terms_out, term_pairs, extra_instruction)
-        r1.update(r2)
-        return r1
+        parts = 2 ** (depth + 1)          # 几何缩块：2 → 4 → 8 → 16
+        size = max(1, -(-len(batch) // parts))   # 向上取整
+        log.info("整批失败，按 %d 块（每块约 %d 条）缩块重试",
+                 parts, size)
+        result = {}
+        for i in range(0, len(batch), size):
+            chunk = batch[i:i + size]
+            r = translate_with_retry(client, chunk, depth + 1,
+                                     term_pairs, context_lines)
+            result.update(r)
+        return result
 
     log.error("单条也失败，放弃该批（最后错误：%s）", last_err)
     return {}
@@ -633,11 +1324,16 @@ def polish_with_retry(client, batch, depth=0):
             time.sleep(min(2.0 * (attempt + 1), 6.0))
 
     if len(batch) > 1 and depth < 4:
-        mid = len(batch) // 2
-        r1 = polish_with_retry(client, batch[:mid], depth + 1)
-        r2 = polish_with_retry(client, batch[mid:], depth + 1)
-        r1.update(r2)
-        return r1
+        parts = 2 ** (depth + 1)          # 几何缩块（同翻译）
+        size = max(1, -(-len(batch) // parts))
+        log.info("润色整批失败，按 %d 块（每块约 %d 条）缩块重试",
+                 parts, size)
+        result = {}
+        for i in range(0, len(batch), size):
+            chunk = batch[i:i + size]
+            r = polish_with_retry(client, chunk, depth + 1)
+            result.update(r)
+        return result
 
     log.error("润色单条也失败，放弃该批（最后错误：%s）", last_err)
     return {}

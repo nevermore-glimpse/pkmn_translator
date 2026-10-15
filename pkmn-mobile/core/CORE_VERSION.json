@@ -1,6 +1,6 @@
 {
   "source": "E:/pkmn_translator",
-  "synced_at": "2026-10-14 10:33:26",
+  "synced_at": "2026-10-15 15:40:34",
   "modules": [
     "rmarshal.py",
     "save_tools.py",
@@ -8,7 +8,9 @@
     "game_scripts.py",
     "essentials_base.py",
     "logger.py",
-    "intl_text.py"
+    "intl_text.py",
+    "pbs_edit.py",
+    "pbs_legacy.py"
   ],
   "files": {
     "rmarshal.py": {
@@ -24,8 +26,8 @@
       "size": 47602
     },
     "game_scripts.py": {
-      "sha256": "3e513703fc817c763c59aca632c1f74394431a09ef2e5b8bca5208d00e2c6cf7",
-      "size": 46880
+      "sha256": "3c1917042dbe51236e97ddadb05b92391592065af28abed1b4584cadfb959db1",
+      "size": 52970
     },
     "essentials_base.py": {
       "sha256": "ff309ca7db374b40a6099e00dce3858e196a44a7fb2840013debf2147436f17b",
@@ -36,8 +38,16 @@
       "size": 5460
     },
     "intl_text.py": {
-      "sha256": "5be2b9471679956ad6504273e68089db3f9b5965d252cd7f1c8d4ef3acab6fbb",
-      "size": 51635
+      "sha256": "a6ca007a33516816bb4e0870c864b6be9dc3db6065c4a8d190052e559d8367a2",
+      "size": 51674
+    },
+    "pbs_edit.py": {
+      "sha256": "dbdc50847d39892292f29fb76d37cfb2122aad6742a116d15794ec3be5e91c58",
+      "size": 193334
+    },
+    "pbs_legacy.py": {
+      "sha256": "b284f90c05783a02609c343d478d1623e7111a8ebc4ef9bb7ad7cca78b856f10",
+      "size": 88865
     }
   }
 }

@@ -22,18 +22,15 @@
      ⑦ 调试启动器（见 launcher）。
      按引擎版本 / 代码形态自动适配注入位置。
 
-依赖：game_scripts（脚本读）、essentials_base（基准比对）、engine_src、
-      config。
+依赖：game_scripts（脚本读）、essentials_base（基准比对）、engine_src。
 """
 import io
-import json
 import os
 import re
 import shutil
 import time
 import zlib
 
-import config
 import engine_src
 import game_scripts as GS
 from rubymarshal.classes import Symbol
@@ -1732,7 +1729,6 @@ def _func_range_in(text, func):
             break
     if start is None:
         return None
-    indent = len(lines[start]) - len(lines[start].lstrip())
 
     depth = 1
     # 逐行配对：`def` 行本身算 1 层。之后按 Ruby 关键字计数。
@@ -3030,11 +3026,14 @@ def guard_plugin_dependency(script_path, const_name, emit=None):
             emit(msg)
 
     try:
-        text = io.open(script_path, encoding="utf-8", errors="replace").read()
+        # ★ newline="" 保留原始行尾（本模块约定：行里留着 \r，拼回时用 \n）。
+        #   用默认的通用换行读，CRLF 脚本会被静默改写成 LF。
+        with io.open(script_path, encoding="utf-8", errors="replace",
+                     newline="") as f:
+            text = f.read()
     except OSError as e:
         say(f"[方式七] ⚠ 读「{os.path.basename(script_path)}」失败：{e}")
         return 0
-    eol = "\r\n" if "\r\n" in text else "\n"
     lines = text.split("\n")
     out = []
     i = 0
@@ -3054,10 +3053,12 @@ def guard_plugin_dependency(script_path, const_name, emit=None):
                 i += 1
                 continue
             indent = re.match(r"^([ \t]*)", ln).group(1)
-            out.append(f"{indent}if defined?({const_name})  {_XQK_GUARD_MARK}")
+            cr = "\r" if ln.endswith("\r") else ""      # 保留 CRLF 行尾
+            out.append(f"{indent}if defined?({const_name})  "
+                       f"{_XQK_GUARD_MARK}{cr}")
             for k in range(i, end + 1):
                 out.append(("  " + lines[k]) if lines[k].strip() else lines[k])
-            out.append(f"{indent}end")
+            out.append(f"{indent}end{cr}")
             changed += 1
             i = end + 1
             continue

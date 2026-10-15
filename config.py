@@ -60,7 +60,7 @@ def resource_dir(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.6.4"
+VERSION     = "1.7.2"
 APP_NAME    = "宝可梦同人工具"
 APP_TITLE   = f"{APP_NAME} v{VERSION}"
 
@@ -95,8 +95,6 @@ OUTPUT_FILE  = os.path.join(BASE_DIR, "intl_translated.txt")
 CACHE_FILE   = os.path.join(BASE_DIR, "intl_cache.json")
 TERM_FILE    = os.path.join(BASE_DIR, "term_dict.py")
 CONFLICT_FILE = os.path.join(BASE_DIR, "term_conflicts.json")
-# ★ 占位符缺失记录（翻译时落盘，菜单 3 刷新报告时按类型显示）
-PLACEHOLDER_FILE = os.path.join(BASE_DIR, "placeholder_missing.json")
 REPORT_DIR   = os.path.join(BASE_DIR, "reports")
 EXCEL_FILE   = os.path.join(BASE_DIR, "术语表（Glossary）.xlsx")
 # ★ 窗口标题栏图标。--icon=start.ico 只是把图标烧进 exe 文件头，
@@ -111,7 +109,7 @@ MAX_INPUT_LINES = 0
 # ================================================================
 # 翻译中间文件目录
 # ================================================================
-# 一次翻译会产生不少「中间文件」：缓存、术语冲突、占位符缺失、检查报告、
+# 一次翻译会产生不少「中间文件」：缓存、术语冲突、检查报告、
 # 润色稿、润色进度…… 编译文本时其实**只看 `*_translated.txt`**，
 # 这些中间文件堆在源文件夹里既乱又容易被误当成源文本。
 #
@@ -164,7 +162,6 @@ class Runtime:
     output_file = OUTPUT_FILE
     cache_file  = CACHE_FILE
     conflict_file = CONFLICT_FILE   # ★ 术语冲突记录（与缓存同源）
-    placeholder_file = PLACEHOLDER_FILE  # ★ 占位符缺失记录（与缓存同源）
     last_dir    = BASE_DIR      # ★ 最近一次浏览的目录（GUI 用）
     plugin_font = ""            # ★ 植入中文插件时用户自选的字体（空=内置萝莉体）
     # ★ 存档编辑（菜单 6）：这两项**分开**记 ——
@@ -179,7 +176,6 @@ class Runtime:
         cls.output_file = OUTPUT_FILE
         cls.cache_file  = CACHE_FILE
         cls.conflict_file = CONFLICT_FILE
-        cls.placeholder_file = PLACEHOLDER_FILE
         cls.last_dir    = BASE_DIR
         cls.plugin_font = ""
         cls.game_root   = ""
@@ -195,7 +191,6 @@ class Runtime:
         aux = aux_dir(path)
         cls.cache_file  = os.path.join(aux, f"{stem}_cache.json")
         cls.conflict_file = os.path.join(aux, f"{stem}_conflicts.json")
-        cls.placeholder_file = os.path.join(aux, f"{stem}_placeholder.json")
         cls.last_dir    = parent
 
     @classmethod
@@ -327,12 +322,73 @@ CACHE_SAVE_EVERY = 1
 
 # ★ 自适应分批：单批原文总字符超过该值就提前切批，避免超长句撑爆上下文
 MAX_BATCH_CHARS  = 4096
-# ★ 按长度排序后再分批：同批句子长度接近，输出更稳定、更少截断
-SORT_TODO_BY_LEN = True
+# ★ token 感知分批（借鉴 LinguaGacha）：单批原文估算 token 超过该值就切批。
+#   估算规则：CJK 每字 1 token、其余每 4 字符 1 token（装了 tiktoken 则用
+#   o200k_base 精确计数）。行数上限 = max(8, 该值 // 16)，与 token 上限
+#   双重约束，小模型（上下文小）与云模型都适用。0 = 关闭，只按条数/字符。
+MAX_BATCH_TOKENS = 2048
+# ★ 上文注入：每批 prompt 里附带的前几条译文上下文（仅取以句末标点
+#   结尾的条目，防止把半句话当前文）。游戏对白最吃指代和语气，
+#   有上文比换大模型更提升质量。0 = 不带上文。
+CONTEXT_LINES    = 10
+# ★ 按长度排序后再分批：False = 按原文件顺序翻（默认，对白上下文连贯，
+#   续翻/对照原文直观）；True = 同批长度接近，输出更稳定、更少截断。
+#   注意：两种模式的输出文件都按原文件顺序回写，此处只改送模型的批次顺序。
+SORT_TODO_BY_LEN = False
 # ★ 单批注入 prompt 的术语上限
 MAX_TERMS_IN_PROMPT = 100
 # ★ 模型原样回显原文时视为失败，触发重试
 TREAT_ECHO_AS_FAIL = True
+
+# ---------- 并发与多 API Key（借鉴 LinguaGacha 自适应调度） ----------
+# 翻译并发批数。0 = 自动（云端 API 用 4，本地 Ollama 用 1——本地推理
+#   大都单槽串行，并发发过去也只是排队，反而拖慢首字延迟）。
+TRANSLATE_CONCURRENCY = 0
+# 并发自适应：请求成功逐步 +1、遇到 429 减半（在 CONCURRENCY_MIN~MAX 之间）。
+AUTO_CONCURRENCY = True
+CONCURRENCY_MIN = 1
+CONCURRENCY_MAX = 16
+# 多 API Key：每行一个，轮询使用；某个 Key 连续失败按阶梯冷却，
+# 冷却中的 Key 不占并发槽。留空则只用 API_KEY 单 key。
+API_KEYS = ""
+# 单个 Key 连续失败后的冷却阶梯（秒）：第 1 次失败冷却 15s，第 2 次 30s…
+KEY_COOLDOWN_STEPS = [15, 30, 60]
+
+# ---------- 提示词 ----------
+# 输出格式固定为 jsonline：每行 {"id":N,"text":"译文","terms":{...}}。
+#   · 逐行 JSON 比两行制 <编号> 格式好解析、模型也更少漏行；
+#   · 术语内联提取放进 terms 字段（原 tag 格式的 @@T: 行已废弃）。
+# 提示词模板目录（相对 resource_path）。按目标语言分子目录覆盖：
+#   prompts/{zh,en,ja,...}/xxx.txt 优先于 prompts/xxx.txt
+# 文件缺失时用 translator.py 里的内置默认模板，行为不变。
+PROMPT_DIR = "prompts"
+# True 时在 system prompt 末尾追加 <why> 结构化思考块（语境/决策），
+# 让模型翻译前先想清楚指代和难点；会略增输出 token。
+THINKING_BLOCK = False
+
+# ---------- 译前 / 译后替换（借鉴 LinguaGacha Replacement） ----------
+# 规则文件：JSON 数组，每项 {"src","dst","regex","info"}。
+# 译前替换发生在「保护控制码之前」，译后替换发生在「还原占位符之后」。
+# 留空 = 用内置 replacements/{pre,post}_default.json。
+PRE_REPLACEMENT_FILE  = ""
+POST_REPLACEMENT_FILE = ""
+# ★ 预设（replacements/pre、replacements/post 下**一个文件一个预设**）：
+#   留空 = 目录下全部启用；填 "01_中文排版,02_别的" = 只启用这几个（按填写顺序）。
+#   文件名前缀（01_、02_…）决定执行顺序。
+PRE_REPLACEMENT_PRESETS  = ""
+POST_REPLACEMENT_PRESETS = ""
+PRE_REPLACEMENT_ENABLE  = False
+POST_REPLACEMENT_ENABLE = True
+
+# ---------- 术语命中统计 ----------
+# 翻译时累计每条术语被命中多少次，结束写 terms_stats.json（aux 目录），
+# 用来发现「提取了但游戏里根本没出现」的废术语和真正高频的核心术语。
+TERM_STATS_ENABLE = False
+
+# ---------- 预过滤（借鉴 LinguaGacha prefilter） ----------
+# 剥离控制码后**不含源语言字符**的行不送模型（数字串、纯符号行、
+# 他国语言残留行），直接按原文缓存——省 token 也省报告噪音。
+PREFILTER_ENABLE = True
 
 # ---------- 换行重排 ----------
 REWRAP_ENABLE  = True
@@ -362,13 +418,18 @@ WHOLE_TERM_MATCH   = True
 #   命中的术语只注入 prompt（不改译文），词根与后缀白名单见 processor.py。
 TERM_DERIVED_MATCH = True
 ASK_LANG_EACH_TIME = True
-# ---------- 玩家名替换 ----------
-PLAYER_TOKEN = r"\PN"              # 游戏脚本里的玩家名控制码
-PLAYER_PLACEHOLDER = "<666>"  # 送模型时的替换文本（含罕见括号，防误伤）
+# ★ 编译文本后，把「中文」放到 Settings::LANGUAGES 的**第一条**：
+#   游戏的语言就是列表下标（$PokemonSystem.language 默认 0），
+#   不排第一位的话进游戏看不到译文、得手动切语言。
+LANG_ENTRY_FIRST = True
 
 # ---------- 自动术语提取 ----------
-AUTO_EXTRACT_TERMS    = True    # 翻译时自动提取专有名词
+# ★ 翻译时**不再**由模型内联提取术语（v1.6.7 起）：改用「游戏汉化 → 术语提取」
+#   页从游戏导出的文本文件（*_NAMES / *_NAME）抽名字再翻 ——
+#   来源确定、覆盖完整、不干扰翻译 prompt。
 AUTO_EXTRACT_MIN_LEN  = 3       # 术语最短长度（过滤单字母/双字母）
+TERM_EXTRACT_BATCH    = 40      # 术语提取时每次送模型几条
+TERM_EXTRACT_TEMPERATURE = 0.2  # 术语翻译温度（低一点更稳，译名要一致）
 
 # ---------- 云端 API 保护 ----------
 # ★ 单次请求的 max_tokens 上限（防止把 NumPredict 直接透传给云端导致 400）
@@ -388,10 +449,15 @@ EXCEL_TARGET_LANG = "简体中文"
 EXCEL_APPEND      = True
 # ---------- 句首控制码字典 ----------
 PREFIX_DICT_ENABLE = True    # 启用句首控制码前缀字典
-# ---------- 占位符保护 ----------
-# True  = 翻译前把控制码/标签/数字替换成 @0@ 占位符，翻完再还原（稳，推荐）
-# False = 不做占位符保护，原文整句直接交给模型（个别模型对占位符过敏时用）
-PLACEHOLDER_PROTECT = True
+# ---------- 文本保护规则（text_preserve） ----------
+# 目录名（与 config.py 同级）。规则文件格式与用法见该目录下 README.md。
+TEXT_PRESERVE_DIR = "text_preserve"
+# 三档模式：
+#   off    只用 processor 内置的识别规则（\命令[参数]、单字母、\$ \. \| 等符号码、%1）
+#   smart  内置 + 项目自带规则集（text_preserve/base.json、rpgmaker.json）
+#   custom smart + 用户自己的 text_preserve/custom.json（同人游戏自定义控制码写这里）
+TEXT_PRESERVE_MODE = "smart"
+
 # ---------- 纯控制符过滤 ----------
 SKIP_PURE_CONTROL = True    # 剥离控制码后无有效内容的句子跳过翻译
 PURE_CONTROL_MIN_LEN = 2    # 剥离后至少保留多少个字母/汉字才算有内容

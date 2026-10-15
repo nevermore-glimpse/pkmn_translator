@@ -62,7 +62,7 @@ EDITABLE = [
     ("MAX_INPUT_LINES",    "读取行数上限",      "int",   "只处理前 N 行；0 或负数=不限"),
     ("BATCH_SIZE",         "每批条数",          "int",   "建议 10-30"),
     ("MAX_BATCH_CHARS",    "单批字符上限",      "int",   "自适应分批：超过就提前切批"),
-    ("SORT_TODO_BY_LEN",   "按长度排序分批",    "bool",  "同批长度接近，输出更稳定"),
+    ("SORT_TODO_BY_LEN",   "按长度排序分批",    "bool",  "默认关=按原文件顺序翻；开=同批长度接近更稳"),
     ("MAX_TERMS_IN_PROMPT","prompt 术语上限",   "int",   "单批发给模型的术语条数"),
     ("BATCH_RETRIES",      "整批重试次数",      "int",   "失败时重试"),
     ("SINGLE_RETRIES",     "单条重试次数",      "int",   "失败时重试"),
@@ -71,11 +71,40 @@ EDITABLE = [
     ("TARGET_LANG",        "目标语言",          "str",   "如 简体中文"),
     ("ASK_LANG_EACH_TIME", "每次询问语言",      "bool",  "翻译前是否弹语言选择"),
     ("PREFIX_DICT_ENABLE", "启用前缀字典", "bool", "句首控制码由字典管理"),
-    ("PLACEHOLDER_PROTECT", "占位符保护", "bool",
-     "关闭后控制码不转 @N@ 占位符，原文整句直接交给模型"),
     ("SKIP_PURE_CONTROL", "跳过纯控制符", "bool", "剥离后无内容的句子不翻译"),
     ("PURE_CONTROL_MIN_LEN", "纯控制符阈值", "int", "剥离后最少保留几个字"),
     ("SKIP_PATH_LINES", "跳过资源路径", "bool", "形如 A/B/C 的行不翻译"),
+    ("MAX_BATCH_TOKENS", "单批 token 上限", "int",
+     "原文估算 token 超限就提前切批；0=只按条数/字符"),
+    ("CONTEXT_LINES",    "上文注入条数",   "int",
+     "每批 prompt 附带前几条已翻译文；0=不带上文"),
+
+    # ---------- 并发与多 API Key ----------
+    ("TRANSLATE_CONCURRENCY", "翻译并发批数", "int",
+     "0=自动（云端 API 4 / 本地 Ollama 1）"),
+    ("API_KEYS",       "多 API Key",       "str",
+     "每行一个，轮询使用；留空则只用 API 密钥"),
+
+    # ---------- 提示词与替换 ----------
+    # 输出格式固定为 JSON（{"id":N,"text":"...","terms":{...}}），不再可选
+    ("LANG_ENTRY_FIRST",   "中文设为默认语言", "bool",
+     "编译后把中文放到游戏语言表第一条（游戏默认语言）"),
+    ("TEXT_PRESERVE_MODE", "文本保护规则模式", "str",
+     "off=只用内置 / smart=内置+自带规则集 / custom=叠加自定义（见 text_preserve/README.md）"),
+    ("THINKING_BLOCK", "思考块",           "bool",
+     "prompt 追加结构化思考（略增输出 token）"),
+    ("PRE_REPLACEMENT_ENABLE",  "译前替换", "bool",
+     "送模型之前按 replacements/pre 规则替换"),
+    ("POST_REPLACEMENT_ENABLE", "译后替换", "bool",
+     "译文落盘之前按 replacements/post 规则替换"),
+    ("PRE_REPLACEMENT_PRESETS", "启用的译前预设", "str",
+     "逗号分隔；留空=replacements/pre 下全部启用"),
+    ("POST_REPLACEMENT_PRESETS", "启用的译后预设", "str",
+     "逗号分隔；留空=replacements/post 下全部启用"),
+    ("PREFILTER_ENABLE",        "预过滤",   "bool",
+     "不含源语言字符的行不送模型，按原文缓存"),
+    ("TERM_STATS_ENABLE",       "术语命中统计", "bool",
+     "翻译时统计术语命中，写 terms_stats.json"),
 
     # ---------- 换行重排 ----------
     ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "菜单 7 是否可用（翻译后不再自动重排）"),
@@ -93,7 +122,10 @@ EDITABLE = [
     ("EXCEL_SOURCE_LANG",  "Excel 源语言列",    "str",   ""),
     ("EXCEL_TARGET_LANG",  "Excel 目标语言列",  "str",   ""),
     ("EXCEL_APPEND",       "Excel 追加式写入",  "bool",  "True=新术语接末尾，False=整份覆盖"),
-    ("AUTO_EXTRACT_TERMS", "自动提取术语", "bool", "翻译时提取专有名词"),
+    ("TERM_EXTRACT_BATCH", "术语提取每批条数", "int",
+     "「术语提取」页每次送模型几条（从名字文本文件抽名字翻译）"),
+    ("TERM_EXTRACT_TEMPERATURE", "术语翻译温度", "float",
+     "术语提取时的采样温度，低一点译名更一致"),
     ("AUTO_EXTRACT_MIN_LEN", "术语最短长度", "int", ""),
 
     # ---------- 中文润色 ----------
@@ -106,7 +138,8 @@ EDITABLE = [
 # ★ 密钥类配置永远不写进 config.py —— 那是会提交进仓库的源码文件。
 #   统一写 user_config.json（已在 .gitignore 中）；config.py 末尾会自动读取它
 #   并覆盖同名变量，所以两种模式的行为完全一致。
-SECRET_KEYS = {"API_KEY"}
+#   API_KEYS 也是多行文本，写进 config.py 会破坏单行赋值格式，同样落 json。
+SECRET_KEYS = {"API_KEY", "API_KEYS"}
 
 # ★ 运行时标志（程序自己会改写的状态位）同样只写 user_config.json：
 #   它们不是用户的设置，源码模式下写回 config.py 只会把仓库弄脏。

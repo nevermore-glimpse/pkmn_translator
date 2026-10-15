@@ -41,17 +41,75 @@ _DIGIT_TAG_PAT = r'</?\d+>'
 # ③ HTML 实体：&quot;  &amp;  &#39;  &#x27;
 _HTML_ENTITY_PAT = r'&(?:[a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);'
 
-# ③ 命令式控制码：\tg[Owen]  \v[50]  \wt[10]  \PN  \N  \n  \b  \c  \se  ...
-_CTRL_PAT = (
+_CTRL_PAT_CORE = (
     r'\\'
     r'(?:'
-      r'(?:wtnp|wt|tg|ts|v|c|w|se|f|me|ch)(?=\[)(?:\[[^\]]*\])?'   # 带参数
+      r'[A-Za-z]+\[[^\]]*\]'                                  # 任意 \命令[参数]
       r'|'
-      r'(?:wtnp|wt|tg|PN|wu|HM|TM|se|ff|CN)'                      # 无参数多字母（长的在前）
+      r'(?:wtnp|wt|tg|ts|pn|PN|wu|HM|TM|se|ff|CN)'              # 无参数（长的在前）
       r'|'
-      r'[NnbcgwlvibrG]'                                        # 单字母
+      r'[NnbcgwlvibrG]'                                          # 单字母
+      r'|'
+      r'[$.|!><^{}]'                                             # RPG Maker 符号型事件码
     r')'
+    r'|'
+    r'%\d+'                                                     # printf 占位符 %1 %2
 )
+
+# ★「文本保护规则」注入的额外模式（text_rules 按 off/smart/custom 装载）
+_EXTRA_CTRL_PAT = ""
+
+
+class _DelegatingRE:
+    """包一层：内部 pattern 可变，外部 import 走的名字不用跟着换。
+
+    ★ CTRL_RE / ALL_CTRL_RE 被 checker、restoration 等模块按名字 import
+      走了；保护规则热重载时若直接重新绑定 processor.CTRL_RE，那些模块
+      仍然指着旧对象。这里包一层、动态取内部 pattern，重新绑定内部对象
+      即可全局生效。
+    """
+
+    def __init__(self, builder):
+        self._builder = builder
+        self._re = None
+        self.rebuild()
+
+    def rebuild(self):
+        self._re = re.compile(self._builder())
+        return self
+
+    def __getattr__(self, name):
+        return getattr(self._re, name)
+
+
+def _ctrl_builder():
+    return _CTRL_PAT_CORE + _EXTRA_CTRL_PAT
+
+
+def set_extra_ctrl_patterns(patterns):
+    """装入「文本保护规则」的额外正则（见 text_rules.py），立即全局生效。
+
+    patterns: 正则字符串列表；空 = 只用内置规则。坏正则跳过并记警告，
+              不让一条手写错的规则把整套识别搞崩。
+    """
+    global _EXTRA_CTRL_PAT
+    good = []
+    for p in (patterns or []):
+        s = (p or "").strip()
+        if not s:
+            continue
+        try:
+            re.compile(s)
+        except re.error as e:
+            log.warning("文本保护规则正则无效，已跳过：%r（%s）", s, e)
+            continue
+        good.append(s)
+    _EXTRA_CTRL_PAT = (
+        "|" + "|".join("(?:%s)" % p for p in good) if good else ""
+    )
+    for r in (CTRL_RE, ALL_CTRL_RE, _CTRL_FOR_REWRAP):
+        r.rebuild()
+    log.info("文本保护规则生效：额外模式 %d 条", len(good))
 
 # ④ 方括号标签
 _TAG_PAT   = r'\[[^\]]*\]'
@@ -61,7 +119,7 @@ _BRACE_PAT = r'\{[^}]*\}'
 # 各自独立的 re 对象
 ANGLE_CMD_RE = re.compile(_ANGLE_CMD_PAT)
 HTML_TAG_RE  = re.compile(_HTML_TAG_PAT)
-CTRL_RE      = re.compile(_CTRL_PAT)
+CTRL_RE      = _DelegatingRE(_ctrl_builder)
 TAG_RE       = re.compile(_TAG_PAT)
 BRACE_RE     = re.compile(_BRACE_PAT)
 DIGIT_TAG_RE = re.compile(_DIGIT_TAG_PAT)
@@ -70,25 +128,29 @@ SPEAKER_TAG_RE = re.compile(r'\\tg\[([^\]]*)\]')
 # 未识别控制码检测（原始文本中残留的 \字母）
 LEFTOVER_CTRL_RE = re.compile(r'\\[A-Za-z]+')
 
-ALL_CTRL_RE = re.compile(
-    r'(?:'
-    + _ANGLE_CMD_PAT    + r'|'
-    + _CTRL_PAT         + r'|'
-    + _HTML_TAG_PAT     + r'|'
-    + _DIGIT_TAG_PAT    + r'|'
-    + _HTML_ENTITY_PAT
-    + r')'
+ALL_CTRL_RE = _DelegatingRE(
+    lambda: (
+        r'(?:'
+        + _ANGLE_CMD_PAT    + r'|'
+        + _ctrl_builder()   + r'|'
+        + _HTML_TAG_PAT     + r'|'
+        + _DIGIT_TAG_PAT    + r'|'
+        + _HTML_ENTITY_PAT
+        + r')'
+    )
 )
 
-_CTRL_FOR_REWRAP = re.compile(
-    r'(?:'
-    + _ANGLE_CMD_PAT    + r'|'
-    + _CTRL_PAT         + r'|'
-    + _HTML_TAG_PAT     + r'|'
-    + _DIGIT_TAG_PAT    + r'|'
-    + _HTML_ENTITY_PAT
-    + r')'
-    r'|@\d+@|⟦\d+⟧'
+_CTRL_FOR_REWRAP = _DelegatingRE(
+    lambda: (
+        r'(?:'
+        + _ANGLE_CMD_PAT    + r'|'
+        + _ctrl_builder()   + r'|'
+        + _HTML_TAG_PAT     + r'|'
+        + _DIGIT_TAG_PAT    + r'|'
+        + _HTML_ENTITY_PAT
+        + r')'
+        r'|@\d+@|⟦\d+⟧'
+    )
 )
 
 # 占位符包裹符
@@ -112,7 +174,7 @@ def is_path_like(text):
     """
     判断是不是资源路径（例如 Graphics/Pictures/battleCommandButtons）。
 
-    规则：整行只有「用 / 分隔的 2 段以上路径」，不含空格、不含中文、
+    规则：整行只有「用 / 分隔的 2 段以上路径」，不含空格、不含中文，
     也不是 URL（URL 会有 `//`，分段后出现空段，自然被排除）。
     """
     if not text:
@@ -123,6 +185,85 @@ def is_path_like(text):
     if _CJK_RE.search(t):
         return False
     return bool(_PATH_LIKE_RE.match(t))
+
+
+# ================================================================
+# 预过滤：不含源语言字符的行不送模型（借鉴 LinguaGacha prefilter）
+# ================================================================
+# 源语言 → 书写系统字符范围。数字串、纯符号行、别国语言残留行
+# （比如西班牙语游戏里漏改的几行日语）都不值得烧一次模型请求。
+# ★ 日文（kana）刻意带上汉字区：日文句子几乎必含汉字，纯汉字词
+#   （如「大人」）也不能被预过滤当成无可译文本。
+_LANG_SCRIPT_RANGES = {
+    "latin": r"A-Za-z\u00C0-\u024F",
+    "cjk":   r"\u4e00-\u9fff",
+    "kana":  r"\u3040-\u30ff\u4e00-\u9fff",
+    "hangul": r"\uac00-\ud7af",
+}
+
+# 语言显示名 → 书写系统。SOURCE_LANG 是中文显示名（设置里手填的），
+# 按关键字包含判断；认不出来的语言返回 None（不过滤，全部送模型）。
+_LANG_SCRIPT_BY_NAME = (
+    (("英文", "英语", "西班牙", "法文", "法语", "德文", "德语",
+      "意大", "葡萄", "荷兰", "波兰", "瑞典", "土耳其", "越南"), "latin"),
+    (("日文", "日语", "日本"), "kana"),
+    (("韩文", "朝鲜"), "hangul"),
+    (("简体", "繁体", "中文"), "cjk"),
+)
+
+_LANG_SCRIPT_CACHE = {}      # 语言显示名 → 编译好的 re 或 None
+
+
+def script_of(lang):
+    """
+    语言显示名 → 书写系统 key（"latin"/"cjk"/"kana"/"hangul"）；
+    认不出来返回 None。lang=None 时按 config.SOURCE_LANG。
+    """
+    if lang is None:
+        lang = getattr(config, "SOURCE_LANG", "")
+    key = str(lang)
+    for names, sc in _LANG_SCRIPT_BY_NAME:
+        if any(n in key for n in names):
+            return sc
+    return None
+
+
+def _script_re(src_lang):
+    """源语言显示名 → 该书写系统的字符正则（认不出返回 None）。"""
+    if src_lang is None:
+        src_lang = getattr(config, "SOURCE_LANG", "")
+    key = str(src_lang)
+    if key in _LANG_SCRIPT_CACHE:
+        return _LANG_SCRIPT_CACHE[key]
+    script = script_of(key)
+    pat = (re.compile("[" + _LANG_SCRIPT_RANGES[script] + "]")
+           if script else None)
+    _LANG_SCRIPT_CACHE[key] = pat
+    return pat
+
+
+def has_translatable_text(text, src_lang=None):
+    """
+    剥离所有控制码/标签/占位符后，是否还剩「源语言书写系统的字符」。
+
+    返回 False = 这行没有可翻译的自然语言（纯符号 / 纯数字 /
+    非源语言残留），不该送模型。
+    """
+    if not text:
+        return False
+    pat = _script_re(src_lang)
+    if pat is None:
+        return True          # 认不出源语言：不过滤，保守起见全送
+    t = text
+    t = ANGLE_CMD_RE.sub('', t)
+    t = HTML_TAG_RE.sub('', t)
+    t = re.sub(_HTML_ENTITY_PAT, '', t)
+    t = CTRL_RE.sub('', t)
+    t = TAG_RE.sub('', t)
+    t = BRACE_RE.sub('', t)
+    # 占位符 token（@0@ / ⟦0⟧）也不是自然语言
+    t = re.sub(r'[@\u27e6]\d+[@\u27e7]', '', t)
+    return bool(pat.search(t))
 
 
 def split_prefix(text):
@@ -579,21 +720,46 @@ def repair_missing_controls(src, dst):
     return text, fixed
 
 
-def detect_unknown_ctrl(safe_text):
-    """
-    在 protect() 处理后的文本中，找出未被识别的控制码。
+def detect_unknown_ctrl(text):
+    r"""
+    找出文本里**我们识别不出来**的控制码，返回 [(token, 上下文), ...]。
 
-    返回 [(token, context), ...]
+    ★ 逐位置用统合正则试，匹配不上才算「未识别」。
+    ★ 覆盖两类：`\字母` 命令，以及 `\` 后跟符号的写法（RPG Maker 的
+      \$ \. \| \! \> \< \^ \{ \}）。只扫字母的话，符号型控制码
+      被模型改坏了根本不会报警。
+
+    用途：扫原文 → 提示「这些命令我们认不出来，可能被模型改坏」；
+          扫译文 → 检查报告里的「译文残留控制码」。
     """
-    if not safe_text:
+    if not text:
         return []
     results = []
-    for m in LEFTOVER_CTRL_RE.finditer(safe_text):
-        token = m.group(0)
-        s = max(0, m.start() - 30)
-        e = min(len(safe_text), m.end() + 30)
-        ctx = safe_text[s:e]
-        results.append((token, ctx))
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] == '\\':
+            m = ALL_CTRL_RE.match(text, i)
+            if m:
+                i = m.end()
+                continue
+            j = i + 1
+            if j < n and text[j].isascii() and text[j].isalpha():
+                while j < n and text[j].isascii() and text[j].isalpha():
+                    j += 1
+                token = text[i:j]
+            elif (j < n and not text[j].isspace()
+                    and not text[j].isalnum()
+                    and text[j] not in '"\'\\\\'):
+                # \符号 型；引号 / 反斜杠是正文里的转义写法，不当控制码报
+                token = text[i:j + 1]
+                j += 1
+            else:
+                token = ""
+            if token:
+                results.append((token, text[max(0, i - 30):j + 30]))
+                i = j
+                continue
+        i += 1
     return results
 
 

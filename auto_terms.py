@@ -2,8 +2,9 @@
 """
 术语合并：把翻译过程中内联提取的术语写入 term_dict.py 顶部的 AUTO 块。
 
-术语来源：translator.translate_batch 通过 terms_out 参数返回 {idx: {src: dst}}。
-合并入口：merge_from_translation(terms_map, processor_module)
+术语来源：term_extract 从名字文本文件（*_NAMES / *_NAME）抽出名字、
+送模型翻译后调 merge_into_term_dict() 写入。
+翻译流程**不再**内联提取术语。
 """
 import json
 import os
@@ -238,32 +239,3 @@ def _atomic_write(path, text):
 # ================================================================
 # 对外唯一入口
 # ================================================================
-def merge_from_translation(terms_map, processor_module, conflicts_out=None):
-    """
-    把翻译过程中内联提取的术语合并到 term_dict.py。
-    conflicts_out: 可选 list，收集"原文相同但译文不同"的冲突项。
-    """
-    if not terms_map:
-        return 0
-
-    all_terms = {}
-    for idx, terms in terms_map.items():
-        if not isinstance(terms, dict):
-            continue
-        for k, v in terms.items():
-            if k not in all_terms:
-                all_terms[k] = v
-
-    if not all_terms:
-        return 0
-
-    log.debug("本批内联提取到术语 %d 条", len(all_terms))
-
-    added = merge_into_term_dict(all_terms, conflicts_out=conflicts_out)
-    if added:
-        try:
-            processor_module.load_terms()
-        except Exception as e:
-            log.warning("重载术语表失败：%s", e)
-        log.info("术语表新增 %d 条（已生效于后续批次）", added)
-    return added

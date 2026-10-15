@@ -13,9 +13,11 @@
 </head>
 <body>
 
-<!-- 夜间模式：CSS 加载后、首屏渲染前先把类挂上，避免开屏闪一下白 -->
+<!-- 夜间模式：CSS 加载后、首屏渲染前先把类挂上，避免开屏闪一下白。
+     window.__NIGHT__ 由 server/app.py 注入（值来自后端持久化文件），
+     不依赖浏览器 localStorage（随机端口导致源每次都变、localStorage 会丢）。 -->
 <script>
-try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.add("night"); } catch (e) {}
+try { if (window.__NIGHT__ === true) document.body.classList.add("night"); } catch (e) {}
 </script>
 
 <!-- ================================================================
@@ -66,8 +68,7 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
                 <button class="btn" id="btnCheckGame">识别</button>
             </div>
             <div class="hint" style="margin-bottom:6px">
-                只选 <b>Game.exe</b>（游戏主程序）即可，游戏根目录会自动算出来
-                —— 不用自己一层层点进 Android/data 里找文件夹。
+                只选 <b>Game.exe</b>（游戏主程序）即可，游戏根目录会自动算出来。
             </div>
             <div id="gameInfo" class="hint">还没选择游戏主程序</div>
         </div>
@@ -75,8 +76,7 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
         <div class="card">
             <div class="card-h">开启方式</div>
             <div class="hint" style="margin-bottom:9px">
-                与电脑版工具的下拉框一致（电脑版的「⑧ 调试启动器」要生成
-                Windows exe，手机上做不到，故略）。
+                共七种方式，一个不行换另一个。
             </div>
             <div class="row">
                 <select id="debugMode" class="inp"></select>
@@ -85,13 +85,13 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
             <div class="check">
                 <input type="checkbox" id="optForce" checked>
                 <label for="optForce">引擎被改过也继续写入<br>
-                    <span class="sub">（同人游戏常把引擎改得面目全非，取消勾选会在发现改动时中止）</span>
+                    <span class="sub">（同人游戏会修改引擎函数，取消勾选会在发现改动时中止）</span>
                 </label>
             </div>
             <div class="check">
                 <input type="checkbox" id="optGuard" checked>
                 <label for="optGuard">自动关闭全量编译<br>
-                    <span class="sub">（给 Compiler 装一道闸：数据已编译好就直接返回；取消勾选则调试启动时真的全量重编译一次）</span>
+                    <span class="sub">（数据已编译好就直接返回；取消勾选则调试启动时会全量重编译一次）</span>
                 </label>
             </div>
             <div class="hint">
@@ -126,12 +126,21 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
     <section class="page" id="page-ow">
 
         <div class="card">
+            <div class="card-h">游戏主程序</div>
+            <div class="row">
+                <input id="gameExeOw" class="inp" placeholder="选游戏主程序（Game.exe 之类）" inputmode="none">
+            </div>
+            <div class="btns">
+                <button class="btn ghost" id="btnBrowseGameOw">浏览</button>
+            </div>
+            <div id="gameInfoOw" class="hint">还没选择游戏主程序</div>
+        </div>
+
+        <div class="card">
             <div class="card-h">用官方基准覆盖</div>
             <div class="hint" style="margin-bottom:9px">
-                同人游戏常把引擎改得面目全非 —— 尤其是 <b>debug 函数</b>和
-                <b>地图更新（Scene_Map）</b>。改完之后工具认不出该在哪下手，
-                这时可以用官方同版本脚本把这两处<b>盖回原样</b>，
-                之后再开 DEBUG 就有干净的落点了。
+                把 <b>debug 函数</b>、<b>地图更新（Scene_Map）</b>换成官方同版本脚本，
+                弥补缺失的DEBUG和地图更新函数。
             </div>
             <div class="check">
                 <input type="checkbox" id="owWarn">
@@ -151,7 +160,7 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
             <div class="btns" style="margin-top:8px">
                 <button class="btn ghost" id="btnOwRestore">还原覆盖</button>
             </div>
-            <div id="owInfo" class="hint" style="margin-top:9px">先在「DEBUG」页选好游戏目录</div>
+            <div id="owInfo" class="hint" style="margin-top:9px">还没选择游戏主程序</div>
         </div>
 
         <div class="card">
@@ -168,13 +177,26 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
     <section class="page" id="page-font">
 
         <div class="card">
-            <div class="card-h">游戏字体</div>
-            <div class="hint" style="margin-bottom:9px">
-                给游戏装上「中文文本处理」插件，并把字体换成内置的
-                <b>萝莉体</b>。这样对话框里的中文才能正常显示，不会是方块。
-                也可以用你自己的字体文件。
+            <div class="card-h">游戏主程序</div>
+            <div class="row">
+                <input id="gameExeFont" class="inp" placeholder="选游戏主程序（Game.exe 之类）" inputmode="none">
             </div>
-            <div id="fontList" class="hint">正在读取字体…</div>
+            <div class="btns">
+                <button class="btn ghost" id="btnBrowseGameFont">浏览</button>
+            </div>
+            <div id="gameInfoFont" class="hint">还没选择游戏主程序</div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">字体</div>
+            <div class="row">
+                <input id="fontPath" class="inp" placeholder="留空 = 用工具自带的萝莉体" inputmode="none">
+            </div>
+            <div class="btns">
+                <button class="btn ghost" id="btnBrowseFont">浏览字体文件</button>
+                <button class="btn ghost" id="btnFontBuiltin">用自带萝莉体</button>
+            </div>
+            <div id="fontList" class="hint" style="margin-top:9px">正在读取字体…</div>
             <div class="btns" style="margin-top:10px">
                 <button class="btn primary" id="btnFontInstall">替换字体</button>
                 <button class="btn ghost" id="btnFontRestore">还原</button>
@@ -196,12 +218,21 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
     <section class="page" id="page-save">
 
         <div class="card">
+            <div class="card-h">游戏主程序</div>
+            <div class="row">
+                <input id="gameExeSave" class="inp" placeholder="选游戏主程序（Game.exe 之类）" inputmode="none">
+            </div>
+            <div class="btns">
+                <button class="btn ghost" id="btnBrowseGameSave">浏览</button>
+            </div>
+            <div id="gameInfoSave" class="hint">还没选择游戏主程序</div>
+        </div>
+
+        <div class="card">
             <div class="card-h">存档文件</div>
             <div class="row">
                 <input id="savePath" class="inp" placeholder="选 Game.rxdata 之类的存档" inputmode="none">
             </div>
-            <!-- 游戏根目录（数据源）不再让用户自己选：跟着「游戏主程序」自动带出来；
-                 没选也能用，只是名字显示不全 -->
             <input type="hidden" id="saveRoot">
             <div id="saveRootHint" class="hint" style="margin-bottom:6px">
                 <b>游戏数据可以不选</b> —— 不选也能照常编辑和写回，只是宝可梦 /
@@ -233,6 +264,59 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
         </div>
     </section>
 
+    <!-- ========================= PBS 编辑 ========================= -->
+    <section class="page" id="page-pbs">
+
+        <div class="card">
+            <div class="card-h">游戏主程序</div>
+            <div class="row">
+                <input id="gameExePbs" class="inp" placeholder="选游戏主程序（Game.exe 之类）" inputmode="none">
+            </div>
+            <div class="btns">
+                <button class="btn ghost" id="btnBrowsePbsGame">浏览</button>
+                <button class="btn" id="btnPbsLoad">读取 PBS</button>
+            </div>
+            <div id="pbsInfo" class="hint">还没选择游戏主程序</div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">功能</div>
+            <div class="btns">
+                <button class="btn ghost" id="btnPbsExtract">提取 PBS</button>
+                <button class="btn ghost" id="btnPbsCompile">编译</button>
+            </div>
+            <div id="pbsLog" class="hint">提取：把 Data/*.dat 还原成 txt 放进游戏根目录的 PBS 文件夹。<br>
+                编译：v19+ 直接写回 .dat；注意v19.1以前的引擎版本会出现字段错位的情况，请直接修改txt文件，不要用工具修改。</div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">PBS 文件</div>
+            <div id="pbsFiles" class="pbs-files"><div class="hint">先「读取 PBS」</div></div>
+        </div>
+
+        <div class="card" id="pbsEditCard" style="display:none">
+            <div class="card-h" id="pbsEditTitle">编辑</div>
+            <div id="pbsHint" class="hint"></div>
+            <div class="row">
+                <input id="pbsSearch" class="inp" placeholder="搜索：名字 / 内部名 / 字段内容" inputmode="none">
+            </div>
+            <div id="pbsSearchInfo" class="hint"></div>
+            <div class="row">
+                <select id="pbsEntry" class="inp"></select>
+            </div>
+            <div class="btns">
+                <button class="btn ghost" id="btnPbsPrev">← 上一条</button>
+                <button class="btn ghost" id="btnPbsNext">下一条 →</button>
+            </div>
+            <div id="pbsFields"></div>
+        </div>
+
+        <div class="btns sticky" id="pbsSaveBar" style="display:none">
+            <button class="btn primary" id="btnPbsSave">保存到 txt</button>
+            <button class="btn ghost" id="btnPbsCompileOne">编译这一个</button>
+        </div>
+    </section>
+
     <!-- ========================= 关于 ========================= -->
     <section class="page" id="page-about">
         <div class="card">
@@ -250,7 +334,7 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
                 <button class="btn" id="btnNight" style="min-width:0;flex:none">开启</button>
             </div>
             <div class="hint" style="margin-top:8px">
-                偏好只保存在本机（localStorage），换手机不跟着走。
+                已保存到本机文件，重启工具后依然生效；只有手动切回白天模式才会恢复。
             </div>
         </div>
 
@@ -336,6 +420,7 @@ try { if (localStorage.getItem("pkmn.night") === "1") document.body.classList.ad
     <button class="tab-btn" data-page="ow"><span>▤</span>基准覆盖</button>
     <button class="tab-btn" data-page="font"><span>字</span>字体</button>
     <button class="tab-btn" data-page="save"><span>●</span>存档</button>
+    <button class="tab-btn" data-page="pbs"><span>P</span>PBS</button>
     <button class="tab-btn" data-page="about"><span>?</span>关于</button>
 </nav>
 

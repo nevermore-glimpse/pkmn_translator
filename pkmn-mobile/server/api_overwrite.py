@@ -78,9 +78,14 @@ def resolve_version(ET, EB, GS, game_dir, manual=""):
             return base, (f"游戏自报 v{v}"
                           + ("（与基准一致）" if exact else f" → 取基准 v{base}"))
     try:
-        scripts = GS.collect_scripts(game_dir)
+        # ★ 必须用 EB.scan_game_scripts（{脚本名: {函数: 指纹}}）。
+        #   原来误用了 GS.collect_scripts（(mode, key, path, text) 的**列表**），
+        #   best_baseline → flat_funcs 会对它调 .items() →
+        #   `AttributeError: 'list' object has no attribute 'items'`，
+        #   凡是「读不到版本号、要按指纹识别」的游戏（如宝可梦蛋白石）必崩。
+        scripts = EB.scan_game_scripts(game_dir)
     except Exception:                                  # noqa: BLE001
-        scripts = []
+        scripts = {}
     ver, ratio = EB.best_baseline(scripts) if scripts else (None, 0.0)
     if ver:
         return ver, f"按脚本指纹识别 v{ver}（重合度 {ratio:.0%}）"

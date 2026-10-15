@@ -52,6 +52,8 @@ if __package__:
     from . import api_fs                    # noqa: E402
     from . import api_overwrite             # noqa: E402
     from . import api_font                  # noqa: E402
+    from . import api_settings              # noqa: E402
+    from . import api_pbs                   # noqa: E402
 else:
     import jsonutil as JU                   # noqa: E402
     import tasks                            # noqa: E402
@@ -60,6 +62,8 @@ else:
     import api_fs                           # noqa: E402
     import api_overwrite                    # noqa: E402
     import api_font                         # noqa: E402
+    import api_settings                     # E402
+    import api_pbs                          # E402
 
 # 安卓上资源由 MainActivity 从 assets 解出来放到私有目录，路径通过环境变量给
 WEB_DIR = os.environ.get("PKMN_WEB_DIR") or os.path.join(ROOT, "web")
@@ -69,6 +73,8 @@ MODULES = {
     "fs": api_fs,
     "ow": api_overwrite,     # 基准覆盖
     "font": api_font,        # 字体替换
+    "settings": api_settings, # 外观偏好（夜间模式等）持久化
+    "pbs": api_pbs,          # PBS 编辑（v16~v21 的 txt 读写 + 编译）
 }
 
 _MIME = {
@@ -265,6 +271,29 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
+    # ---------------- 夜间模式注入 ----------------
+    def _inject_night(self, data):
+        """
+        把后端持久化的夜间模式偏好塞进首屏 HTML。
+
+        WebView 每次启动用随机端口起服务，浏览器 localStorage 按「源」隔离，
+        重启就丢；所以偏好只能存在后端。这里在 <body> 之后立刻注入一段脚本
+        设置 window.__NIGHT__，index.html 的内联脚本据此挂 .night 类，
+        既不会开屏白闪、也不会重启后丢失。
+        """
+        try:
+            night = bool(api_settings._load().get("night", False))
+        except Exception:
+            night = False
+        script = ("<script>window.__NIGHT__=%s;</script>"
+                  % ("true" if night else "false")).encode("utf-8")
+        marker = b"<body>"
+        idx = data.find(marker)
+        if idx == -1:
+            return data
+        cut = idx + len(marker)
+        return data[:cut] + b"\n" + script + data[cut:]
+
     # ---------------- 静态文件 ----------------
     def _static(self, path):
         rel = path.lstrip("/") or "index.html"
@@ -286,6 +315,11 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             self._json(JU.err(str(e)), 500)
             return
+        # 夜间模式偏好存在后端（WebView 随机端口导致 localStorage 按源隔离、
+        # 重启即丢），这里把持久化的值注入首屏 HTML，避免「开屏白闪」和
+        # 「重启后夜间模式丢失」。index.html 的内联脚本读 window.__NIGHT__。
+        if rel == "index.html":
+            data = self._inject_night(data)
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))

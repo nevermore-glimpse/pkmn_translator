@@ -668,3 +668,36 @@ select.inp {
 .mini-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .mini-row .btn { flex: 0 0 auto; min-width: 0; padding: 6px 11px; font-size: calc(12.5px * var(--fs)); }
 
+
+/* ============================ PBS 编辑 ============================ */
+/* 文件列表：一行一个按钮（手机上好点） */
+.pbs-files { display: flex; flex-direction: column; gap: 6px; }
+.pbs-files .pbs-file {
+    width: 100%;
+    text-align: left;
+    font-size: calc(13px * var(--fs));
+    padding: 9px 12px;
+}
+
+/* 一个字段一块：字段名 → 输入框 → 中文说明 */
+.pbs-field { margin-bottom: 10px; }
+.pbs-field .pbs-label {
+    font-size: calc(12.5px * var(--fs));
+    color: var(--text);
+    margin-bottom: 4px;
+    font-weight: 600;
+}
+.pbs-field .pbs-desc {
+    font-size: calc(11.5px * var(--fs));
+    color: var(--dim);
+    margin-top: 3px;
+    line-height: 1.6;
+}
+/* 输入框用醒目的品牌色描边（和电脑版一致） */
+#page-pbs .inp,
+#page-pbs input.inp {
+    border: 2px solid var(--brand);
+    background: var(--card);
+    color: var(--text);
+}
+#page-pbs .inp:focus { border-color: #D94E4E; outline: none; }

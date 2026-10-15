@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
 """
 翻译结果检查：
-  1. 疑似未翻译（译文剥离控制码后仍含英文）
+  1. 疑似未翻译（译文剥离控制码后仍含英文 / 与原文高度相似）
   2. 特殊符号不匹配（控制码 / 标签 / 数字占位符）
   3. 特殊情况行（未配对文本）
-  4. 译文残留控制码（名单外的 \\字母）
-  5. 译文残留占位符（@0@ / ⟦0⟧）
-  6. 额外命中（翻译失败 / 占位符缺失 / 术语冲突）
+  4. 译文残留控制码（未识别的 \字母）
+  5. 译文残留占位符（译文里出现 @N@ / ⟦N⟧ 这类占位符形态）
+  6. 额外命中（翻译失败 / 控制码回退 / 术语冲突（提示类）等）
+  7. 标点结构（成对符号只开不闭 / 只闭不开，借鉴 LinguaGacha）
 
 输出：与输出文件同目录的 <名>_report.txt
 """
+import difflib
 import json
 import os
 import re
@@ -19,8 +21,8 @@ from logger import get_logger
 
 from processor import (
     CTRL_RE, TAG_RE, BRACE_RE,
-    ANGLE_CMD_RE, HTML_TAG_RE, ALL_CTRL_RE,
-    _HTML_ENTITY_PAT,
+    ANGLE_CMD_RE, HTML_TAG_RE,
+    _HTML_ENTITY_PAT, script_of, detect_unknown_ctrl,
 )
 
 log = get_logger("checker")
@@ -54,10 +56,12 @@ WHITELIST = {
     "Essentials","RMXP","VIP","DnD","LOR"
 }
 
-# 译文残留控制码白名单：这些 \字母 是游戏自己的写法，不算"未识别的残留"
-# ★ 区分大小写 —— 只放 \b 和 \pn，\B / \PN 不在内
-CTRL_WHITELIST = {r'\b', r'\pn'}
-# 匹配时按长度降序，保证 \pn 优先于 \p（以后加更长的写法也不会被短的截胡）
+# 译文残留控制码白名单
+# ★ \pn / \PN / \b 已纳入 processor 的通用控制码识别（见
+#   processor._CTRL_PAT），不再需要在这里特殊放行。机制保留，
+#   供以后遇到「游戏自定义、引擎不认识」的写法时手动往里加。
+CTRL_WHITELIST = set()
+# 匹配时按长度降序（长写法优先，避免被短的截胡）
 _CTRL_WL_SORTED = sorted(CTRL_WHITELIST, key=len, reverse=True)
 
 # ================================================================
@@ -210,40 +214,22 @@ def _extract_symbols(text):
 
 
 def _find_unprotected_ctrl(text):
-    """
-    找出 text 中真正未被识别的 \\字母 形式。
-    逐位置尝试 ALL_CTRL_RE.match，匹配不上才算残留。
+    r"""
+    找出 text 中真正未被识别的控制码（\字母 与 \符号 两种形态）。
 
-    ★ CTRL_WHITELIST 里的写法（\\b / \\pn）是游戏自己的，不算残留。
+    ★ 直接复用 processor.detect_unknown_ctrl —— 只留一份实现，
+      符号型控制码（\$ \. \| \! \> \< \^ \{ \}）才不会被漏掉。
+    ★ CTRL_WHITELIST（默认空）里的写法仍按「已识别」对待。
     """
     if not text:
         return []
-    results = []
-    i = 0
-    n = len(text)
-    while i < n:
-        if text[i] == '\\':
-            m = ALL_CTRL_RE.match(text, i)
-            if m:
-                i = m.end()
-                continue
-            # ★ 白名单里的写法（\b / \pn）按「已识别控制码」对待，
-            #   只跳掉这几个字符本身，后面的字母照常继续扫描。
-            hit = next((w for w in _CTRL_WL_SORTED
-                        if text.startswith(w, i)), None)
-            if hit:
-                i += len(hit)
-                continue
-            # 未识别：收集 \ 后面的连续字母
-            j = i + 1
-            while j < n and text[j].isascii() and text[j].isalpha():
-                j += 1
-            if j > i + 1:
-                results.append(text[i:j])
-                i = j
-                continue
-        i += 1
-    return results
+    hits = []
+    for token, _ctx in detect_unknown_ctrl(text):
+        if _CTRL_WL_SORTED and any(
+                token.startswith(w) for w in _CTRL_WL_SORTED):
+            continue
+        hits.append(token)
+    return hits
 
 
 def _find_leftover_placeholder(text):
@@ -263,6 +249,84 @@ def _find_abnormal_at(text):
     t = PLACEHOLDER_RE.sub('', text)
     # 剩余的 @ 里面，连续 2 个以上视为异常
     return [m.group(0) for m in _ABNORMAL_AT_RE.finditer(t)]
+
+
+# ================================================================
+# 标点结构 / 相似度（借鉴 LinguaGacha 校对警告）
+# ================================================================
+# 成对标点类别（开, 闭；开==闭 表示无方向，如直引号）
+_PUNCT_PAIRS = (
+    ("「", "」"), ("『", "』"),
+    ('"', '"'), ("'", "'"),
+    ("(", ")"), ("（", "）"),
+    ("[", "]"), ("【", "】"),
+    ("{", "}"), ("《", "》"),
+)
+
+# 相似度阈值：源/目标书写系统不同时，译文与原文归一化后达到该比例
+# 视为「疑似未翻译」（模型原样回显或只改了只言片语）
+_SIM_THRESHOLD = 0.92
+_SIM_MIN_LEN = 8                # 太短的句子不比（"OK"→"OK" 是正常保留）
+
+
+def _normalize_for_sim(text):
+    """剥控制码 + 去空白 + 小写，用于相似度比较。"""
+    t = _strip_all_ctrl(text or "")
+    t = re.sub(r"\s+", "", t)
+    return t.lower()
+
+
+def _similarity_enabled():
+    """
+    只有「源语言与目标语言书写系统不同」时才启用相似度检查。
+
+    同书写系统内部（如西语→英语）本身就有大量同源词，译文与原文
+    相似是正常翻译，不能用来判断未翻译——那种情况交给「残留英文」
+    检查（_ENGLISH_RE + 白名单）。
+    """
+    try:
+        s = script_of(getattr(config, "SOURCE_LANG", ""))
+        t = script_of(getattr(config, "TARGET_LANG", ""))
+        return bool(s and t and s != t)
+    except Exception:
+        return False
+
+
+def _similarity(src, dst):
+    """归一化后的 SequenceMatcher 比率（0~1）。"""
+    a, b = _normalize_for_sim(src), _normalize_for_sim(dst)
+    if len(a) < _SIM_MIN_LEN or len(b) < _SIM_MIN_LEN:
+        return 0.0
+    if a == b:
+        return 1.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _unbalanced_pairs(src, dst):
+    """
+    译文里「成对出现却数量不齐」的标点 → [描述, ...]。
+
+    只在**原文该类配平**时才要求译文（原文本来就不配平的游戏文本，
+    不拿它去要求译文）。直引号类没有方向，按奇偶判断。
+    """
+    s = _strip_all_ctrl(src or "")
+    t = _strip_all_ctrl(dst or "")
+    out = []
+    for o, c in _PUNCT_PAIRS:
+        so, sc = s.count(o), s.count(c)
+        if so != sc:
+            continue                # 原文不配平：不要求译文
+        no, nc = t.count(o), t.count(c)
+        if o == c:
+            # 无方向（直引号）：原文成对、译文落单 → 少了一个
+            if so >= 2 and so % 2 == 0 and no % 2 == 1 and no > 0:
+                out.append(f"{o} 落单（{no} 个）")
+            continue
+        if no and nc and no != nc:
+            out.append(f"{o}×{no} / {c}×{nc}")
+    return out
+
+
 # ================================================================
 # 主检查
 # ================================================================
@@ -341,6 +405,9 @@ def check(out_lines, entries, special, report_path, extra_hits=None):
     #   （原来每条都新建一次集合，十万条就是十万次）
     allowed = word_whitelist()
 
+    # ★ 相似度检查开关：源/目标书写系统不同时才启用（见 _similarity_enabled）
+    sim_on = _similarity_enabled()
+
     # ---------- 遍历正常条目 ----------
     for line_no, src in entries:
         if line_no >= len(out_lines):
@@ -355,17 +422,32 @@ def check(out_lines, entries, special, report_path, extra_hits=None):
         if src_strip in failed_srcs:
             continue
 
-        # ★① 疑似未翻译：剥离控制码后仍含英文
+        # ★① 疑似未翻译：剥离控制码后仍含英文；书写系统不同时再看
+        #   译文与原文的相似度（模型原样回显 / 只改只言片语）
         dst_clean = _strip_all_ctrl(dst)
         english_words = [
             w for w in _ENGLISH_RE.findall(dst_clean)
             if w not in allowed
         ]
+        sim_note = ""
+        if not english_words and sim_on:
+            ratio = _similarity(src, dst)
+            if ratio >= _SIM_THRESHOLD:
+                sim_note = f"（与原文相似度 {ratio:.0%}）"
         if english_words:
+            detail = f'译文残留英文：{", ".join(english_words[:8])}'
+            if sim_note:
+                detail += f"；原文相似度偏高{sim_note}"
             hits.append({
                 'line_no': line_no, 'kind': '疑似未翻译',
                 'src': src, 'dst': dst,
-                'detail': f'译文残留英文：{", ".join(english_words[:8])}',
+                'detail': detail,
+            })
+        elif sim_note:
+            hits.append({
+                'line_no': line_no, 'kind': '疑似未翻译',
+                'src': src, 'dst': dst,
+                'detail': f'译文与原文高度相似{sim_note}，疑似未翻译',
             })
 
         # ② 特殊符号不匹配
@@ -421,6 +503,16 @@ def check(out_lines, entries, special, report_path, extra_hits=None):
                 'line_no': line_no, 'kind': '疑似异常句',
                 'src': src, 'dst': dst,
                 'detail': f'译文含异常符号：{", ".join(abnormal_at[:5])}',
+            })
+
+        # ★⑦ 标点结构：成对符号只开不闭 / 只闭不开
+        #   （原文该类配平、译文不配平时才报；安全恢复层修不了的这里兜底）
+        unbal = _unbalanced_pairs(src, dst)
+        if unbal:
+            hits.append({
+                'line_no': line_no, 'kind': '标点结构',
+                'src': src, 'dst': dst,
+                'detail': '成对标点不配平：' + '，'.join(unbal[:4]),
             })
 
     # ---------- 特殊行 ----------

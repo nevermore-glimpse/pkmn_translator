@@ -3,7 +3,7 @@
 [中文](README-ch.md) | [English](README.md)
 
 A batch translation tool for Pokémon fan game text files, powered by a local Ollama LLM.  
-Supports terminology lists, placeholder protection, resume from cache, and automatic checking.
+Supports terminology lists, control-code detection, resume from cache, and automatic checking.
 
 ## Features
 
@@ -239,7 +239,7 @@ and, on a hit, writes the term's translation straight into the cache.
 - Leading/trailing punctuation and whitespace are ignored **for matching only**
   and are kept verbatim in the translation: `Yes!` → `是!`.
 - Backslashes and `[ ] { } < > @ # ~` are *not* stripped (they build control
-  codes / tags / placeholders, so `[Pikachu]` is never mistaken for a term).
+  codes / tags, so `[Pikachu]` is never mistaken for a term).
 - A term that itself contains punctuation is matched as-is first
   (`(?)` → `神石`), then with the surrounding punctuation stripped.
 

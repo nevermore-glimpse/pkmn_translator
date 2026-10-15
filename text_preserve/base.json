@@ -1,0 +1,10 @@
+[
+  {
+    "src": "(?:if|en|unless)\\s*\\([^)]{1,80}\\)",
+    "info": "事件脚本条件：if(v[123] >= 1)、en(!s[2])、unless($game_switches[3])"
+  },
+  {
+    "src": "%[sdif]",
+    "info": "printf 占位符：%s %d %i %f"
+  }
+]

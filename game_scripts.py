@@ -302,6 +302,57 @@ def exe_root(exe_path):
     return d, os.path.basename(p)
 
 
+def looks_like_game_root(d):
+    """
+    宽松判断：这个目录像不像游戏根目录。
+
+    判据（任一命中即可）：有 Data/ 子目录、有 Game.ini、
+    有 *.rxproj 工程文件、有 RGSS*.dll 运行库。
+    """
+    if not d or not os.path.isdir(d):
+        return False
+    if os.path.isdir(data_dir(d)):
+        return True
+    for name in ("Game.ini", "game.ini"):
+        if os.path.isfile(os.path.join(d, name)):
+            return True
+    try:
+        for f in os.listdir(d):
+            low = f.lower()
+            if low.endswith(".rxproj"):
+                return True
+            if low.startswith("rgss") and low.endswith(".dll"):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def game_root_from_exe(exe_path):
+    """
+    从「游戏主程序（exe）」推出游戏根目录 —— 所有「选游戏」入口统一走这里。
+
+    规则：
+      ① 正常情况 exe 就在根目录（Game.exe 与 Data/ 同级）→ 用它所在目录；
+      ② 选到内层目录（...\\\\Data\\\\Game.exe）→ 往上找一层里像根目录的；
+      ③ 都不像 → 返回 exe 所在目录（让 check_game_root 去报错，别在这里瞎猜）。
+
+    返回 (game_root, note)；note 是给界面看的提示文字（可为空串）。
+    """
+    if not exe_path:
+        return "", ""
+    p = os.path.abspath(exe_path)
+    d = os.path.dirname(p) or os.getcwd()
+    note = ""
+    if looks_like_payload_folder(d):
+        up = os.path.dirname(d)
+        if up and os.path.isdir(up):
+            note = (f"选到的是内层目录「{os.path.basename(d)}」，"
+                    f"已自动往上取游戏根目录：\n{up}")
+            return up, note
+    return d, note
+
+
 def verify_game(root, exe=None, need_data=True):
     """
     统一的「选好游戏了吗」校验（菜单 1 / 菜单 11 共用）。
@@ -976,7 +1027,7 @@ def _zh_fragment(frag, first_display=""):
     return "Chinese"
 
 
-def _patch_languages(text, display=None, fragment=None):
+def _patch_languages(text, display=None, fragment=None, first=False):
     """
     在 LANGUAGES 数组里加一条中文语言。做法（按需求定的三步）：
 
@@ -1008,7 +1059,11 @@ def _patch_languages(text, display=None, fragment=None):
           ["简体中文","Chinese"]
         ]
 
-    ★ 数组里已经有中文条目（中文 / Chinese / 简中…）就直接跳过，不会重复加。
+    ★ 数组里已经有中文条目（中文 / Chinese / 简中…）就不再重复加，
+      只校正它的文件名（补上可能缺失的 .dat）。
+    ★ first=True 时把中文那条插到**第一条之前**（成为 LANGUAGES[0]）——
+      游戏的语言就是列表下标（`$PokemonSystem.language` 默认 0），
+      不排到第一位就得进游戏手动切语言。
     返回 (新文本, info)。
     """
     m = _LANG_ARRAY_RE.search(text)
@@ -1030,11 +1085,44 @@ def _patch_languages(text, display=None, fragment=None):
         if em:
             entries.append((k, em))
 
-    # ① 已经有中文条目 → 不动（幂等）
-    for _k, em in entries:
-        if _is_zh(em.group("display")):
-            info["exists"] = em.group("display")
+    # ① 已经有中文条目 → 不重复加，但**校正它的文件名**：
+    #    旧方案这一格就是文件名，少了 .dat 会导致整份语言文件加载失败
+    #    （现象：翻了、也选了中文，界面还是英文）。
+    for k, em in entries:
+        if not _is_zh(em.group("display")):
+            continue
+        info["exists"] = em.group("display")
+        cur = em.group("frag")
+        want = fragment or _ensure_dat(cur)
+        info["fragment"] = want
+        new_lines = None
+        # ①-a 文件名校正（少了 .dat / 大小写与写出的文件不一致）
+        if want != cur:
+            line = lines[k]
+            cr = "\r" if line.endswith("\r") else ""
+            body = line.rstrip()
+            if not body.endswith(","):
+                body += ","
+            em2 = _ENTRY_LINE_RE.match(body)
+            if em2:
+                body = (body[:em2.start("frag")] + want
+                        + body[em2.end("frag"):])
+                info["fixed"] = (cur, want)
+                new_lines = lines[:k] + [body + cr] + lines[k + 1:]
+        # ①-b 排到第一位：游戏默认语言就是 LANGUAGES 的下标 0，
+        #      中文不在第一位时，有存档（language=0）的玩家进去永远是英文。
+        if first and k != entries[0][0]:
+            base = new_lines if new_lines is not None else lines
+            moved = base[k]
+            rest = base[:k] + base[k + 1:]
+            pos = entries[0][0]
+            new_lines = rest[:pos] + [moved] + rest[pos:]
+            info["moved"] = True
+            info["first"] = True
+        if new_lines is None:
             return text, info
+        info["changed"] = True
+        return "\n".join(new_lines), info
 
     if not entries:
         raise ValueError("LANGUAGES 数组里没有可识别的语言条目")
@@ -1070,14 +1158,18 @@ def _patch_languages(text, display=None, fragment=None):
     info["added"] = True
     info["display"] = disp
     info["fragment"] = frag_new
+    info["first"] = bool(first)
     info["template"] = body.strip()
     info["entry"] = dup.strip()
-    new_lines = lines[:k0] + [body + cr, dup + cr] + lines[k0 + 1:]
+    if first:                       # 中文排第一 → 游戏默认就是中文
+        new_lines = lines[:k0] + [dup + cr, body + cr] + lines[k0 + 1:]
+    else:
+        new_lines = lines[:k0] + [body + cr, dup + cr] + lines[k0 + 1:]
     return "\n".join(new_lines), info
 
 
 def apply_languages_entry(game_dir, display="简体中文", fragment=None,
-                          emit=None):
+                          emit=None, first=False):
     """
     把一条语言写进游戏 Settings 的 LANGUAGES。
     返回 {"ok", "changed", "mode", "where", "backup", "targets", ...}
@@ -1095,21 +1187,31 @@ def apply_languages_entry(game_dir, display="简体中文", fragment=None,
     srcs = find_languages_sources(game_dir)
     if not srcs:
         return {"ok": False, "reason": "在脚本里没找到 LANGUAGES（Settings）"}
-    frag = fragment or language_fragment(game_dir)
+    # ★ 没明确给文件名时：语言表里已有中文条目 → 沿用并补上 .dat；
+    #   还没有 → 交给 _patch_languages 照第一条的写法自己适配
+    #   （english.dat → Chinese.dat、english → Chinese）。
+    #   以前这里一律回退成片段 "chinese"，旧方案游戏就永远加载不到文件。
+    if fragment:
+        frag = fragment
+    else:
+        have = next((f for d, f in language_files(game_dir) if _is_zh(d)),
+                    None)
+        frag = _ensure_dat(have) if have else None
     out = {"ok": True, "changed": False, "fragment": frag, "targets": [],
            "display": display}
-    first = None
+    first_info = None            # 第一份脚本的 info（别和参数 first 撞名）
     for src in srcs:
         try:
-            new_text, info = _patch_languages(src["text"], display, frag)
+            new_text, info = _patch_languages(src["text"], display, frag,
+                                              first=first)
         except ValueError as e:
             say(f"[语言] ⚠ {_loc(src)} 里的 LANGUAGES 读不出来：{e}")
             continue
-        if first is None:
-            first = info
+        if first_info is None:
+            first_info = info
         item = {"mode": src["mode"], "where": str(src["key"]),
                 "changed": False, "display": info.get("display") or display}
-        if not info.get("added"):
+        if not info.get("changed", info.get("added")):
             say(f"[语言] {_loc(src)} 的 LANGUAGES 里已经有「"
                 f"{info.get('exists') or '中文'}」，跳过")
             out["targets"].append(item)
@@ -1133,15 +1235,25 @@ def apply_languages_entry(game_dir, display="简体中文", fragment=None,
         out["targets"].append(item)
         if info.get("uncommented"):
             say(f"[语言] {_loc(src)} 里那条语言原本被注释掉了，已去掉 `#`")
-        say(f"[语言] {_loc(src)} 已加入 "
-            f"{info.get('entry') or '[\"Chinese\", …]'}（复制第一条并改名）"
-            f"；原文件已备份：{os.path.basename(bak)}")
+        if info.get("fixed"):
+            old, new = info["fixed"]
+            say(f"[语言] {_loc(src)} 语言文件名已校正：{old} → {new}"
+                f"（少了 .dat 整份译文都会加载不到）")
+        if info.get("moved"):
+            say(f"[语言] {_loc(src)} 中文已排到第一位"
+                f"（游戏默认语言就是 LANGUAGES 的下标 0）")
+        elif info.get("added"):
+            say(f"[语言] {_loc(src)} 已加入 "
+                f"{info.get('entry') or '[\"Chinese\", …]'}"
+                f"（{'排第一位，游戏默认语言' if info.get('first') else '复制第一条并改名'}）")
+        say(f"[语言] 原文件已备份：{os.path.basename(bak)}")
 
-    if first:
-        for k in ("display", "fragment", "entry", "template", "exists",
-                  "added", "uncommented"):
-            if k in first:
-                out.setdefault(k, first[k])
+    if first_info:
+        for k in ("display", "fragment", "entry", "template",
+                  "exists", "added", "uncommented", "first",
+                  "fixed", "moved", "changed"):
+            if k in first_info:
+                out.setdefault(k, first_info[k])
     # 兼容旧字段：取第一处当代表
     if out["targets"]:
         out["mode"] = out["targets"][0]["mode"]
@@ -1183,6 +1295,21 @@ def _strip_dat(name):
     return name[:-4] if low.endswith(".dat") else name
 
 
+def _ensure_dat(name):
+    """
+    语言文件名必须是 `xxx.dat`。
+
+    ★ 旧方案里游戏拼的是 `"Data/" + LANGUAGES[n][1]`（见 PokemonSystem
+      `pbLoadMessages`）。这一格少了 .dat，游戏就去打开 `Data/chinese` 这种
+      不存在的文件，`loadMessageFile` 直接 rescue 掉 —— **不报错、不提示**，
+      表现就是「明明翻了、也选了中文，界面还是英文」。
+    """
+    n = (name or "").strip().strip('"').strip("'")
+    if not n:
+        return "Chinese.dat"
+    return n if n.lower().endswith(".dat") else n + ".dat"
+
+
 def default_language_file(game_dir):
     """
     猜「该写哪个语言文件」：优先显示名里带中文/汉化/Chinese 的那条，
@@ -1198,5 +1325,11 @@ def default_language_file(game_dir):
     if not pick and len(items) >= 2:
         pick = items[-1][1]
     if not pick:
+        pick = "Chinese.dat"
+    # ★ 语言表里那一格可能漏了 .dat（旧版本工具写进去的），或者只是大小写和我们
+    #   写出的文件不一致。漏了就等于指向不存在的文件；大小写不一致在区分大小写
+    #   的文件系统上同样找不到。两种情况都统一按 Chinese.dat 走。
+    low = str(pick or "").lower()
+    if not low.endswith(".dat") or low == "chinese.dat":
         pick = "Chinese.dat"
     return os.path.join(data_dir(game_dir), pick)
