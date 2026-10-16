@@ -519,17 +519,33 @@ main {
 .dlg-in {
     width: 100%;
     max-width: 420px;
+    /* ★ 正文可能很长（覆盖清单几十行）。封顶到视口内 + 正文自己滚动，
+       底部按钮才永远留在屏幕上；否则小屏上「开始执行」会被顶出可视区点不到。 */
+    max-height: calc(100vh - 44px);
+    display: flex;
+    flex-direction: column;
     background: var(--card);
     border-radius: 13px;
     padding: 17px 17px 13px;
 }
 
-.dlg-h { font-size: calc(16px * var(--fs)); color: var(--brand-deep); margin-bottom: 8px; }
-.dlg-b { font-size: calc(13.5px * var(--fs)); line-height: 1.75; color: var(--text); white-space: pre-wrap; }
+.dlg-h { flex: none; font-size: calc(16px * var(--fs)); color: var(--brand-deep); margin-bottom: 8px; }
+.dlg-b {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    font-size: calc(13.5px * var(--fs));
+    line-height: 1.75;
+    color: var(--text);
+    white-space: pre-wrap;
+}
 .dlg-b .warn { color: var(--warn); }
 .dlg-b .err  { color: var(--err); }
+.dlg-b .sub  { color: var(--dim); font-size: calc(12px * var(--fs)); }
+.dlg-b .hint { color: var(--dim); font-size: calc(12.5px * var(--fs)); }
 
-.dlg-f { display: flex; gap: 8px; margin-top: 15px; }
+.dlg-f { flex: none; display: flex; gap: 8px; margin-top: 15px; }
 
 /* ---- toast ---- */
 .toast {

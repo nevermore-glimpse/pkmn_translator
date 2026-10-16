@@ -75,6 +75,13 @@ _COMPILER_MAIN_RE = re.compile(r"^([ \t]*)def\s+main\s*(?:#.*)?$", re.M)
 _NO_DEBUG_RE = re.compile(r"^([ \t]*)return\s+if\s+!\$DEBUG\s*(?:#.*)?$", re.M)
 _MODULE_COMPILER_RE = re.compile(r"^module\s+Compiler\b", re.M)
 
+# ★ Ruby 的「块注释」= `=begin` … `=end`：两个标记都必须**顶格**（第 0 列），
+#   中间整段不参与语法解析。有作者会把**废弃的旧 `def mainFunction`** 原样
+#   留在 `=begin` 里（如 999_Main.rb 里 Jos 2023-03-20 那次改动），直接
+#   `.search` 命中的就是死代码 —— 所以定位一律走 _search_outside_comment。
+_BEGIN_COMMENT_RE = re.compile(r"^=begin(?:[ \t]|\r?$)")
+_END_COMMENT_RE = re.compile(r"^=end(?:[ \t]|\r?$)")
+
 # ★ 判断「$DEBUG=true 已经写过了」时，**只认一整行就只有 $DEBUG=true** ——
 #   像 `if $DEBUG=true`（那是条件判断 / 误写成 = 的老代码）不算写过，
 #   否则我们就不插那一行，DEBUG 永远开不起来。
@@ -165,6 +172,52 @@ def _insert_after(lines, idx, new_lines, eol):
     return lines[:idx + 1] + [x + eol for x in new_lines] + lines[idx + 1:]
 
 
+def _comment_block_ranges(text):
+    """
+    扫出 `=begin` … `=end` 覆盖的**行号区间**（0 基，闭区间 `(起, 止)`）。
+
+    两端都算在内：`=begin` / `=end` 标记行本身也不是可用的代码位置。
+    `=begin` 没有配对的 `=end`（Ruby 里本就不合法）时按「一直到文件末尾」
+    处理 —— 宁可多滤，不可漏滤。
+    """
+    lines = text.split("\n")
+    ranges, start = [], None
+    for i, line in enumerate(lines):
+        if start is None:
+            if _BEGIN_COMMENT_RE.match(line):
+                start = i
+        elif _END_COMMENT_RE.match(line):
+            ranges.append((start, i))
+            start = None
+    if start is not None:
+        ranges.append((start, len(lines) - 1))
+    return ranges
+
+
+def _line_index(text, pos):
+    """字符下标 pos 所在的行号（0 基）。"""
+    return text.count("\n", 0, pos)
+
+
+def _search_outside_comment(regex, text):
+    """
+    在**不落在 `=begin`/`=end` 注释区间里**的匹配中取第一个；没有则 None。
+
+    ★ 为什么不「先删掉注释再匹配」：调用方要的是 match 对象（`start()` 用来
+      定位插入行、切函数体），删注释会让所有下标错位。这里只在**原始文本**
+      上过滤匹配结果，位置天然正确，返回文本也一字不改。
+    ★ 文本里没有 `=begin` 时（绝大多数普通脚本）与直接 `.search` 完全等价。
+    """
+    blocks = _comment_block_ranges(text)
+    if not blocks:
+        return regex.search(text)
+    for m in regex.finditer(text):
+        i = _line_index(text, m.start())
+        if not any(a <= i <= b for a, b in blocks):
+            return m
+    return None
+
+
 # ================================================================
 # 主脚本：mainFunction 里写 $DEBUG=true
 # ================================================================
@@ -179,11 +232,17 @@ def find_main_sources(game_dir):
 
     Main 里没有 `def mainFunction` 时（极少见，作者可能改名了），
     退回「第一份带 mainFunction 的脚本」。
+
+    ★ 定位一律**跳过 `=begin`/`=end` 注释区间**（见 _search_outside_comment）：
+      不少游戏把废弃的旧 `def mainFunction` 原样留在块注释里，直接 `.search`
+      命中的是那段死代码 —— 往那儿写 `$DEBUG=true` 等于没写（$DEBUG 永远是
+      nil，调试模式打不开）。作者只放在注释里、正文压根没有的脚本，按
+      「这个脚本没有可用的 mainFunction」处理，不再硬插。
     """
     named, fallback = [], []
     for mode, key, path, name, text in GS.iter_named_scripts(game_dir,
                                                             both=True):
-        m = _MAIN_FUNC_RE.search(text)
+        m = _search_outside_comment(_MAIN_FUNC_RE, text)
         if not m:
             continue
         src = {"mode": mode, "key": key, "path": path, "text": text,
@@ -207,12 +266,15 @@ def patch_main_function(text):
     """
     在 `def mainFunction` 的下一行插入 `$DEBUG=true`。
     返回 (新文本, {"added": bool, "existed": bool})；找不到 mainFunction 抛 ValueError。
+
+    ★ 定位的是**不在 `=begin`/`=end` 里**的那个定义（真正生效的那个）；
+      所有定义都在块注释里 → 同样抛 ValueError（上层会如实报「没找到」）。
     """
-    m = _MAIN_FUNC_RE.search(text)
+    m = _search_outside_comment(_MAIN_FUNC_RE, text)
     if not m:
         raise ValueError("脚本里没有 `def mainFunction`（Main 脚本不对？）")
     lines = text.split("\n")
-    i = text.count("\n", 0, m.start())
+    i = _line_index(text, m.start())
     # 已经写过了 → 不动（幂等）
     for j in range(i, min(i + 4, len(lines))):
         if _DEBUG_SET_RE.search(lines[j]):
@@ -233,6 +295,9 @@ def remove_debug_from_main(game_dir, emit=None):
     ★ 只删**紧跟 `def mainFunction` 的那几行内、且值为 true** 的一行：
       这正是 `patch_main_function` 插入的位置和内容 → 能精确对应「是我们插的」，
       不会碰到脚本里其它地方写 `$DEBUG` 的代码，也不会碰 `$DEBUG = false`。
+    ★ 定位用的是与 `patch_main_function` **同一套**逻辑（跳过 `=begin`/`=end`），
+      否则「写了哪一处、还原就清哪一处」对不上，会清错地方（甚至删掉别人
+      代码里的 `$DEBUG=true`）。
     """
     def say(msg):
         if emit:
@@ -246,10 +311,10 @@ def remove_debug_from_main(game_dir, emit=None):
         return rep
     for src in mains:
         lines = src["text"].split("\n")
-        m = _MAIN_FUNC_RE.search(src["text"])
+        m = _search_outside_comment(_MAIN_FUNC_RE, src["text"])
         if not m:
             continue
-        i = src["text"].count("\n", 0, m.start())
+        i = _line_index(src["text"], m.start())
         hit = -1
         for j in range(i, min(i + 4, len(lines))):
             if _DEBUG_SET_RE.search(lines[j]):

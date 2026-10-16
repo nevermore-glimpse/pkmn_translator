@@ -22,18 +22,15 @@
      ⑦ 调试启动器（见 launcher）。
      按引擎版本 / 代码形态自动适配注入位置。
 
-依赖：game_scripts（脚本读）、essentials_base（基准比对）、engine_src、
-      config。
+依赖：game_scripts（脚本读）、essentials_base（基准比对）、engine_src。
 """
 import io
-import json
 import os
 import re
 import shutil
 import time
 import zlib
 
-import config
 import engine_src
 import game_scripts as GS
 from rubymarshal.classes import Symbol
@@ -566,11 +563,17 @@ _overwritten = {}
 
 
 def _backup(path, emit=None, mark=None):
-    """备份一次（跨运行复用），与 debug_tool 同风格。mark 决定备份标记。"""
+    """备份一次（跨运行复用），与 debug_tool 同风格。mark 决定备份标记。
+
+    ★ 缓存里的那份备份要**确认还在**：`restore_overwrite` 会把 .bak 改名回原位，
+      同一进程里再改同一个文件时，旧缓存指向的那份已经不存在，直接返回它就会
+      「改了文件却没有备份」——那正是「还原之后又开启一次」的场景。
+    """
     mark = mark or BAK_MARK
     ap = (os.path.abspath(path), mark)
-    if ap in _overwritten:
-        return _overwritten[ap]
+    old = _overwritten.get(ap)
+    if old and os.path.exists(old):
+        return old
     old = _find_backup(path, mark=mark)
     if old:
         _overwritten[ap] = old
@@ -826,6 +829,36 @@ _STRIP_PATS = (
     #   其实能正确解析，但源码上容易让人误会）。
     (re.compile(r"^([ \t]*insert_index\s*=\s*)\(\$DEBUG\)\s*\?\s*2\s*:\s*1"
                 r"[ \t]*(?P<tail>#.*?)?(?P<cr>\r?)$", re.M),
+     r"\1 2" + r"  # " + _MARK + r" 已去掉 $DEBUG 插位条件\t\c"),
+    # ---- 复合写法：`($DEBUG && <游戏自己加的条件>)` ----
+    # ★ 上面那批规则只认光秃秃的 `$DEBUG`。同人游戏常把 $DEBUG 再包一层自己
+    #   的条件 —— 实测「宝可梦灵魂石2」全游戏写的是
+    #   `($DEBUG && $game_map.map_id != 455)`（某个地图上不给开调试）。
+    #   于是这批规则一处都认不出来，方式二 报「没找到可改的 $DEBUG 条件」，
+    #   而 Game_Player / UI_Party / UI_Bag / UI_PokemonStorage 里的条件其实
+    #   还挂着 —— 属于**漏改 + 误报**。方式二 的语义本来就是「无条件可用」，
+    #   所以整个括号条件一并去掉（与光秃秃写法得到的结果完全一致）。
+    # v16 / v17 Game_Player / Scene_Map：`if ($DEBUG && …) and Input.press?(…)`
+    (re.compile(r"^([ \t]*)if\s+\(\$DEBUG\s*&&\s*[^()\n]*\)\s*"
+                r"(?:and|&&)\s+(?=Input\.press?\()", re.M),
+     r"\1if "),
+    # v18 起 Game_Player：`return true if ($DEBUG && …) && Input.press?(…)`
+    (re.compile(r"^([ \t]*return\s+true\s+if\s+)\(\$DEBUG\s*&&\s*[^()\n]*\)"
+                r"\s*(?:&&|and)\s+", re.M),
+     r"\1"),
+    # v18 起 Scene_Map：`$game_temp.debug_calling = true if ($DEBUG && …)`
+    (re.compile(r"^([ \t]*\$game_temp\.debug_calling\s*=\s*true)\s+if\s+"
+                r"\(\$DEBUG\s*&&\s*[^()\n]*\)[ \t]*(?P<tail>#.*?)?(?P<cr>\r?)$",
+                re.M),
+     r"\1  # " + _MARK + r" 已去掉 $DEBUG 条件\t\c"),
+    # 队伍 / 背包 / 仓库的 Debug 项：`commands[cmdDebug…] = … if ($DEBUG && …)`
+    (re.compile(r"^([ \t]*commands\[cmdDebug[^\n]*?)\s+if\s+"
+                r"\(\$DEBUG\s*&&\s*[^()\n]*\)[ \t]*(?P<tail>#.*?)?(?P<cr>\r?)$",
+                re.M),
+     r"\1  # " + _MARK + r" 已去掉 $DEBUG 条件\t\c"),
+    # v20+ UI_Party：`insert_index = (($DEBUG && …)) ? 2 : 1`
+    (re.compile(r"^([ \t]*insert_index\s*=\s*)\(\(\$DEBUG\s*&&\s*[^()\n]*\)\)"
+                r"\s*\?\s*2\s*:\s*1[ \t]*(?P<tail>#.*?)?(?P<cr>\r?)$", re.M),
      r"\1 2" + r"  # " + _MARK + r" 已去掉 $DEBUG 插位条件\t\c"),
 )
 
@@ -1197,6 +1230,11 @@ def patch_special_key(game_dir, mode="special", emit=None):
       v16 / v17   `if $DEBUG and Input.press?(Input::F9)`     → 加一个独立 if 块
       v18 起      `elsif Input.press?(Input::F9)`            → 在它前面加一个 elsif 分支
       两种都认不准时，退到 `unless $game_player.moving?` 那一行前面插独立 if 块。
+
+    ★ 幂等 + 可切换：**先抠掉本工具此前注入的所有 F6 块**（两种方式各算一块），
+      再按当前方式插一份新的。以前是「另一种方式注过就只警告一句、照样往下插」，
+      结果是同一处并排出现两个条件完全相同的 `elsif Input.press?(Input::F6)`，
+      第二个永远不可达（实测：先方式三再方式四 → 双 F6 分支，方式四变死代码）。
     """
     def say(msg):
         if emit:
@@ -1208,57 +1246,14 @@ def patch_special_key(game_dir, mode="special", emit=None):
     if not tgt:
         say(f"{head} · 游戏里没找到「Scene_Map」脚本")
         return {"ok": False, "reason": "找不到 Scene_Map 脚本"}
-    text = tgt["text"]
-    lines = text.split("\n")
 
-    def _marked_run_end(start):
-        """
-        从 start 起，连续的「带本工具标记」的行到哪儿结束。
+    # ① 先清掉本工具以前注入的 F6 块（不管是方式三还是方式四、也不管
+    #    是不是老版本那种包着 `if !$DEBUG` 的写法）→ 保证锚点处至多一个。
+    lines, dropped = _f6_strip(tgt["text"].split("\n"))
+    if dropped:
+        say(f"{head} · 已先清除之前注入的 F6 分支（{dropped} 行）")
 
-        ★ 只收**自己这一块**：撞上别的功能的标记（方式二/四/五/六/七、
-          按基准补行…）就停 —— 那些是别的改动留下的，不能被当成 F6 分支
-          的一部分删掉。
-        """
-        if start is None or start < 0:
-            return None
-        j = start
-        while j + 1 < len(lines) and _MARK in lines[j + 1] \
-                and not any(m in lines[j + 1] for m in _FOREIGN_MARKS) \
-                and j + 1 - start < 8:
-            j += 1
-        return j
-
-    if f"{_MARK} {tag}" in text:
-        # ★ 之前可能注的是**老版本的方式三**（里面还包着 `if !$DEBUG`）。
-        #   用户要求现在「直接开启并提示」，所以发现是老的就在原地升级，
-        #   而不是当成「已经注入过」直接跳过。
-        i0 = next((k for k, x in enumerate(lines)
-                   if "Input::F6" in x and _MARK in x), None)
-        j0 = _marked_run_end(i0)
-        old = lines[i0:j0 + 1] if i0 is not None and j0 is not None else []
-        if not any("if !$DEBUG" in x for x in old):
-            say(f"{head} · {tag}已经注入过了，跳过")
-            return {"ok": True, "script": "Scene_Map", "added": False,
-                    "mode": mode}
-        lines[i0:j0 + 1] = _f6_block(
-            lines[i0], menu, tag,
-            is_elsif=lines[i0].lstrip().startswith("elsif"))
-        try:
-            _write_script(tgt, "\n".join(lines), emit=emit)
-        except (OSError, RuntimeError) as e:
-            say(f"{head} ✘ 升级老注入失败：{e}")
-            return {"ok": False, "reason": str(e)}
-        say(f"{head} ✔ 发现以前注入的 F6 分支里还包着 `if !$DEBUG`，"
-            "已原地升级成「直接开启并提示」")
-        return {"ok": True, "script": "Scene_Map", "added": True,
-                "mode": mode, "upgraded": True}
-
-    # 另一个 F6 方式已经注过的话提醒一下（两种方式都是按 F6，会互相遮住）
-    other = "方式四：F6 键打开调试菜单" if not menu else "方式三：F6 键开启调试模式"
-    if f"{_MARK} {other}" in text:
-        say(f"{head} · ⚠ 脚本里已经有「{other}」了 —— 两个 F6 分支会同时存在，"
-            "按 F6 只会命中前面那个。想换方式先用「还原」再重开。")
-
+    # ② 再定位锚点（此时 F6 块已经不在了，不会自己撞自己）
     anchor = None
     for i, ln in enumerate(lines):
         if "Input::F9" not in ln:
@@ -1280,9 +1275,14 @@ def patch_special_key(game_dir, mode="special", emit=None):
         return {"ok": False, "reason": "Scene_Map 里找不到注入锚点"}
 
     body = _f6_block(lines[anchor], menu, tag, is_elsif=is_elsif)
-    new = "\n".join(lines[:anchor] + body + lines[anchor:])
+    new_text = "\n".join(lines[:anchor] + body + lines[anchor:])
+    if new_text == tgt["text"]:
+        # 已经是当前这一套（方式、位置、内容都对）→ 不写盘，hash 不变
+        say(f"{head} · {tag}已经注入过了，跳过")
+        return {"ok": True, "script": "Scene_Map", "added": False,
+                "mode": mode, "changed": False}
     try:
-        _write_script(tgt, new, emit=emit)
+        _write_script(tgt, new_text, emit=emit)
     except (OSError, RuntimeError) as e:
         say(f"{head} ✘ 写入失败：{e}")
         return {"ok": False, "reason": str(e)}
@@ -1290,7 +1290,35 @@ def patch_special_key(game_dir, mode="special", emit=None):
     say(f"{head} ✔ 已在 Scene_Map 注入 F6 键（{what}）"
         f"（{'elsif 分支' if is_elsif else '独立 if 块'}，在 F9 那段之前）")
     return {"ok": True, "script": "Scene_Map", "added": True, "mode": mode,
-            "branch": "elsif" if is_elsif else "if"}
+            "changed": True, "branch": "elsif" if is_elsif else "if",
+            "replaced": bool(dropped)}
+
+
+def _f6_strip(lines):
+    """
+    抠掉本工具注入的**所有** F6 块 → (新的行列表, 删掉了几行)。
+
+    ★ 认块的方式：块首 = 同时含 `Input::F6` 和 `_MARK` 的行（`_f6_block`
+      生成的两条路径都满足）；块体 = 紧跟着的、含 `_MARK` 且不含
+      `_FOREIGN_MARKS` 里任何文案的连续行（`end  # [pkmn-debug]` 也算在内）。
+
+    ★ 不用固定行数上限收尾 —— 方式四那种 `elsif` 块有 7 行、v16/v17 的
+      独立 `if` 块有 8 行，写死上限会把尾巴（尤其是 `end`）留在原地，
+      删完反而多出一个孤立的 `end`。
+    """
+    heads = [i for i, x in enumerate(lines)
+             if "Input::F6" in x and _MARK in x]
+    if not heads:
+        return lines, 0
+    drop = set()
+    for h in heads:
+        drop.add(h)
+        j = h + 1
+        while j < len(lines) and _MARK in lines[j] \
+                and not any(m in lines[j] for m in _FOREIGN_MARKS):
+            drop.add(j)
+            j += 1
+    return [x for i, x in enumerate(lines) if i not in drop], len(drop)
 
 
 def _f6_block(ref_line, menu, tag, is_elsif):
@@ -1332,22 +1360,87 @@ def patch_repel(game_dir, mode="repel", version=None, emit=None):
             emit(msg)
     tgt = find_repel_script(game_dir)
     if not tgt:
+        # ★ 松散脚本里没有 pbRepel 时，仍可能**只在容器里**有 → 试一下容器，
+        #   别把这种游戏直接判成「找不到道具效果脚本」。
+        plug = _inject_repel_into_plugins(game_dir, mode, version=version,
+                                          say=say)
+        if plug.get("written"):
+            return {"ok": True, "script": plug.get("names", ["(插件容器)"]),
+                    "mode": mode, "where": "plugin", "plugins": plug}
         say("[除虫喷雾] · 游戏里没找到带 pbRepel 的脚本"
-            "（试过 Item_Effects / PItem_ItemEffects / PokemonItemEffects）")
+            "（试过 Item_Effects / PItem_ItemEffects / PokemonItemEffects，"
+            "以及插件容器）")
         return {"ok": False, "reason": "找不到道具效果脚本"}
     m = re.search(r"^([ \t]*)def\s+pbRepel\b.*$", tgt["text"], re.M)
     if not m:
         say("[除虫喷雾] · 道具效果脚本里没有 pbRepel（版本不符？）")
         return {"ok": False, "reason": "没找到 pbRepel 函数"}
-    indent = re.search(r"^([ \t]*)", m.group(0)).group(1)
-    pad = indent + "  "
     ok_val = _repel_ok_value(tgt["text"], version)
-    # ★ 幂等：先抠掉本工具**之前**注入的整块（方式五 / 方式六都带 _MARK）。
-    #   以前这里没有任何检查 → 重复点「开启 DEBUG」会一份份往下堆
-    #   （实测 1→2→3），而且「先跑方式五再跑方式六」时方式五那块把
-    #   `$DEBUG` 设成 true，方式六的 `if !$DEBUG` 就永远进不去 → 用户以为没生效。
-    lines = tgt["text"].split("\n")
-    i = tgt["text"].count("\n", 0, m.start())
+    new_text, dropped = _repel_inject(tgt["text"], mode, ok_val)
+    changed = (new_text != tgt["text"])
+    if changed:
+        if dropped:
+            say(f"[除虫喷雾] · 已抠掉 {dropped} 行上次注入的内容"
+                f"（{'方式五' if mode == 'repel' else '方式六'}）")
+        try:
+            _write_script(tgt, new_text, emit=emit)
+        except (OSError, RuntimeError) as e:
+            say(f"[除虫喷雾] ✘ 写入失败：{e}")
+            return {"ok": False, "reason": str(e)}
+        say(f"[除虫喷雾] ✔ 已在「{tgt['name']}」的 pbRepel 注入"
+            f"（{'方式五' if mode == 'repel' else '方式六'}）")
+    else:
+        say(f"[除虫喷雾] · 「{tgt['name']}」的 pbRepel 已经是"
+            f"（{'方式五' if mode == 'repel' else '方式六'}），无需改动")
+    # ★ 只改松散脚本**不够**：加载顺序是「松散 Scripts/ 全部加载完 →
+    #   再 eval Data/PluginScripts.rxdata」，容器里后定义的 `def pbRepel`
+    #   会把上面这份整体覆盖掉（实测本作容器内的
+    #   `[Soulstones 2 Specific Changes] Item_Effects.rb` 正是如此），
+    #   于是方式五/六 的注入完全无效。同一份注入必须同时写进容器。
+    plug = _inject_repel_into_plugins(game_dir, mode, say=say)
+    return {"ok": True, "script": tgt["name"], "mode": mode,
+            "changed": changed, "plugins": plug}
+
+
+def _repel_body(mode, ok_val):
+    """方式五 / 方式六 注入的块体（相对 def 行缩进 2 空格的写法）。"""
+    if mode == "repel":
+        return [
+            f'if !$DEBUG  # {_MARK} 方式五：除虫喷雾开启调试模式',
+            f'  $DEBUG = true  # {_MARK}',
+            f'  pbMessage("调试模式已开启！")  # {_MARK}',
+            f'end  # {_MARK}',
+        ]
+    return [
+        f'if !$DEBUG  # {_MARK} 方式六：除虫喷雾直接开调试菜单',
+        f'  $DEBUG = true  # {_MARK}',
+        f'  $game_temp.debug_calling = false  # {_MARK}',
+        f'  $game_player.straighten  # {_MARK}',
+        f'  pbPlayDecisionSE  # {_MARK}',
+        f'  pbFadeOutIn {{ pbDebugMenu }}  # {_MARK}',
+        f'  pbMessage("已打开调试菜单")  # {_MARK}',
+        f'  return {ok_val}  # {_MARK}',
+        f'end  # {_MARK}',
+    ]
+
+
+def _repel_inject(text, mode, ok_val):
+    """
+    把方式五/六 的注入写到 `text` 里 `def pbRepel` 的**第一行之后**
+    → (新文本, 抠掉了几行)。
+
+    ★ 幂等：先抠掉本工具**之前**注入的整块（方式五 / 方式六都带 _MARK）。
+      以前这里没有任何检查 → 重复点「开启 DEBUG」会一份份往下堆
+      （实测 1→2→3），而且「先跑方式五再跑方式六」时方式五那块把
+      `$DEBUG` 设成 true，方式六的 `if !$DEBUG` 就永远进不去。
+    ★ 认不出 pbRepel / 没有变化 → 返回值与原文本相等，由调用方判断。
+    """
+    m = re.search(r"^([ \t]*)def\s+pbRepel\b.*$", text, re.M)
+    if not m:
+        return text, 0
+    pad = m.group(1) + "  "
+    lines = text.split("\n")
+    i = text.count("\n", 0, m.start())
     eol = "\r" if lines[i].endswith("\r") else ""
     old_rows = []
     j = i + 1
@@ -1355,44 +1448,77 @@ def patch_repel(game_dir, mode="repel", version=None, emit=None):
         old_rows.append(j)
         j += 1
     if old_rows:
-        say(f"[除虫喷雾] · 已抠掉 {len(old_rows)} 行上次注入的内容"
-            f"（{'方式五' if mode == 'repel' else '方式六'}）")
         del lines[old_rows[0]:old_rows[-1] + 1]
-    if mode == "repel":
-        body = [
-            f'if !$DEBUG  # {_MARK} 方式五：除虫喷雾开启调试模式',
-            f'  $DEBUG = true  # {_MARK}',
-            f'  pbMessage("调试模式已开启！")  # {_MARK}',
-            f'end  # {_MARK}',
-        ]
-    else:
-        body = [
-            f'if !$DEBUG  # {_MARK} 方式六：除虫喷雾直接开调试菜单',
-            f'  $DEBUG = true  # {_MARK}',
-            f'  $game_temp.debug_calling = false  # {_MARK}',
-            f'  $game_player.straighten  # {_MARK}',
-            f'  pbPlayDecisionSE  # {_MARK}',
-            f'  pbFadeOutIn {{ pbDebugMenu }}  # {_MARK}',
-            f'  pbMessage("已打开调试菜单")  # {_MARK}',
-            f'  return {ok_val}  # {_MARK}',
-            f'end  # {_MARK}',
-        ]
-    # ↑ lines / i / eol 已在上面「剥离旧注入」时算好（删的是 i 之后的行，i 不变）
-    new = (lines[:i + 1] + [pad + x + eol for x in body] + lines[i + 1:])
-    new_text = "\n".join(new)
-    if new_text == tgt["text"]:                    # 已经是当前这套 → 不写
-        say(f"[除虫喷雾] · 「{tgt['name']}」的 pbRepel 已经是"
-            f"（{'方式五' if mode == 'repel' else '方式六'}），无需改动")
-        return {"ok": True, "script": tgt["name"], "mode": mode,
-                "changed": False}
+    # ↑ lines / i / eol 已在「剥离旧注入」时算好（删的是 i 之后的行，i 不变）
+    new = (lines[:i + 1] + [pad + x + eol for x in _repel_body(mode, ok_val)]
+           + lines[i + 1:])
+    return "\n".join(new), len(old_rows)
+
+
+def _inject_repel_into_plugins(game_dir, mode, ok_val=None, version=None,
+                               say=None):
+    """
+    把**同一份** pbRepel 注入写进插件容器 `Data/PluginScripts.rxdata` 里
+    每一条同名 `def pbRepel`（见 patch_repel 里的加载顺序说明）。
+
+    · 没有容器 / 容器里没有同名定义 / 任何读写失败 → 只 `say("[除虫喷雾] ⚠ …")`，
+      **绝不中止**整个方式（v16–v18 没有插件机制，行为与改动前一致）。
+    · 容器写入**先备份**（`.pkmn-overwrite-<时间戳>.bak`，与 `_write_script`
+      同一套 → 「还原覆盖」`_list_backups` / `restore_overwrite` 能认出来），
+      再由 `GS.write_plugin_entry` 原子落盘（写 `.tmp` 后 os.replace）。
+    · ok_val 缺省时按容器条目自己的 body 嗅探（容器与松散脚本的返回值写法
+      可能不同，所以两条路径各自判一次）。
+    · 返回 {"ok", "written", "skipped", "names", "reason"}。
+    """
+    def warn(msg):
+        if say:
+            say(msg)
+    out = {"ok": False, "written": 0, "skipped": 0, "names": [],
+           "reason": ""}
+    path = GS.plugin_rxdata_path(game_dir)
+    if not os.path.isfile(path):
+        out["reason"] = "missing"
+        return out
     try:
-        _write_script(tgt, new_text, emit=emit)
-    except (OSError, RuntimeError) as e:
-        say(f"[除虫喷雾] ✘ 写入失败：{e}")
-        return {"ok": False, "reason": str(e)}
-    say(f"[除虫喷雾] ✔ 已在「{tgt['name']}」的 pbRepel 注入"
-        f"（{'方式五' if mode == 'repel' else '方式六'}）")
-    return {"ok": True, "script": tgt["name"], "mode": mode}
+        entries = GS.read_plugin_entries(path)
+    except Exception as e:                              # noqa: BLE001
+        warn(f"[除虫喷雾] ⚠ 读 {os.path.basename(path)} 失败，跳过容器注入：{e}")
+        out["reason"] = "read_error"
+        return out
+    hits = [(pi, fi, nm, tx) for pi, fi, nm, tx in entries
+            if re.search(r"^[ \t]*def\s+pbRepel\b", tx, re.M)]
+    if not hits:
+        out["reason"] = "no_entry"
+        return out
+    if ok_val is None:
+        ok_val = _repel_ok_value(hits[0][3], version)
+    backed = False
+    for pi, fi, nm, tx in hits:
+        new_text, dropped = _repel_inject(tx, mode, ok_val)
+        if new_text == tx:
+            out["skipped"] += 1
+            warn(f"[除虫喷雾] · 容器「{nm}」的 pbRepel 已经是"
+                 f"（{'方式五' if mode == 'repel' else '方式六'}），无需改动")
+            continue
+        try:
+            if not backed:
+                # 整个 rxdata 做一次备份就够（一次运行里可能改多条）
+                _backup(path, emit=say)
+                backed = True
+            GS.write_plugin_entry(path, (pi, fi), new_text, expect=tx)
+        except Exception as e:                          # noqa: BLE001
+            warn(f"[除虫喷雾] ⚠ 写入容器「{nm}」失败，已跳过：{e}")
+            continue
+        out["written"] += 1
+        out["names"].append(nm)
+        if dropped:
+            warn(f"[除虫喷雾] · 容器「{nm}」已抠掉 {dropped} 行上次注入的内容")
+        warn(f"[除虫喷雾] ✔ 已在插件容器「{nm}」的 pbRepel 注入"
+             f"（{'方式五' if mode == 'repel' else '方式六'}）")
+    out["ok"] = bool(out["written"] or out["skipped"])
+    if not out["written"] and not out["skipped"]:
+        out["reason"] = "write_error"
+    return out
 
 
 def _repel_ok_value(text, version=None):
@@ -1732,7 +1858,6 @@ def _func_range_in(text, func):
             break
     if start is None:
         return None
-    indent = len(lines[start]) - len(lines[start].lstrip())
 
     depth = 1
     # 逐行配对：`def` 行本身算 1 层。之后按 Ruby 关键字计数。
@@ -3030,11 +3155,14 @@ def guard_plugin_dependency(script_path, const_name, emit=None):
             emit(msg)
 
     try:
-        text = io.open(script_path, encoding="utf-8", errors="replace").read()
+        # ★ newline="" 保留原始行尾（本模块约定：行里留着 \r，拼回时用 \n）。
+        #   用默认的通用换行读，CRLF 脚本会被静默改写成 LF。
+        with io.open(script_path, encoding="utf-8", errors="replace",
+                     newline="") as f:
+            text = f.read()
     except OSError as e:
         say(f"[方式七] ⚠ 读「{os.path.basename(script_path)}」失败：{e}")
         return 0
-    eol = "\r\n" if "\r\n" in text else "\n"
     lines = text.split("\n")
     out = []
     i = 0
@@ -3054,10 +3182,12 @@ def guard_plugin_dependency(script_path, const_name, emit=None):
                 i += 1
                 continue
             indent = re.match(r"^([ \t]*)", ln).group(1)
-            out.append(f"{indent}if defined?({const_name})  {_XQK_GUARD_MARK}")
+            cr = "\r" if ln.endswith("\r") else ""      # 保留 CRLF 行尾
+            out.append(f"{indent}if defined?({const_name})  "
+                       f"{_XQK_GUARD_MARK}{cr}")
             for k in range(i, end + 1):
                 out.append(("  " + lines[k]) if lines[k].strip() else lines[k])
-            out.append(f"{indent}end")
+            out.append(f"{indent}end{cr}")
             changed += 1
             i = end + 1
             continue

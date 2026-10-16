@@ -165,25 +165,3 @@ def ensure_applied():
     _applied_sig = sig
     return True
 
-
-def save_custom(rules):
-    """写用户自定义规则文件（供界面/工具调用）。返回写入条数。"""
-    d = rules_dir()
-    try:
-        os.makedirs(d, exist_ok=True)
-    except OSError as e:
-        log.warning("规则目录创建失败：%s", e)
-        return 0
-    clean = []
-    for r in rules or []:
-        src = str((r or {}).get("src") or "").strip()
-        if not src:
-            continue
-        clean.append({"src": src, "info": str((r or {}).get("info") or "")})
-    path = os.path.join(d, CUSTOM_FILE)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="") as f:
-        json.dump(clean, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-    log.info("文本保护自定义规则已写入 %d 条 → %s", len(clean), path)
-    return len(clean)

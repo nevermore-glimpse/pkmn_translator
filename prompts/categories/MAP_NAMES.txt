@@ -1,0 +1,19 @@
+【本文本类型】
+这是地图标签名，显示在地图界面与区域切换菜单上，如 Jingling Village、Quiet Mound。
+
+【翻译规则】
+- 地图标签必须极简。
+- 通名统一且尽量单字或双字：Village→村、Town→镇、City→市、Road→路、Woods→森林、Mound→丘、Cavern→洞窟、Gate→大门。
+- 专名音译取二字，与地名用字体系一致：Jingling Village→景灵村、Qianlin Town→千林镇。
+- 含 \PN 之类的占位标记时必须原样保留，只译其后的文字：\PN's Home→\PN的家。
+- 方位词前缀保留并置于末尾：Under the Western Sea→西海海底。
+
+【翻译方法】
+地图名以「能被人一眼定位」为目标，不做文学化处理。遇到专名过长时优先压缩通名而不是砍专名，因为专名是辨认依据；确实压不下来时使用官方已有的简称风格。
+
+【示例】
+原文：Jingling Village
+译文：景灵村
+
+原文：Quiet Mound
+译文：静谧丘

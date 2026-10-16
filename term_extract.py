@@ -10,6 +10,15 @@ r"""
     地区 / 缎带 … 等全提出来；
   · **不干扰翻译**：翻译 prompt 不再要求模型顺手吐术语 —— 省 token、也更稳。
 
+翻译走的是**正常翻译流水线**
+--------------------------
+  名字文件不另做一套提示词：直接调 commands._translate_core —— 与菜单 2
+  「翻译」完全同一条流水线（同一套 user / system 模板、jsonline 输出格式、
+  解析与缩块重试、`*_cache.json` 续翻、整句术语直译、术语注入 prompt），
+  因此也会产出正常的 `*_translated.txt` 与检查报告。
+  唯一的差别是翻完之后：把「原文 → 译文」当成术语，经
+  auto_terms.merge_into_term_dict() 写进 term_dict.py 的 AUTO 块。
+
 数据来源（v1.6.8 起）
 ---------------------
 不再读游戏的 Data/*.dat，改成读**用户选的文本文件**：
@@ -18,11 +27,11 @@ r"""
     区块号决定它是不是名字文件（见 intl_text.SECTION_NAMES）；
   · **选一整个文件夹**：递归扫 .txt，只留**名字区块**的文件
     （名里含独立的 NAME / NAMES 词，如 ABILITY_NAMES / ITEM_NAMES /
-     ITEM_NAME_PLURALS / MAP_NAMES / MOVE_NAMES / REGION_NAMES /
-     REGION_LOCATION_NAMES / RIBBON_NAMES / SPECIES_NAMES /
-     SPECIES_FORM_NAMES / STORAGE_CREATOR_NAME / TRAINER_NAMES /
-     TRAINER_TYPE_NAMES / TYPE_NAMES / ITEM_PORTION_NAMES /
-     ITEM_PORTION_NAME_PLURALS），
+    ITEM_NAME_PLURALS / MAP_NAMES / MOVE_NAMES / REGION_NAMES /
+    REGION_LOCATION_NAMES / RIBBON_NAMES / SPECIES_NAMES /
+    SPECIES_FORM_NAMES / STORAGE_CREATOR_NAME / TRAINER_NAMES /
+    TRAINER_TYPE_NAMES / TYPE_NAMES / ITEM_PORTION_NAMES /
+    ITEM_PORTION_NAME_PLURALS），
     跳过「翻译中间文件」夹与 `*_translated` 译文文件。
 
 文本格式（游戏导出的 intl 风格）
@@ -38,21 +47,70 @@ r"""
 
 写回
 ----
-  翻好的术语经 auto_terms.merge_into_term_dict() 写进 term_dict.py 的
-  **AUTO 块（自动提取区）**，随后调 processor.load_terms() 让翻译立刻用上。
+  每翻完一批就把这批的「原文 → 译文」经 auto_terms.merge_into_term_dict()
+  写进 term_dict.py 的 **AUTO 块（自动提取区）**，随后调
+  processor.load_terms(force=True) 让**同一文件的后续批次立刻用上新术语**；
+  全部翻完之后再整体合并一次兜底（已并入的不会重复计数）。
+
+  逐批提取由本模块的 make_batch_term_hook() 提供，经
+  commands._translate_core(..., batch_term_hook=...) 挂进流水线；
+  不传 hook 时流水线行为与以前完全一致（普通对话翻译不受影响）。
+
+缓存、译文与断点续翻（完全复用正常翻译那一套）
+----------------------------------------
+   名字文件走的就是菜单 2「翻译」那条流水线（commands._translate_core），
+   所以产出的一切也都是正常翻译那一套，本模块**不再自建**任何缓存：
+
+   · **译文** `<名字文件>_translated.txt`（与源文件同目录）；
+   · **缓存** `<中间文件夹>/<主名>_cache.json`（结构就是 {原文: 译文}，
+     每条每批落盘、原子写 + Windows 占用重试）；
+   · **检查报告** `<中间文件夹>/<主名>_report.txt`（checker 生成）。
+
+   取消 / 崩溃后重跑，缓存里已有的条目不重新送模型，所以「取消」不再等于白干。
+   另外还写一份**术语提取汇总报告** `<目标名>_terms_report.txt`
+   （放在缓存所在的那个中间文件夹里）：说明本次把哪些「原文 → 译文」
+   并进了术语表 AUTO 块、新增多少、冲突多少、还剩多少条没翻出来。
+
+后续的配套功能
+------------
+   翻完之后还有两个配套功能，都在术语提取页「开始提取并翻译」右侧的
+   「检查报告」按钮进入的那个页面（见 term_fix.py）：
+
+   · **检查报告**（term_fix.check_terms / write_report）：只读缓存与
+     术语表，按「译名为空 → 未翻（回显原文）→ 译文残留英文 →
+     疑似机翻残留」四类互斥问题判定（另加可叠加的「同词不同译」）；
+   · **改译名 / 应用修改**（term_fix.apply_fixes）：在报告里直接改译名，
+     同时写回缓存、名字文件的译文文件（如有）与术语表 AUTO 块。
+
+   这两项都不调用模型。另有 **术语重翻**（term_fix.retranslate）：删掉
+   选中条目的缓存 key 后重走本模块这条流水线，**会调用模型**，并且同样
+   逐批把新译名并入术语表。
+
+名字文件的归属
+------------
+   名字文件只归本模块管：「游戏汉化」的翻译 / 检查报告 / 术语重翻 /
+   中文润色 / 换行重排都会经 is_term_source_file() 把它们排除掉，
+   避免同一批名词被两条流水线各翻一遍。
 
 用法
 ----
     p = plan(path)                       # 只统计，不调模型
     stats = run_extract(path, progress=cb, cancel=cb)
 """
+import json
 import os
 import re
+import threading
+import time
 
 import config
 from logger import get_logger
 
 log = get_logger("term_extract")
+
+# 逐批术语并入的串行锁：merge_into_term_dict 每次都重读 + 重写整个
+# term_dict.py，并发批（ThreadPoolExecutor）必须串行化，否则互相覆盖。
+_TERM_MERGE_LOCK = threading.Lock()
 
 # 区块标志：[7] / [12] 这种（只认纯数字，避免把 [map1] 之类当成区块号）
 _BLOCK_RE = re.compile(r'^\s*\[(\d+)\]\s*$')
@@ -220,6 +278,43 @@ def resolve_names(path):
 # ================================================================
 # 找文件
 # ================================================================
+def is_term_source_file(path):
+    """
+    这个文件是不是「名字类文件」（术语提取要读的那批）。
+
+    ★ 判定规则与 find_names_files 完全一致（resolve_names），只是不返回原因。
+    ★ 供「游戏汉化」菜单 2–7 排除名字文件用：那批文件归「术语提取」管，
+      翻译 / 重翻 / 润色 / 前缀字典都不该碰 —— 否则同一批名词会被
+      翻译流水线和术语流水线各翻一遍，译法还可能不一致。
+    ★ 名字刻意不与上面那个按文件名判据的 is_names_file 冲突：
+       那个只看文件名，这个连 [编号] 区块一起看（更严，也更准）。
+    """
+    try:
+        if not path or not os.path.isfile(path):
+            return False
+        return bool(resolve_names(path)[0])
+    except Exception:
+        return False
+
+
+def split_out_names_files(paths):
+    """
+    把一批路径分成 (要处理的, 要跳过的名字文件)。
+
+    ★ 「游戏汉化」菜单 2–7 的公共入口：调用方把用户选的文件列表交给它，
+      拿回来的就是去掉名字文件后的清单，第二项用于提示用户跳过了什么。
+    """
+    keep, skipped = [], []
+    for p in paths or []:
+        if not p:
+            continue
+        if os.path.isfile(p) and is_term_source_file(p):
+            skipped.append(p)
+        else:
+            keep.append(p)
+    return keep, skipped
+
+
 def find_names_files(target, problems=None):
     """
     从「文件或文件夹」里找出所有要读的名字文件（已排序）。
@@ -380,123 +475,532 @@ def existing_keys():
     return keys
 
 
-def plan(target):
+# ================================================================
+# 路径：缓存 / 译文 / 检查报告全部复用正常翻译那一套
+# ================================================================
+# ★ 名字文件走的就是菜单 2「翻译」那条流水线，所以：
+#     · 缓存 = <中间文件夹>/<主名>_cache.json（commands.cache_path_for）
+#     · 译文 = 与源文件同目录的 <主名>_translated.txt（_translate_core 回写）
+#     · 检查报告 = <中间文件夹>/<主名>_report.txt（checker 生成）
+#   这里不再推导缓存路径，也不再产出 *_terms_cache.json；
+#   只保留一份「整份提取结束后写」的术语汇总报告。
+
+
+def terms_stem(target):
+    """
+    术语汇总报告的主干名：`<目标名>_terms_report.txt` 里的 `<目标名>`。
+
+    target 是文件夹 → 用文件夹名（Text_chinese → Text_chinese_terms_report.txt）；
+    target 是单个文件 → 用它**所在文件夹**名，这样同一个文本夹里的
+    ITEM_NAMES.txt / MOVE_NAMES.txt … 共用一份报告，而不是一个文件一份。
+    """
+    if not target:
+        return "terms"
+    if os.path.isfile(target):
+        base = os.path.basename(os.path.dirname(os.path.abspath(target)))
+    else:
+        base = os.path.basename(os.path.abspath(target))
+    stem, _ext = os.path.splitext((base or "").strip())
+    return stem or "terms"
+
+
+def terms_dir(target, files=None):
+    """
+    术语中间文件（汇总报告 / 检查报告）该放哪个目录。
+
+    ★ 与名字文件的**普通翻译缓存**同目录：缓存放哪，报告就放哪 ——
+      缓存路径由 commands.cache_path_for 推导（有「翻译中间文件」夹就用它，
+      没有就与源文件同目录），这里只取它的上级目录，不另立一套规矩。
+    ★ 一个名字文件都没有 → 返回 ""（没东西可报告，也别往源文件夹里丢文件）。
+    """
+    if not target:
+        return ""
+    if files is None:
+        files = find_names_files(target)
+    if not files:
+        return ""
+    import commands as C
+    d = os.path.dirname(C.cache_path_for(files[0]) or "")
+    if d:
+        return d
+    return os.path.dirname(os.path.abspath(files[0]))
+
+
+def terms_report_path(target, files=None):
+    """术语汇总报告路径：<术语中间文件夹>/<目标名>_terms_report.txt。"""
+    d = terms_dir(target, files)
+    if not d:
+        return ""
+    return os.path.join(d, f"{terms_stem(target)}_terms_report.txt")
+
+
+# ================================================================
+# 名字文件 → 它的普通翻译缓存
+# ================================================================
+def read_name_cache(path):
+    """读某个名字文件的**普通翻译缓存** → {原文: 译名}（读不到返回 {}）。"""
+    import commands as C
+    cp = C.cache_path_for(path) or ""
+    if not cp or not os.path.isfile(cp):
+        return {}
+    try:
+        with open(cp, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        log.warning("翻译缓存读取失败（忽略，按空缓存处理）：%s：%s", cp, e)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): ("" if v is None else str(v)) for k, v in data.items()}
+
+
+def file_records(target, files=None):
+    """
+    解析名字文件，并把它的**普通翻译缓存**过滤到该文件的候选原文上。
+
+    返回 [{"path","section","label","cache_path","names","present","cached"}, ...]
+      · names   : 候选原文（parse_names_file 已按文件内去重，并去掉纯数字 /
+                  已含中文 / 一个字母都没有的行）
+      · present : {候选原文: 缓存里的原值}（含空串，用于「译名为空」检查）；
+                  缓存里的非名字条目（同一文件里的对白等）**不会**混进来
+      · cached  : {候选原文: 可用的译名}（有内容且不等于原文的那些）
+    """
+    import commands as C
+
+    recs = []
+    for p in (files if files is not None else find_names_files(target)):
+        try:
+            info = parse_names_file(p)
+        except Exception as e:
+            log.warning("读名字文件失败（跳过）：%s：%s", p, e)
+            continue
+        raw = read_name_cache(p)
+        present, cached = {}, {}
+        for n in info["names"]:
+            if n not in raw:
+                continue
+            v = raw[n]
+            present[n] = v
+            sv = v.strip()
+            if sv and sv != n:
+                cached[n] = sv
+        sec = info["section"] or "未命名"
+        recs.append({"path": p, "section": sec, "label": label_of(sec),
+                     "cache_path": C.cache_path_for(p) or "",
+                     "names": info["names"], "present": present,
+                     "cached": cached})
+    return recs
+
+
+def plan(target, use_cache=True):
     """
     算一遍「有哪些要翻」但不调用模型（界面用来先显示数量）。
 
-    返回 {"found", "todo", "by_section", "files", "problems"}
+    候选按三档分流（与正常翻译的「缓存命中」同一口径）：
+      ① 术语表里已有译名（in_term）→ 不翻；
+      ② **普通翻译缓存**里已有条目（in_cache）→ 不翻，_translate_core 会跳过；
+      ③ 剩下的（todo）→ 这次真正送模型的。
+
+    返回 {"found", "todo", "by_section", "files", "problems",
+          "in_term", "in_cache", "cache_path", "report_path"}
       · files      : 识别到的名字文件（含区块号 / 类别 / 条数）
       · by_section : {区块名(小写): [待翻, ...]}
       · problems   : [(路径, 原因), ...]
+      · cache_path : 名字文件的**普通翻译缓存**路径（多个文件时给它们共用的
+                     中间文件夹）
+      · report_path: 整份提取结束后写的那份术语汇总报告路径
     """
     file_metas, all_names, problems = collect(target)
+    files = [m["path"] for m in file_metas]
+
+    # ★ 先按正常翻译的规矩把「翻译中间文件」夹建好（≥2 个文件同目录才建）：
+    #   否则这里算出来的缓存路径与真正翻译时落盘的位置会不一致。
+    #   旧版也是在这里就把中间文件夹建出来的（不然报告没处放）。
+    import commands as C
+    if files:
+        C.enter_work_dir(files)
+
+    recs = file_records(target, files)
     exist = existing_keys()
 
     by_section, todo = {}, 0
-    for sec, names in all_names.items():
-        rest = [n for n in names if n.strip().lower() not in exist]
+    n_term = n_cache = 0
+    for r in recs:
+        sec = r["section"].lower()
+        in_cache = r["present"] if use_cache else {}
+        rest = []
+        for n in r["names"]:
+            if n.strip().lower() in exist:
+                n_term += 1
+                continue
+            if n in in_cache:
+                n_cache += 1
+                continue
+            rest.append(n)
         if rest:
-            by_section[sec] = rest
+            by_section.setdefault(sec, []).extend(rest)
             todo += len(rest)
+
+    if files:
+        cp = C.cache_path_for(files[0]) or ""
+        cache_path = cp if len(files) == 1 else os.path.dirname(cp)
+    else:
+        cache_path = ""
 
     return {"found": sum(len(v) for v in all_names.values()),
             "todo": todo,
             "by_section": by_section,
             "files": file_metas,
-            "problems": problems}
+            "problems": problems,
+            "in_term": n_term,
+            "in_cache": n_cache,
+            "cache_path": cache_path,
+            "report_path": terms_report_path(target, files)}
 
 
 # ================================================================
-# 提取 + 翻译 + 写入术语表
+# 报告（整份提取结束后写一份汇总，说明本次并进了哪些术语）
+# ================================================================
+def _write_report(target, files, recs, pairs, stats, conflicts, notes,
+                  status="完成"):
+    """
+    写术语提取汇总报告 `<目标名>_terms_report.txt`（不调模型）。
+
+    内容：本次把哪些「原文 → 译文」并进了术语表 AUTO 块、新增 / 冲突多少、
+    还有多少条没翻出来。**这是可选的审计文件**，与正常翻译产出的检查报告
+    不重叠：那些查句子，这份查「自动进术语表的条目」。
+    """
+    path = stats.get("report_path") or terms_report_path(target, files)
+    if not path:
+        return None
+
+    head = [
+        "# 术语提取报告",
+        f"# 状态：{status}",
+        f"# 时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"# 目标：{target}",
+        f"# 名字文件 {stats.get('files', 0)} 个，候选 {stats.get('found', 0)} 条；"
+        f"术语表已有 {stats.get('in_term', 0)}，"
+        f"缓存已有 {stats.get('in_cache', 0)}，"
+        f"本次待翻 {stats.get('todo', 0)}",
+        f"# 本次：新翻 {stats.get('translated', 0)} 条，"
+        f"新增进术语表 {stats.get('added', 0)} 条，"
+        f"冲突 {stats.get('conflicts', 0)} 条，"
+        f"仍缺译名 {stats.get('empty', 0)} 条",
+        "=" * 70,
+        "",
+    ]
+
+    body = []
+    body.append("## 名字文件与它们的翻译缓存")
+    body.append("-" * 70)
+    for r in recs:
+        body.append(f"  {os.path.basename(r['path'])}　[{r['label']}]　"
+                    f"候选 {len(r['names'])} 条，已翻 {len(r['cached'])} 条")
+        body.append(f"      缓存：{r['cache_path']}")
+    body.append("")
+
+    if pairs:
+        body.append(f"## 本次并入术语表的 {len(pairs)} 条")
+        body.append("-" * 70)
+        for k, v in pairs.items():
+            body.append(f"  {k}  →  {v}")
+        body.append("")
+
+    if conflicts:
+        body.append(f"## 术语表里已有、译法不同 {len(conflicts)} 条（保留原有译文）")
+        body.append("-" * 70)
+        for c in conflicts:
+            body.append(f"  {c.get('src')}：已有「{c.get('old')}」，"
+                        f"本次「{c.get('new')}」")
+        body.append("")
+
+    if notes:
+        body.append(f"## 同词不同译 {len(notes)} 条（保留先到的）")
+        body.append("-" * 70)
+        for k, keep, drop in notes:
+            body.append(f"  {k}：保留「{keep}」，忽略「{drop}」")
+        body.append("")
+
+    if stats.get("empty"):
+        body.append(f"## 仍缺译名 {stats['empty']} 条")
+        body.append("-" * 70)
+        body.append("  这些候选在缓存里没有可用译名（模型没返回 / 回显原文），")
+        body.append("  术语表里也没有 —— 重跑一次术语提取就会再送模型。")
+        body.append("")
+
+    body.append("## 续翻说明")
+    body.append("-" * 70)
+    body.append("  · 名字文件走的就是菜单 2「翻译」那条流水线：译文、缓存、")
+    body.append("    检查报告都由它产出，这里只额外把缓存里的「原文 → 译文」")
+    body.append("    并入术语表（term_dict.py 的自动提取区）。")
+    body.append("  · 取消 / 中断后重跑：缓存里已翻的候选不会重复送模型。")
+    body.append("  · 想全部重翻，删掉上面各文件的 `*_cache.json` 即可。")
+    body.append("")
+
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write("\n".join(head + body))
+    except Exception as e:
+        log.warning("写术语提取报告失败（不影响结果）：%s", e)
+        return None
+    return path
+
+
+# ================================================================
+# 逐批术语 hook：每批翻完立刻并进术语表，后续批次立刻用上
+# ================================================================
+def make_batch_term_hook(candidate_names=None):
+    """
+    造一个「本批翻完 → 立刻并入术语表」的回调，交给
+    commands._translate_core(..., batch_term_hook=...)。
+
+    参数
+    ----
+    candidate_names: 可选 set/list —— 只并进这些原文（就是本文件的候选名）；
+                     None = 不过滤，pair 里的都收。
+
+    返回 callable(pairs) -> int：pairs = [(原文, 译文), ...]，返回并入条数。
+
+    ★ 只用传进来的 pairs，不重新读文件、不重新解析（开销与文件大小无关）。
+    ★ 模块级锁串行化：并发批会在多个线程里调它，而 merge_into_term_dict
+      每次都要重读 + 重写整个 term_dict.py。
+    ★ 任何异常只记警告并返回 0，绝不中断翻译。
+    """
+    allowed = None if candidate_names is None else set(candidate_names)
+
+    def hook(pairs):
+        import auto_terms
+        import processor as PR
+
+        try:
+            new_terms = {}
+            for item in pairs or ():
+                try:
+                    src, dst = item
+                except Exception:
+                    continue
+                if not isinstance(src, str) or not isinstance(dst, str):
+                    continue
+                if not dst.strip():
+                    continue
+                if dst.strip() == src.strip():
+                    continue          # 原文回显，不是译名
+                if allowed is not None and src not in allowed:
+                    continue
+                new_terms[src.strip()] = dst.strip()
+            if not new_terms:
+                return 0
+            with _TERM_MERGE_LOCK:
+                added = auto_terms.merge_into_term_dict(new_terms)
+                PR.load_terms(force=True)   # 后续批次立刻用上新术语
+            return int(added or 0)
+        except Exception as e:
+            log.warning("逐批术语并入失败（忽略，不影响翻译）：%s", e)
+            return 0
+
+    return hook
+
+
+# ================================================================
+# 提取 + 翻译（正常流水线）+ 写入术语表
 # ================================================================
 def run_extract(target, batch_size=None, progress=None, cancel=None,
                 client=None):
     """
-    完整流程：读文本文件 → 去掉术语表里已有的 → 分批送模型翻 →
-    合并进 term_dict.py 的 AUTO 块（自动提取区）。
+    完整流程：找出名字文件 → **逐个跑正常翻译流水线**（就是菜单 2「翻译」
+    跑的那条）→ 全部跑完后把缓存里的「原文 → 译文」并入术语表 AUTO 块。
+
+    ★ 与正常翻译只有两处不同：
+       ① 名字类文件只在这里翻（别处已由 is_term_source_file 排除）；
+       ② 翻完之后把缓存里的原文与译文并入术语表。
+      中间的解析、分批、缓存续翻、整句术语直译、术语注入 prompt、
+      `*_cache.json` / `*_translated.txt` / 检查报告，全部由
+      commands._translate_core 原样产出，这里一处都不重写。
 
     参数
     ----
-    progress: 可选 callable(done, total, kind)，用于界面进度条
-    cancel  : 可选 callable() -> bool，返回 True 时尽快停下
-    client  : 可选，传入已建好的 OllamaClient（测试用；不传就自建并负责关闭）
+    batch_size: 兼容旧参数 —— 临时覆盖 config.BATCH_SIZE（正常翻译的分批口径）
+    progress  : 可选 callable(done_files, total_files, 文件名)，界面进度条
+    cancel    : 可选 callable() -> bool，返回 True 时尽快停下（已翻的已进缓存）
+    client    : 可选，测试用假 client；正常翻译内部自建 OllamaClient，
+                传了就临时顶替它（跑完还原）
 
-    返回统计 dict：found / todo / translated / added / conflicts / empty / files
+    返回统计 dict：found / todo / translated / added / conflicts / empty /
+    files / conflict_notes / in_term / in_cache / cancelled /
+    report_path / cache_path
     """
-    import translator as T
-    import auto_terms
+    import bridge
+    import commands as C
     import processor as PR
+    import auto_terms
 
-    step = int(batch_size or getattr(config, "TERM_EXTRACT_BATCH", 40) or 40)
     p = plan(target)
+    files = [m["path"] for m in p["files"]]
     stats = {"found": p["found"], "todo": p["todo"], "translated": 0,
-             "added": 0, "conflicts": 0, "empty": 0,
-             "files": len(p["files"]), "conflict_notes": []}
-    if not p["todo"]:
+             "added": 0, "conflicts": 0, "empty": 0, "files": len(files),
+             "conflict_notes": [], "in_term": p["in_term"],
+             "in_cache": p["in_cache"], "cancelled": False,
+             "report_path": p["report_path"], "cache_path": p["cache_path"]}
+    t0 = time.time()
+
+    if not files:
+        log.info("术语提取：没找到名字文件（%d 个读不了）", len(p["problems"]))
         return stats
 
-    own_client = client is None
-    if own_client:
-        client = T.OllamaClient()
+    log.info("术语提取开始：%d 个名字文件、候选 %d 条、待翻 %d 条"
+             "（术语表已有 %d、缓存已有 %d）",
+             len(files), p["found"], p["todo"], p["in_term"], p["in_cache"])
 
-    merged = {}
-    run_conflicts = []          # [(原文, 先到的译文, 后到的译文), ...]
-    done = 0
-    total = p["todo"]
+    recs0 = file_records(target, files)
+    names_of = {r["path"]: r["names"] for r in recs0}
+
+    # ★ 兼容旧参数 batch_size：正常流水线按 config.BATCH_SIZE 分批，
+    #   临时换一下，跑完还原。
+    saved_batch = None
+    has_batch = bool(batch_size)
+    if has_batch:
+        saved_batch = config.BATCH_SIZE
+        config.BATCH_SIZE = int(batch_size)
+    # ★ 测试注入假 client：正常翻译内部自建 OllamaClient，这里临时顶替。
+    saved_client = None
+    has_client = client is not None
+    if has_client:
+        saved_client = C.OllamaClient
+        C.OllamaClient = lambda *a, **k: client
+    # ★ 把调用方的 cancel 接到 bridge 上：正常翻译的批循环看的正是
+    #   bridge.cancelled()，接上后中途取消也会「先把缓存落盘再退出」。
+    #   ★ 还原必须用独立的标志位：saved 的值本来就是 None，不能拿它当判据，
+    #     否则跑完会把调用方的 cancel 永久留在 bridge 上，后续翻译全被取消。
+    saved_cancel = None
+    has_cancel = cancel is not None
+    if has_cancel:
+        saved_cancel = bridge._cancel_fn
+        bridge._cancel_fn = lambda: bool(cancel())
+
+    translated = 0
+    cancelled = False
+    total = len(files)
     try:
-        for sec, names in p["by_section"].items():
-            header = f"以下是【{label_of(sec)}】，"
-            for i in range(0, len(names), step):
-                if cancel and cancel():
-                    log.info("术语提取被取消（已完成 %d/%d）", done, total)
-                    break
-                batch = names[i:i + step]
-                try:
-                    got = client.translate_terms(batch, header=header)
-                except Exception as e:
-                    log.warning("术语批翻译失败（%s 第 %d 批）：%s",
-                                sec, i // step + 1, e)
-                    got = {}
-                if not got:
-                    stats["empty"] += len(batch)
-                # ★ 同一个原文在不同类别里译法不同（招式 Psychic / 属性 Psychic）：
-                #   保留**先到的**（与 merge_into_term_dict「保留已有译文」一致），
-                #   把差异记成「术语冲突」报出来，而不是让后到的悄悄覆盖。
-                for k, v in got.items():
-                    if k in merged:
-                        if merged[k] != v:
-                            run_conflicts.append((k, merged[k], v))
-                        continue
-                    merged[k] = v
-                done += len(batch)
-                if progress:
-                    progress(done, total, label_of(sec))
-    finally:
-        if own_client:
+        for i, path in enumerate(files, 1):
+            if cancel and cancel():
+                cancelled = True
+                log.info("术语提取被取消（已完成 %d/%d 个文件，已翻的已进缓存）",
+                         i - 1, total)
+                break
+            if not os.path.isfile(path):
+                log.warning("名字文件不存在，跳过：%s", path)
+                continue
+
+            cp = C.cache_path_for(path) or ""
+            before = _cache_snapshot(cp)
+            config.Runtime.set_input(path)
             try:
-                client.close()
-            except Exception:
-                pass
+                lines, newline = _read_lines(path)
+            except Exception as e:
+                log.warning("读取失败，跳过：%s：%s", path, e)
+                continue
 
-    if run_conflicts:
-        log.warning("=" * 60)
-        log.warning("本次提取里检测到 %d 条术语「同词不同译」（保留先到的）：",
-                    len(run_conflicts))
-        for k, keep, drop in run_conflicts:
-            log.warning("  原文：%s  保留：%s  忽略：%s", k, keep, drop)
+            log.info("[%d/%d] 翻译名字文件：%s", i, total, os.path.basename(path))
+            try:
+                # ★ 就是正常翻译那条流水线（与 commands.translate_paths 同写法）
+                #   + 逐批 hook：本批翻完立刻并进术语表（候选集按**本文件**的
+                #     候选原文构造），后续批次立刻用上新术语。
+                C._translate_core(
+                    path, lines, newline, show_header=(total == 1),
+                    batch_term_hook=make_batch_term_hook(
+                        set(names_of.get(path) or [])))
+            except Exception as e:
+                log.error("翻译失败（继续下一个文件）：%s：%s", path, e)
+                continue
 
-    stats["translated"] = len(merged)
-    stats["conflict_notes"] = run_conflicts
-    if merged:
-        conflicts = []
-        stats["added"] = auto_terms.merge_into_term_dict(
-            merged, conflicts_out=conflicts)
-        stats["conflicts"] = len(conflicts) + len(run_conflicts)
-        try:
-            PR.load_terms()          # 让后续翻译立刻用上新术语
-        except Exception as e:
-            log.warning("术语表重载失败：%s", e)
-    log.info("术语提取完成：候选 %d，待翻 %d，翻出 %d，新增 %d，冲突 %d",
-             stats["found"], stats["todo"], stats["translated"],
-             stats["added"], stats["conflicts"])
+            after = _cache_snapshot(cp)
+            for n in names_of.get(path) or []:
+                if n in before:
+                    continue
+                v = str(after.get(n) or "").strip()
+                if v and v != n:
+                    translated += 1
+            if progress:
+                progress(i, total, os.path.basename(path))
+
+        # ---------- 全部翻完：缓存里的「原文 → 译文」并入术语表 ----------
+        recs = file_records(target, files)
+        pairs, notes = {}, []
+        for r in recs:
+            for n in r["names"]:
+                v = r["cached"].get(n)
+                if not v:
+                    continue
+                if n in pairs:
+                    if pairs[n] != v:
+                        # 同一个原文在不同类别里译法不同 → 保留先到的并报出来
+                        notes.append((n, pairs[n], v))
+                    continue
+                pairs[n] = v
+
+        stats["translated"] = translated
+        stats["cancelled"] = cancelled
+        stats["conflict_notes"] = notes
+        if notes:
+            log.warning("=" * 60)
+            log.warning("检测到 %d 条术语「同词不同译」（保留先到的）：",
+                        len(notes))
+            for k, keep, drop in notes:
+                log.warning("  原文：%s  保留：%s  忽略：%s", k, keep, drop)
+
+        dict_conflicts = []
+        if pairs:
+            stats["added"] = auto_terms.merge_into_term_dict(
+                pairs, conflicts_out=dict_conflicts)
+            try:
+                PR.load_terms(force=True)     # 让后续翻译立刻用上新术语
+            except Exception as e:
+                log.warning("术语表重载失败：%s", e)
+        stats["conflicts"] = len(dict_conflicts) + len(notes)
+
+        # ★ 仍缺译名：缓存里没有可用译名、术语表里也没有的候选（下次重跑会再送）
+        exist = existing_keys()
+        empty = 0
+        for r in recs:
+            for n in r["names"]:
+                if r["cached"].get(n):
+                    continue
+                if n.strip().lower() in exist:
+                    continue
+                empty += 1
+        stats["empty"] = empty
+
+        status = "已取消" if cancelled else "完成"
+        _write_report(target, files, recs, pairs, stats, dict_conflicts, notes,
+                      status=status)
+    finally:
+        if has_batch:
+            config.BATCH_SIZE = saved_batch
+        if has_client:
+            C.OllamaClient = saved_client
+        if has_cancel:
+            bridge._cancel_fn = saved_cancel
+
+    elapsed = time.time() - t0
+    log.info("术语提取%s：候选 %d，待翻 %d，新翻 %d，新增进术语表 %d，"
+             "冲突 %d，仍缺译名 %d；总耗时 %.1f 秒",
+             "（已取消）" if cancelled else "完成", stats["found"],
+             stats["todo"], stats["translated"], stats["added"],
+             stats["conflicts"], stats["empty"], elapsed)
+    if stats["report_path"]:
+        log.info("术语提取报告：%s", stats["report_path"])
     return stats
+
+
+def _cache_snapshot(cache_path):
+    """普通翻译缓存里的 {原文: 译文}（用来算「本次新翻了多少条」）。"""
+    if not cache_path or not os.path.isfile(cache_path):
+        return {}
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}

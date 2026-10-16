@@ -10,8 +10,10 @@
 只做「取文本 / 找常量」这类**只读**操作，不写任何文件。
 """
 import io
+import json
 import os
 import re
+import shutil
 import time
 import zlib
 
@@ -1333,3 +1335,421 @@ def default_language_file(game_dir):
     if not low.endswith(".dat") or low == "chinese.dat":
         pick = "Chinese.dat"
     return os.path.join(data_dir(game_dir), pick)
+
+
+# ================================================================
+# 插件解包 / 编译回容器：PluginScripts.rxdata ↔ Plugins-p 下的松散 .rb
+# ================================================================
+_WIN_BAD_CHARS = '<>:"|?*'
+
+# 解包清单：解包时写下「容器里的原始名字 ↔ Plugins-p 里的路径」的对应表，
+# 编译回容器时优先读它（名单缺失才按 sanitizer 反推，见 compile_back_…）。
+PLUGIN_UNPACK_MANIFEST = "_pkmn_unpack_manifest.json"
+PLUGIN_UNPACK_VERSION = 1
+
+
+def _plugin_safe_name(name, fallback="plugin"):
+    """
+    插件名 / 插件内路径的一段 → 能安全建到 Windows 上的名字。
+
+    ★ Windows 不允许 `<>:"|?*` 这 7 个字符，也不允许名字以 `.` 或空格结尾
+      （`a.` / `a ` 会直接 OSError）。插件名和文件名都是游戏作者写的，
+      什么都可能有，所以统一在这里清掉；清完变空就回退 fallback。
+    ★ 顺带把 `/` `\\` 也换成 `_`：这是「一段」名字，绝不能带分隔符。
+      实测就有个插件叫 `Bag Screen w/int. Party`，不清掉就会多建一层目录。
+    """
+    s = str(name if name is not None else "")
+    for ch in _WIN_BAD_CHARS + "/\\":
+        s = s.replace(ch, "_")
+    for ch in ("\r", "\n", "\t"):
+        s = s.replace(ch, "_")
+    s = s.strip()
+    while s and s[-1] in ". ":
+        s = s[:-1]
+    return s or fallback
+
+
+def _plugin_name_text(value):
+    """
+    Marshal String（插件名 / 插件内文件名）→ 文本。
+
+    ★ rubymarshal 读出来的 RubyString 是按 latin1 解的，中文得先
+      encode("latin1") 拿回原始字节、再按 UTF-8 解码才能还原；
+      万一不是合法 UTF-8 就 replace 兜底（宁可有个别替换符，也不抛异常）。
+    """
+    raw = _string_bytes(value)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # 万一不是合法 UTF-8：latin1 原样还原，至少不抛异常。
+        return raw.decode("latin1", "replace")
+
+
+def _plugin_rel_parts(rel):
+    """
+    插件内文件名（可能带 `\\` / `/` 分组目录）→ 清洗后的路径段列表。
+
+    ★ 文件名里用反斜杠/正斜杠分组目录，先统一成分隔符再一段段清洗，
+      否则 os.path.join 会把整个 `a\\b.rb` 当成一个文件名写到插件根下。
+    ★ 解包与「编译回容器」共用这个函数 —— 两边算出来的路径必须一模一样，
+      否则编译回时按同一个相对路径去找文件就会找不到。
+    """
+    rel = str(rel if rel is not None else "").replace("\\", "/")
+    return [p for p in (_plugin_safe_name(x, "") for x in rel.split("/")) if p]
+
+
+def _plugin_manifest_path(out_dir):
+    return os.path.join(str(out_dir), PLUGIN_UNPACK_MANIFEST)
+
+
+def _read_plugin_manifest(out_dir):
+    """读解包清单 → dict；没有 / 读不出来 / 结构不符 → None。"""
+    p = _plugin_manifest_path(out_dir)
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except Exception:                            # noqa: BLE001
+        return None
+    if not isinstance(obj, dict) or not isinstance(obj.get("plugins"), list):
+        return None
+    return obj
+
+
+def unpack_plugin_scripts(game_dir, out_dir=None, emit=None):
+    """
+    把 Data/PluginScripts.rxdata 解包成松散的 .rb 源码。
+
+    布局：`<out_dir>/<插件名>/<插件内相对路径>`（每个插件一个子目录，
+    插件里原有的子目录结构照原样保留）。out_dir 默认 `<游戏目录>/Plugins-p`。
+
+    ★ 容器格式（实测）：外层是标准 Ruby Marshal，每项是
+      `[插件名, 元数据, [[文件名, 压缩源码], ...]]`。插件名/文件名是
+      Marshal String（原始字节是 UTF-8，中文只在这些名字里出现）；源码是
+      zlib 压过的 Ruby String（头部 789c），必须先 zlib.decompress 才是明文，
+      不解压写出去就是乱码。
+    ★ 不能拿 read_plugin_entries 的结果来写文件：它给的是游戏里的显示名
+      `[插件名] 基名.rb`，会把插件内的子目录压掉、还会跳过 0 字节的脚本
+      （本容器实测 299 条只回 298 条）。所以这里先调它当「容器确实读得出来」
+      的闸，再自己解一遍 Marshal 取原始文件名。
+    ★ 只读游戏目录，绝不改写容器。
+    ★ 额外在 out_dir 写一份清单 `_pkmn_unpack_manifest.json`，记下
+      「容器里的原始名字 / 下标 ↔ Plugins-p 里的 sanitize 后路径」的对应表；
+      「编译回容器」靠它把改过的 .rb 准确映射回原条目（清单是新增文件，
+      不影响下面的返回值契约，只是多一个 "manifest" 键）。
+
+    参数：
+      game_dir  游戏目录（容器从它的 Data 下取）
+      out_dir   输出目录，默认 `<game_dir>/Plugins-p`
+      emit      可选回调 emit(str)，用于往 GUI 日志里写进度；None 就忽略
+
+    返回：
+      {"ok": bool, "root": out_dir, "plugins": 插件数,
+       "files": 解出的文件数, "errors": [错误文本, ...],
+       "manifest": 清单文件路径 | None}
+      ★ 容器不存在 / 读不出来 → ok=False，**不抛异常**。
+    """
+    game_dir = str(game_dir or "")
+    root = str(out_dir) if out_dir else os.path.join(game_dir, "Plugins-p")
+    res = {"ok": False, "root": root, "plugins": 0, "files": 0, "errors": [],
+           "manifest": None}
+
+    def say(msg):
+        if emit is None:
+            return
+        try:
+            emit(msg)
+        except Exception:                        # noqa: BLE001
+            pass                                 # 日志回调坏了不影响解包
+
+    path = plugin_rxdata_path(game_dir)
+    if not os.path.isfile(path):
+        msg = "没找到插件容器：%s" % path
+        res["errors"].append(msg)
+        say(msg)
+        return res
+    # 闸：现成的读法读不出任何脚本（结构不符 / 空文件）就别往下走了。
+    if not read_plugin_entries(path):
+        msg = "插件容器里读不出任何脚本：%s" % path
+        res["errors"].append(msg)
+        say(msg)
+        return res
+    try:
+        with open(path, "rb") as f:
+            obj = _rb_load(f)
+    except Exception as e:                       # noqa: BLE001
+        msg = "读取 %s 失败：%s" % (path, e)
+        res["errors"].append(msg)
+        say(msg)
+        return res
+    if not isinstance(obj, list):
+        msg = "%s 不是插件脚本表" % path
+        res["errors"].append(msg)
+        say(msg)
+        return res
+
+    say("插件容器：%s" % path)
+    mf_plugins = []
+    for pi, entry in enumerate(obj):
+        if not isinstance(entry, (list, tuple)) or len(entry) < 3:
+            continue
+        pname = _plugin_safe_name(_plugin_name_text(entry[0]),
+                                  "plugin_%d" % pi)
+        files = entry[2]
+        if not isinstance(files, (list, tuple)):
+            continue
+        pdir = os.path.join(root, pname)
+        n_here = 0
+        mf_files = []
+        for fi, scr in enumerate(files):
+            if not isinstance(scr, (list, tuple)) or len(scr) < 2:
+                continue
+            parts = _plugin_rel_parts(_plugin_name_text(scr[0]))
+            if not parts:
+                res["errors"].append(
+                    "插件 %s 第 %s 个文件没有可用文件名，已跳过" % (pname, fi))
+                continue
+            text = _decode_script_bytes(scr[1])   # zlib 解压 + UTF-8 解码
+            dest = os.path.join(pdir, *parts)
+            try:
+                d = os.path.dirname(dest)
+                if d:
+                    os.makedirs(d, exist_ok=True)
+                # newline=""：Ruby 源码保持原样的 \n，不要被转成 \r\n。
+                with open(dest, "w", encoding="utf-8", newline="") as f:
+                    f.write(text)
+            except OSError as e:
+                res["errors"].append("写 %s 失败：%s" % (dest, e))
+                continue
+            n_here += 1
+            mf_files.append({"index": fi,
+                             "name": _plugin_name_text(scr[0]),
+                             "path": "/".join(parts)})
+        if n_here:
+            res["plugins"] += 1
+            res["files"] += n_here
+            mf_plugins.append({"index": pi,
+                               "name": _plugin_name_text(entry[0]),
+                               "dir": pname,
+                               "files": mf_files})
+            say("  %s：%s 个文件" % (pname, n_here))
+
+    # 清单：给「编译回容器」用（它按 sanitize 后的目录名反推不出原始名字）。
+    mpath = _plugin_manifest_path(root)
+    try:
+        os.makedirs(root, exist_ok=True)
+        with open(mpath, "w", encoding="utf-8") as f:
+            json.dump({"version": PLUGIN_UNPACK_VERSION,
+                       "container": path,
+                       "root": root,
+                       "plugins": mf_plugins},
+                      f, ensure_ascii=False, indent=1)
+        res["manifest"] = mpath
+    except OSError as e:
+        res["errors"].append("写解包清单 %s 失败：%s" % (mpath, e))
+        say("⚠ 写解包清单失败：%s" % e)
+
+    res["ok"] = True
+    say("完成：%s 个插件 / %s 个文件 → %s"
+        % (res["plugins"], res["files"], root))
+    return res
+
+
+def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
+                                backup=True):
+    """
+    把 Plugins-p 里改过的 .rb **就地写回** Data/PluginScripts.rxdata。
+
+    ★ 不做「从 Plugins-p 整体重建容器」：那会丢掉每个插件的 meta(Hash)、
+      原始文件名与顺序，也丢掉插件名（Plugins-p 的目录名经过 sanitize，
+      例如容器里的 `Bag Screen w/int. Party` 存成了 `Bag Screen w_int. Party`）。
+      这里只把每个条目[文件下标][1] 换成新的 zlib 压缩源码，其余原样搬回。
+    ★ 定位靠解包时写下的 `_pkmn_unpack_manifest.json`；清单缺失时退化为
+      「用同一个 _plugin_safe_name 反推路径」并给出警告。
+    ★ 写容器前先备份成 `PluginScripts.rxdata.<时间戳>.bak`（与
+      plugin_tools.compile_plugins 的备份风格一致），再「写临时文件 +
+      os.replace」原子替换。只碰 Data/PluginScripts.rxdata 与它的 .bak，
+      不动松散 Plugins/ 与 Scripts/。
+    ★ 容器不存在 / 读不出来 / Plugins-p 不存在 → ok=False，**不抛异常**。
+
+    参数：
+      game_dir  游戏目录
+      src_dir   解包目录，默认 `<game_dir>/Plugins-p`
+      emit      可选回调 emit(str)
+      backup    写回前是否备份（默认 True）
+
+    返回：
+      {"ok": bool, "container": 容器路径, "updated": 已写回文件数,
+       "skipped": 内容没变的文件数, "missing": 对应的松散文件不存在的条目数,
+       "backup": 备份路径 | None, "errors": [错误文本, ...]}
+      ★ 一个文件都不需要更新时 → ok=True、updated=0（幂等重跑走这里）。
+    """
+    game_dir = str(game_dir or "")
+    root = str(src_dir) if src_dir else os.path.join(game_dir, "Plugins-p")
+    path = plugin_rxdata_path(game_dir)
+    res = {"ok": False, "container": path, "updated": 0, "skipped": 0,
+           "missing": 0, "backup": None, "errors": []}
+
+    def say(msg):
+        if emit is None:
+            return
+        try:
+            emit(msg)
+        except Exception:                        # noqa: BLE001
+            pass
+
+    if not os.path.isdir(root):
+        msg = ("没找到解包目录：%s —— 请先点「插件解包」把容器解出来、"
+               "改完再编译回容器" % root)
+        res["errors"].append(msg)
+        say(msg)
+        return res
+    if not os.path.isfile(path):
+        msg = "没找到插件容器：%s" % path
+        res["errors"].append(msg)
+        say(msg)
+        return res
+    try:
+        with open(path, "rb") as f:
+            obj = _rb_load(f)
+    except Exception as e:                       # noqa: BLE001
+        msg = "读取 %s 失败：%s" % (path, e)
+        res["errors"].append(msg)
+        say(msg)
+        return res
+    if not isinstance(obj, list):
+        msg = "%s 不是插件脚本表，放弃写回" % path
+        res["errors"].append(msg)
+        say(msg)
+        return res
+
+    manifest = _read_plugin_manifest(root)
+    if manifest is None:
+        say("⚠ 没找到解包清单 %s，改用插件名反推路径"
+            % os.path.basename(_plugin_manifest_path(root)))
+
+    # ---- 收集「要更新的条目」：[(插件下标, 文件下标, 新源码 bytes), ...] ----
+    plan = []
+
+    def consider(pi, fi, rel_parts, who):
+        """松散文件 rel_parts 存在且内容变了 → 加进 plan；返回 None。"""
+        if not (0 <= pi < len(obj)):
+            res["errors"].append("%s：插件下标 %s 越界，已跳过" % (who, pi))
+            return
+        entry = obj[pi]
+        files = (entry[2] if isinstance(entry, (list, tuple))
+                 and len(entry) >= 3 else None)
+        if not isinstance(files, (list, tuple)) or not 0 <= fi < len(files):
+            res["errors"].append("%s：文件下标 %s 越界，已跳过" % (who, fi))
+            return
+        src = os.path.join(root, *rel_parts)
+        if not os.path.isfile(src):
+            res["missing"] += 1
+            return
+        try:
+            with open(src, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            res["errors"].append("读 %s 失败：%s" % (src, e))
+            return
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            res["errors"].append("%s 不是 UTF-8 文本，已跳过" % src)
+            return
+        cur = _decode_script_bytes(files[fi][1])
+        if cur == text:
+            res["skipped"] += 1
+            return
+        plan.append((pi, fi, text.encode("utf-8"), src))
+
+    if manifest is not None:
+        for pl in manifest["plugins"]:
+            if not isinstance(pl, dict):
+                continue
+            pi = pl.get("index")
+            if not isinstance(pi, int):
+                continue
+            pdir = _plugin_safe_name(pl.get("dir"), "")
+            if not pdir:
+                pdir = _plugin_safe_name(pl.get("name"), "plugin_%s" % pi)
+            if not os.path.isdir(os.path.join(root, pdir)):
+                continue                          # 插件目录被删了 → 跳过
+            for fe in (pl.get("files") or []):
+                if not isinstance(fe, dict):
+                    continue
+                fi = fe.get("index")
+                if not isinstance(fi, int):
+                    continue
+                parts = [p for p in str(fe.get("path") or "").split("/") if p]
+                if not parts:
+                    parts = _plugin_rel_parts(fe.get("name"))
+                if not parts:
+                    continue
+                consider(pi, fi, [pdir] + parts,
+                         "插件 %s 第 %s 个文件" % (pdir, fi))
+    else:
+        # 退化：容器里的原始名字 → 用同一个 sanitizer 反推 Plugins-p 里的路径。
+        for pi, entry in enumerate(obj):
+            if not isinstance(entry, (list, tuple)) or len(entry) < 3:
+                continue
+            pname = _plugin_safe_name(_plugin_name_text(entry[0]),
+                                      "plugin_%d" % pi)
+            if not os.path.isdir(os.path.join(root, pname)):
+                continue
+            files = entry[2]
+            if not isinstance(files, (list, tuple)):
+                continue
+            for fi, scr in enumerate(files):
+                if not isinstance(scr, (list, tuple)) or len(scr) < 2:
+                    continue
+                parts = _plugin_rel_parts(_plugin_name_text(scr[0]))
+                if not parts:
+                    continue
+                consider(pi, fi, [pname] + parts,
+                         "插件 %s 第 %s 个文件" % (pname, fi))
+
+    if not plan:
+        res["ok"] = True
+        say("没有需要更新的文件（改了 %s 里的 .rb 再来点这个按钮）" % root)
+        return res
+
+    for pi, fi, data, src in plan:
+        obj[pi][2][fi][1] = zlib.compress(data)
+
+    bak = None
+    if backup:
+        try:
+            bak = "%s.%s.bak" % (path, time.strftime("%Y%m%d-%H%M%S"))
+            shutil.copyfile(path, bak)
+            res["backup"] = bak
+            say("原容器已备份：%s" % os.path.basename(bak))
+        except OSError as e:
+            res["errors"].append("备份 %s 失败（已中止写入）：%s" % (path, e))
+            say("✘ 备份失败，已中止写入：%s" % e)
+            return res
+
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "wb") as f:
+            _rb_write_safe(f, obj)
+        os.replace(tmp, path)
+    except Exception as e:                        # noqa: BLE001
+        res["errors"].append("写入 %s 失败：%s" % (path, e))
+        say("✘ 写入失败：%s" % e)
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return res
+
+    res["updated"] = len(plan)
+    res["ok"] = True
+    for _pi, _fi, _data, src in plan:
+        say("  ✔ %s" % os.path.relpath(src, root))
+    say("完成：更新 %s 个文件 → %s%s"
+        % (res["updated"], path,
+           "（备份 %s）" % os.path.basename(bak) if bak else ""))
+    return res

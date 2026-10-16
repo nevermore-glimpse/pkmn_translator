@@ -171,19 +171,6 @@ class TermDictEditor:
             parts.append(f"删除 {len(self.removed)}")
         return "未保存：" + "、".join(parts) + "（点「保存」写入 term_dict.py）"
 
-    def changed_rows(self):
-        """有未保存改动的条目，供「保存前预览」用。"""
-        out = []
-        for src in self.removed:
-            out.append(("删除", self.base.get(src, ""), src, ""))
-        for src, new_src in self.renamed.items():
-            out.append(("改名", src, new_src, ""))
-        for src, new_dst in self.changed.items():
-            out.append(("改译文", self.renamed.get(src, src),
-                        self.base.get(src, ""), new_dst))
-        for src, dst in self.added.items():
-            out.append(("新增", src, dst, ""))
-        return out
 
     # ================================================================
     # 撤回栈

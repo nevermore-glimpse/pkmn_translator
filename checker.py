@@ -23,6 +23,7 @@ from processor import (
     CTRL_RE, TAG_RE, BRACE_RE,
     ANGLE_CMD_RE, HTML_TAG_RE,
     _HTML_ENTITY_PAT, script_of, detect_unknown_ctrl,
+    _NL_RE,
 )
 
 log = get_logger("checker")
@@ -31,6 +32,9 @@ log = get_logger("checker")
 # ================================================================
 # 常量
 # ================================================================
+# ★ 换行符 \\n 自 v1.7.4 起**不再算控制码**（见 processor._CTRL_PAT_CORE）。
+#   这个集合现在只是防御性保留：CTRL_RE 已匹配不到 \\n，但用户自定义的
+#   文本保护规则（_EXTRA_CTRL_PAT）仍可能匹配到它。
 _CTRL_IGNORE = {r'\n'}
 
 # 英文单词（含西语重音字符）
@@ -196,6 +200,11 @@ def _strip_all_ctrl(text):
     t = HTML_TAG_RE.sub('', t)
     t = _HTML_ENTITY_RE.sub('', t)          # ★ 加 HTML 实体
     t = CTRL_RE.sub('', t)
+    # ★ 换行符 \\n 自 v1.7.4 起**不再算控制码**（见 processor._CTRL_PAT_CORE），
+    #   所以这里必须显式剥掉它：否则它作为字面文本留下，会给紧跟其后的
+    #   英文词粘一个前导 n（`你好\\nPokemon` → `nPokemon`），让「疑似未翻译」
+    #   的白名单失配、凭空多出误报。
+    t = _NL_RE.sub('', t)
     t = TAG_RE.sub('', t)
     t = BRACE_RE.sub('', t)
     return t

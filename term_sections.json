@@ -1,0 +1,1834 @@
+{
+  "counts": {
+    "cross_sheet": 87,
+    "groups": 137,
+    "same_sheet": 50,
+    "variants": 286
+  },
+  "generated_at": "2026-10-15T23:52:33+08:00",
+  "sections": {
+    "ABILITY_NAMES": {
+      "alerta": "预知梦",
+      "antídoto": "毒疗",
+      "audaz": "舍身",
+      "caparazón": "硬壳盔甲",
+      "commander": "发号施令",
+      "descarga": "下载",
+      "imán": "磁力",
+      "peluche": "毛茸茸"
+    },
+    "ITEM_NAMES": {
+      "antídoto": "解毒药",
+      "black belt": "黑带",
+      "carbón": "木炭",
+      "egg": "水煮蛋片",
+      "gracidea": "葛拉西蒂亚花",
+      "hierro": "防御增强剂",
+      "imán": "磁铁",
+      "iron": "防御增强剂",
+      "iron ball": "黑色铁球",
+      "item drop": "道具击落",
+      "metronome": "节拍器",
+      "metrónomo": "节拍器",
+      "roca helada": "冰冷岩石",
+      "taladro": "挖洞钻",
+      "té": "茶"
+    },
+    "MOVE_NAMES": {
+      "atadura": "绑紧",
+      "bite": "咬住",
+      "blood moon": "血月",
+      "burbuja": "泡沫",
+      "cabezazo": "火箭头锤",
+      "confusion": "念力",
+      "confusión": "念力",
+      "curse": "咒术",
+      "double team": "影子分身",
+      "erupción": "闪焰冲锋",
+      "explosión": "大爆炸",
+      "g-max wildfire": "超极巨地狱灭焰",
+      "gas venenoso": "毒瓦斯",
+      "gigallamarada": "超极巨地狱灭焰",
+      "hipnosis": "催眠术",
+      "hypnosis": "催眠术",
+      "imitación": "扮演",
+      "ladrón": "小偷",
+      "lanzamiento": "投掷",
+      "maldición": "咒术",
+      "malicioso": "瞪眼",
+      "meditate": "瑜伽姿势",
+      "metronome": "挥指",
+      "metrónomo": "挥指",
+      "niebla": "黑雾",
+      "overdrive": "破音",
+      "poison gas": "毒瓦斯",
+      "psychic": "精神强念",
+      "retracción": "闭关",
+      "salpicadura": "跃起",
+      "screech": "刺耳声",
+      "señuelo": "看我嘛",
+      "sludge": "污泥攻击",
+      "spikes": "撒菱",
+      "superpower": "蛮力",
+      "swallow": "吞下",
+      "tenaza": "贝壳夹击",
+      "thunder": "打雷",
+      "thunderbolt": "十万伏特",
+      "thunderclap": "迅雷",
+      "torbellino": "吹飞",
+      "trueno": "打雷"
+    },
+    "REGION_LOCATION_NAMES": {
+      "gracidea": "葛拉西蒂亚",
+      "roca helada": "冻石"
+    },
+    "SPECIES_FORM_NAMES": {
+      "arceus": "阿尔宙斯的样子",
+      "blood moon": "赫月",
+      "genesect": "盖诺赛克特的样子",
+      "kyurem": "酋雷姆的样子",
+      "overdrive": "超频驱动状态",
+      "rotom": "洛托姆的样子"
+    },
+    "SPECIES_NAMES": {
+      "arceus": "阿尔宙斯",
+      "genesect": "盖诺赛克特",
+      "kyurem": "酋雷姆",
+      "rotom": "洛托姆"
+    },
+    "TRAINER_TYPE_NAMES": {
+      "black belt": "空手道王",
+      "bug catcher": "捕虫少年",
+      "cazabichos": "捕虫少年",
+      "commander": "银河队干部",
+      "delantero": "足球选手",
+      "double team": "双打组合",
+      "estrella": "明星",
+      "ladrón": "趁火打劫者",
+      "mysterious": "神秘圆盘",
+      "místico": "神秘青年",
+      "painter": "画家",
+      "peluche": "布偶",
+      "ruffian": "可怕的哥哥",
+      "sage": "僧侣",
+      "secret agent": "秘密警察",
+      "striker": "足球选手",
+      "tesoro": "古代秘宝"
+    },
+    "TYPE_NAMES": {
+      "dark": "恶",
+      "electric": "电",
+      "eléctrico": "电",
+      "psychic": "超能",
+      "siniestro": "恶"
+    }
+  },
+  "source": "术语表（Glossary）.xlsx",
+  "variants": {
+    "actor": [
+      {
+        "dst": "演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "剧团成员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "actriz": [
+      {
+        "dst": "女演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "剧团成员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "alerta": [
+      {
+        "dst": "预知梦",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名称"
+      },
+      {
+        "dst": "警戒",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "alevín": [
+      {
+        "dst": "运动少年",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "运动少女",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "antídoto": [
+      {
+        "dst": "解毒药",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "毒疗",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名称"
+      }
+    ],
+    "arceus": [
+      {
+        "dst": "阿尔宙斯",
+        "section": "SPECIES_NAMES",
+        "sheet": "宝可梦名称"
+      },
+      {
+        "dst": "阿尔宙斯的样子",
+        "section": "SPECIES_FORM_NAMES",
+        "sheet": "形态名称"
+      }
+    ],
+    "arcoíris": [
+      {
+        "dst": "彩虹",
+        "section": null,
+        "sheet": "状态名称"
+      },
+      {
+        "dst": "虹色",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "atadura": [
+      {
+        "dst": "绑紧",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "束缚",
+        "section": null,
+        "sheet": "状态名称"
+      }
+    ],
+    "audaz": [
+      {
+        "dst": "舍身",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名称"
+      },
+      {
+        "dst": "勇敢",
+        "section": null,
+        "sheet": "性格名称"
+      }
+    ],
+    "bite": [
+      {
+        "dst": "咬住",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "紧咬",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "black belt": [
+      {
+        "dst": "黑带",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "空手道王",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "blood moon": [
+      {
+        "dst": "血月",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "赫月",
+        "section": "SPECIES_FORM_NAMES",
+        "sheet": "形态名称"
+      }
+    ],
+    "bola de nieve": [
+      {
+        "dst": "雪球",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "雪丸",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      }
+    ],
+    "bug catcher": [
+      {
+        "dst": "捕虫少年",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "捕虫",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "burbuja": [
+      {
+        "dst": "泡沫",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "吐泡",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "cabezazo": [
+      {
+        "dst": "火箭头锤",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "头锤",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "calm": [
+      {
+        "dst": "温和",
+        "section": null,
+        "sheet": "性格名称"
+      },
+      {
+        "dst": "宁静",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "caparazón": [
+      {
+        "dst": "硬壳盔甲",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名称"
+      },
+      {
+        "dst": "子弹",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "carbón": [
+      {
+        "dst": "木炭",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "煤炭",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "cazabichos": [
+      {
+        "dst": "捕虫少年",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "捕虫",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "celebridad": [
+      {
+        "dst": "艺人",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "名流",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "commander": [
+      {
+        "dst": "发号施令",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名称"
+      },
+      {
+        "dst": "银河队干部",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "confusion": [
+      {
+        "dst": "念力",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "混乱",
+        "section": null,
+        "sheet": "状态名称"
+      }
+    ],
+    "confusión": [
+      {
+        "dst": "念力",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "混乱",
+        "section": null,
+        "sheet": "状态名称"
+      }
+    ],
+    "congelación": [
+      {
+        "dst": "冰冻",
+        "section": null,
+        "sheet": "状态名称"
+      },
+      {
+        "dst": "结冰",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "contest costume": [
+      {
+        "dst": "演出礼服",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "演出礼裙",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      }
+    ],
+    "cueva costera": [
+      {
+        "dst": "海滩洞穴",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "海边小洞",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "cuidador": [
+      {
+        "dst": "育儿",
+        "section": null,
+        "sheet": "分类名称"
+      },
+      {
+        "dst": "保姆",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "curse": [
+      {
+        "dst": "咒术",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "诅咒",
+        "section": null,
+        "sheet": "状态名称"
+      }
+    ],
+    "dark": [
+      {
+        "dst": "恶",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名称"
+      },
+      {
+        "dst": "阴暗",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "delantero": [
+      {
+        "dst": "足球选手",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "前锋",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "descarga": [
+      {
+        "dst": "下载",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名称"
+      },
+      {
+        "dst": "放电",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "desconocido": [
+      {
+        "dst": "神秘圆盘",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "目光相对的人",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "double team": [
+      {
+        "dst": "影子分身",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "双打组合",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "egg": [
+      {
+        "dst": "水煮蛋片",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "蛋",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "electric": [
+      {
+        "dst": "电",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名称"
+      },
+      {
+        "dst": "电击",
+        "section": null,
+        "sheet": "分类名称"
+      },
+      {
+        "dst": "电气",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "eléctrico": [
+      {
+        "dst": "电",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名称"
+      },
+      {
+        "dst": "电击",
+        "section": null,
+        "sheet": "分类名称"
+      },
+      {
+        "dst": "电气",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "emperador": [
+      {
+        "dst": "皇帝",
+        "section": null,
+        "sheet": "分类名称"
+      },
+      {
+        "dst": "帝皇",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "erupción": [
+      {
+        "dst": "闪焰冲锋",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "喷火",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "especialista": [
+      {
+        "dst": "特摄演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "特摄女演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "estrella": [
+      {
+        "dst": "明星",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "星形",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "estudiante": [
+      {
+        "dst": "女学生",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "男学生",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "explosión": [
+      {
+        "dst": "大爆炸",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "爆炎",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "flame": [
+      {
+        "dst": "火焰",
+        "section": null,
+        "sheet": "分类名称"
+      },
+      {
+        "dst": "火",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "g-max wildfire": [
+      {
+        "dst": "超极巨地狱灭焰",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "超极巨深渊灭焰",
+        "section": null,
+        "sheet": "状态名称"
+      }
+    ],
+    "gas venenoso": [
+      {
+        "dst": "毒瓦斯",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "毒气",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "general store": [
+      {
+        "dst": "万万百货",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "杂货店",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "genesect": [
+      {
+        "dst": "盖诺赛克特",
+        "section": "SPECIES_NAMES",
+        "sheet": "宝可梦名称"
+      },
+      {
+        "dst": "盖诺赛克特的样子",
+        "section": "SPECIES_FORM_NAMES",
+        "sheet": "形态名称"
+      }
+    ],
+    "gigallamarada": [
+      {
+        "dst": "超极巨地狱灭焰",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "超极巨深渊灭焰",
+        "section": null,
+        "sheet": "状态名称"
+      }
+    ],
+    "gracidea": [
+      {
+        "dst": "葛拉西蒂亚花",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "葛拉西蒂亚",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "gran actor": [
+      {
+        "dst": "性格演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "人气演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "神秘男子",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "herb shop": [
+      {
+        "dst": "中药店",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "中药铺",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "herbolario": [
+      {
+        "dst": "中药店",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "中药铺",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "hermana": [
+      {
+        "dst": "姐姐",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "机甲战警的妹妹",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "hierro": [
+      {
+        "dst": "防御增强剂",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "黑金",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "hiker": [
+      {
+        "dst": "登山男",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "登山女孩",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "hipnosis": [
+      {
+        "dst": "催眠术",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "催眠",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "hypnosis": [
+      {
+        "dst": "催眠术",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "催眠",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "imitación": [
+      {
+        "dst": "扮演",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "模仿",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "imán": [
+      {
+        "dst": "磁铁",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "磁力",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名称"
+      },
+      {
+        "dst": "磁铁",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "iron": [
+      {
+        "dst": "防御增强剂",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "黑金",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "iron ball": [
+      {
+        "dst": "黑色铁球",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "铁球",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "isla cuarta": [
+      {
+        "dst": "第４岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "冰冻岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "isla exta": [
+      {
+        "dst": "第６岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "多幸岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "isla inta": [
+      {
+        "dst": "第５岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "时间岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "isla prima": [
+      {
+        "dst": "第１岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "结缘岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "isla secunda": [
+      {
+        "dst": "第２岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "友谊岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "isla sétima": [
+      {
+        "dst": "第７岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "探索岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "isla tera": [
+      {
+        "dst": "第３岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "亲子岛",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "item drop": [
+      {
+        "dst": "道具击落",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "掉东西",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "kyurem": [
+      {
+        "dst": "酋雷姆",
+        "section": "SPECIES_NAMES",
+        "sheet": "宝可梦名称"
+      },
+      {
+        "dst": "酋雷姆的样子",
+        "section": "SPECIES_FORM_NAMES",
+        "sheet": "形态名称"
+      }
+    ],
+    "ladrón": [
+      {
+        "dst": "小偷",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "趁火打劫者",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "lanzamiento": [
+      {
+        "dst": "投掷",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "发射",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "lightning": [
+      {
+        "dst": "雷",
+        "section": null,
+        "sheet": "分类名称"
+      },
+      {
+        "dst": "闪电",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "llama": [
+      {
+        "dst": "火焰",
+        "section": null,
+        "sheet": "分类名称"
+      },
+      {
+        "dst": "火",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "lonely": [
+      {
+        "dst": "怕寂寞",
+        "section": null,
+        "sheet": "性格名称"
+      },
+      {
+        "dst": "孤独",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "luchadora": [
+      {
+        "dst": "忍者小子",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "对战少女",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "maldición": [
+      {
+        "dst": "咒术",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "诅咒",
+        "section": null,
+        "sheet": "状态名称"
+      }
+    ],
+    "maleta": [
+      {
+        "dst": "换装箱",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "衣物箱",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      }
+    ],
+    "malicioso": [
+      {
+        "dst": "瞪眼",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "坏心眼",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "malvalona gourmet": [
+      {
+        "dst": "紫堇美食广场",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "对战食阁",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "meditate": [
+      {
+        "dst": "瑜伽姿势",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "冥想",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "megaestrella": [
+      {
+        "dst": "个性派女演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "大牌演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "metronome": [
+      {
+        "dst": "节拍器",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "挥指",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      }
+    ],
+    "metrónomo": [
+      {
+        "dst": "节拍器",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "挥指",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      }
+    ],
+    "mysterious": [
+      {
+        "dst": "神秘圆盘",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "谜",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "mystery man": [
+      {
+        "dst": "神秘青年",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "神秘男子",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "místico": [
+      {
+        "dst": "神秘青年",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "神秘",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "nadadores": [
+      {
+        "dst": "闪焰队",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "泳装情侣",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "nata": [
+      {
+        "dst": "泡沫奶油",
+        "section": null,
+        "sheet": "分类名称"
+      },
+      {
+        "dst": "鲜奶油",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "niebla": [
+      {
+        "dst": "黑雾",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "起雾",
+        "section": null,
+        "sheet": "状态名称"
+      }
+    ],
+    "objeto perdido": [
+      {
+        "dst": "遗失物",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "遗忘物",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "他人的遗失物",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      }
+    ],
+    "oscuridad": [
+      {
+        "dst": "黑暗",
+        "section": null,
+        "sheet": "分类名称"
+      },
+      {
+        "dst": "暗黑",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "overdrive": [
+      {
+        "dst": "破音",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "超频驱动状态",
+        "section": "SPECIES_FORM_NAMES",
+        "sheet": "形态名称"
+      }
+    ],
+    "painter": [
+      {
+        "dst": "画家",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "画画",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "paraíso æther": [
+      {
+        "dst": "宝可梦中心的咖啡区",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "以太乐园",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "peluche": [
+      {
+        "dst": "毛茸茸",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名称"
+      },
+      {
+        "dst": "布偶",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "poison gas": [
+      {
+        "dst": "毒瓦斯",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "毒气",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "pokémon house": [
+      {
+        "dst": "宝可梦之家",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "宝可梦帐篷",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "psychic": [
+      {
+        "dst": "精神强念",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "超能力",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名称"
+      }
+    ],
+    "rainbow": [
+      {
+        "dst": "彩虹",
+        "section": null,
+        "sheet": "状态名称"
+      },
+      {
+        "dst": "虹色",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "retracción": [
+      {
+        "dst": "闭关",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "窝壳",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "roca helada": [
+      {
+        "dst": "冰冷岩石",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "冻石",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "rotom": [
+      {
+        "dst": "洛托姆",
+        "section": "SPECIES_NAMES",
+        "sheet": "宝可梦名称"
+      },
+      {
+        "dst": "洛托姆的样子",
+        "section": "SPECIES_FORM_NAMES",
+        "sheet": "形态名称"
+      }
+    ],
+    "ruffian": [
+      {
+        "dst": "可怕的哥哥",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "无赖",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "sage": [
+      {
+        "dst": "僧侣",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "贤者",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "salpicadura": [
+      {
+        "dst": "跃起",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "泼水",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "scientist": [
+      {
+        "dst": "流浪研究员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "研究员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "screech": [
+      {
+        "dst": "刺耳声",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "夜啼",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "secret agent": [
+      {
+        "dst": "秘密警察",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "特工",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "señuelo": [
+      {
+        "dst": "看我嘛",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "引诱",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "siniestro": [
+      {
+        "dst": "恶",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名称"
+      },
+      {
+        "dst": "阴暗",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "sludge": [
+      {
+        "dst": "污泥攻击",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "污泥",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "snowball": [
+      {
+        "dst": "雪球",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "雪丸",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      }
+    ],
+    "sol": [
+      {
+        "dst": "大晴天",
+        "section": null,
+        "sheet": "状态名称"
+      },
+      {
+        "dst": "太阳",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "spikes": [
+      {
+        "dst": "撒菱",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "撒菱",
+        "section": null,
+        "sheet": "状态名称"
+      },
+      {
+        "dst": "尖尖",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "striker": [
+      {
+        "dst": "足球选手",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "前锋",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "suit actor": [
+      {
+        "dst": "特摄演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "特摄女演员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "superpower": [
+      {
+        "dst": "蛮力",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "怪力",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "surf association": [
+      {
+        "dst": "冲浪协会",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "冲浪协会分部",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "swallow": [
+      {
+        "dst": "吞下",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "燕子",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "taladro": [
+      {
+        "dst": "挖洞钻",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "钻锥",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "team rocket": [
+      {
+        "dst": "火箭队",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "火箭队队员",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "tenaza": [
+      {
+        "dst": "贝壳夹击",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "钳子",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "tesoro": [
+      {
+        "dst": "古代秘宝",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "宝者",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "thunder": [
+      {
+        "dst": "打雷",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "天雷",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "thunderbolt": [
+      {
+        "dst": "十万伏特",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "雷电",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "thunderclap": [
+      {
+        "dst": "迅雷",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "奔雷",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "torbellino": [
+      {
+        "dst": "吹飞",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "旋风",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "trueno": [
+      {
+        "dst": "打雷",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "天雷",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "tuber": [
+      {
+        "dst": "泳圈女孩",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "泳圈男孩",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "té": [
+      {
+        "dst": "茶",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名称"
+      },
+      {
+        "dst": "红茶",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "túnel trigal": [
+      {
+        "dst": "满金地下通道",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      },
+      {
+        "dst": "地下通道",
+        "section": "REGION_LOCATION_NAMES",
+        "sheet": "地点名称"
+      }
+    ],
+    "world champion": [
+      {
+        "dst": "初级组冠军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "高级组冠军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "大师组冠军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "world finalist": [
+      {
+        "dst": "初级组殿军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "初级组季军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "高级组殿军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "高级组季军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "大师组殿军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "大师组季军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "world runner-up": [
+      {
+        "dst": "初级组亚军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "高级组亚军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "大师组亚军",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ],
+    "youth athlete": [
+      {
+        "dst": "运动少年",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      },
+      {
+        "dst": "运动少女",
+        "section": "TRAINER_TYPE_NAMES",
+        "sheet": "训练家类型"
+      }
+    ]
+  },
+  "version": 1
+}

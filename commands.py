@@ -53,12 +53,7 @@ LANG_OPTIONS = [
     "英文",
     "简体中文",
     "繁体中文",
-    "日文",
-    "韩文",
     "西班牙文",
-    "法文",
-    "德文",
-    "意大利文",
 ]
 
 # 重翻检查报告时，默认要处理的问题类型（GUI 里可逐项勾选）
@@ -652,7 +647,7 @@ def _derived_term_hits(entries=None, out_lines=None):
         log.info("派生命中 %d 条（术语词根派生匹配）", len(hits))
     return hits
 
-def _unapplied_term_hits(entries=None, out_lines=None):
+def _unapplied_term_hits(entries=None, out_lines=None, section=None):
     """
     「术语未应用」：原文命中了术语表里的规范译名，译文里却没出现。
 
@@ -660,6 +655,11 @@ def _unapplied_term_hits(entries=None, out_lines=None):
     · 不计入「共 N 处问题」（ADVISORY_KINDS）；
     · 报告里默认不勾选，勾上才显示；
     · info=True，不抑制该句的其它检查。
+
+    ★ section：当前文件的 section 名（term_extract.resolve_names 判定）。
+      同原文多译文（term_sections.json 的 variants）投送后，译文里出现
+      **任一**变体即算已应用 —— 否则「译文用了超能力却没精神强念」这类
+      正确翻译会被误报。
 
     术语表不可用 / 没开术语替换时返回 []。
     """
@@ -690,7 +690,15 @@ def _unapplied_term_hits(entries=None, out_lines=None):
             dst = out_lines[ln]
         if not dst:
             continue
-        missing = [(s, d) for s, d in found if d and d not in dst]
+        # ★ 译文里出现该术语任一变体即算已应用；都不在才算漏
+        missing = []
+        for s, d in found:
+            if not d:
+                continue
+            cands = PR.term_dst_variants(s, section=section)
+            if any(c and c in dst for c in cands):
+                continue
+            missing.append((s, d))
         if not missing:
             continue
         detail = "；".join(f"{s} 应为 {d}" for s, d in missing[:5])
@@ -1098,13 +1106,23 @@ def _make_batches(todo, batch_size=None, max_chars=None, max_tokens=None):
 def _translate_batch(client, batch_texts, cache,
                      unknown_ctrl_hits, failed, extra_hits,
                      mode_of_entry=None, bi=1, conflict_records=None,
-                     context_lines=None, term_stats=None):
+                     context_lines=None, term_stats=None, section=None,
+                     batch_term_hook=None):
     """
     翻译一批文本，写入缓存。返回成功条数。
 
     context_lines: 可选 [上文原文, ...]（前几条已译句子的原文，仅供语境）
     term_stats: 可选 list —— 本批的 {术语: 命中句数} 会 append 进去
               （list.append 原子，可在多批并发时安全汇总）
+    section: 可选，当前文件的 section 名（cat_prompts.section_for 判定）——
+              两个用途：① 同原文多译文按它定向投送（有 section 只投该
+              section 的译文；无 section 把全部变体用 " / " 并列投送，
+              见 processor.term_dst_variants）；② 透传给 translator，
+              有 prompts/categories/<SECTION>.txt 时把它追加到 system 末尾。
+    batch_term_hook: 可选 callable(pairs) -> int。本批**全部条目写进缓存之后**
+              调用，pairs = [(原文, 该批最终译文), ...]。只有术语提取页
+              流程会传它（见 term_extract.make_batch_term_hook）；hook 抛
+              异常只记警告，绝不影响翻译结果。
     """
     if not batch_texts:
         return 0
@@ -1140,12 +1158,15 @@ def _translate_batch(client, batch_texts, cache,
         if n_pre:
             log.debug("[批 %d][%d] 译前替换命中 %d 条规则", bi, k, n_pre)
 
-        # ★ 不做占位符脱敏：控制码 / 标签 / 换行符原样随正文交给模型，
+        # ★ 不做占位符脱敏：控制码 / 标签原样随正文交给模型，
         #   翻完由「控制码检测」兜底 —— repair_missing_controls 按原文
         #   把整个丢失的控制码补回，检查报告再列出符号不匹配的句。
-        #   breaks 仍按原文分析，finalize 会把译文里丢掉的 \n 补回原位。
-        safe = body
+        #   ★ 换行符 \n 是例外（v1.7.4 起）：它已不算控制码，且**送模型前
+        #     必须从正文里剔除** —— 让模型把注意力放在文字上，不必猜哪里
+        #     该断行；译文里的换行由 apply_breaks 按原文断点补回。
+        #   ★ 顺序要紧：breaks 必须在**未剔除**的原文上分析，否则断点全丢。
         breaks = PR.analyze_breaks(body)
+        safe = PR.strip_newlines(body)
         hit_terms = PR.find_terms(safe)
         batch.append((k, safe))
         breaks_dict[k] = breaks
@@ -1156,7 +1177,6 @@ def _translate_batch(client, batch_texts, cache,
             hit_terms_all.setdefault(src_term, dst_term)
             # 术语命中统计：按「句」计（一句里重复出现只算一次）
             term_counts[src_term] = term_counts.get(src_term, 0) + 1
-
         # ★ 控制码检测（源侧）：原文里出现「识别不出来的 \字母 命令」，
         #   说明它可能被模型改坏，收进「未识别控制码」报告提醒用户
         for token, ctx in PR.detect_unknown_ctrl(body):
@@ -1176,7 +1196,11 @@ def _translate_batch(client, batch_texts, cache,
         log.info("[批 %d] 新增前缀 %d 个（术语自动填入 %d 个）",
                  bi, new_prefixes, filled)
 
-    term_pairs_list = list(hit_terms_all.items())
+    # ★ 多译文投送：每个 src 只出一行，dst 按 section 定向展开成
+    #   一个字符串（单译文逐字不变；多译文 " / " 连接并带场景标签，
+    #   见 processor.render_term_dst）。term_counts 按句计的语义不变。
+    term_pairs_list = [(src, PR.render_term_dst(src, section=section))
+                       for src in hit_terms_all]
     if term_pairs_list:
         log.info("[批 %d] 命中术语 %d 条，随 prompt 发送",
                  bi, len(term_pairs_list))
@@ -1185,7 +1209,8 @@ def _translate_batch(client, batch_texts, cache,
     t_req = time.time()
     result = translate_with_retry(client, batch,
                                   term_pairs=term_pairs_list,
-                                  context_lines=context_lines)
+                                  context_lines=context_lines,
+                                  section=section)
     log.info("[批 %d] 模型返回 %d 条，耗时 %.1fs",
              bi, len(result), time.time() - t_req)
 
@@ -1207,7 +1232,8 @@ def _translate_batch(client, batch_texts, cache,
             try:
                 r = translate_with_retry(client, [(k, safe)],
                                          term_pairs=term_pairs_list,
-                                         context_lines=context_lines)
+                                         context_lines=context_lines,
+                                         section=section)
                 v = r.get(k)
                 if v and v.strip() and v.strip() != safe.strip():
                     result[k] = v
@@ -1281,28 +1307,60 @@ def _translate_batch(client, batch_texts, cache,
         cache.put(src, final)
         ok += 1
 
+    # ★ 本批全部写进缓存之后：交给 hook（术语提取页用它把本批术语立刻并进
+    #   术语表，后续批次立刻用上）。hook 抛异常只记警告，绝不中断翻译。
+    if batch_term_hook is not None:
+        try:
+            batch_term_hook([(t, cache.get(t)) for t in batch_texts
+                             if cache.get(t)])
+        except Exception as e:
+            log.warning("[批 %d] 逐批术语并入失败（忽略）：%s", bi, e)
+
     return ok
 
-
-def _match_conflict(terms, conflicts):
-    """在一批术语里找出与冲突列表相交的那一条。"""
-    keys = {k.lower() for k in terms.keys()}
-    for c in conflicts:
-        if c['src'].lower() in keys:
-            return c
-    return None
 
 
 # ================================================================
 # 内部：翻译单个文件（核心流程）
 # ================================================================
-def _translate_core(src_path, lines=None, newline=None, show_header=True):
-    """对单个文件执行完整翻译流程（Runtime 已设置好 input/output/cache）。"""
+def _file_section(src_path):
+    """
+    判定文件所属 section（term_sections.json 分派表的 key），失败返回 None。
+
+    ★ 权威入口是 cat_prompts.section_for：区块标志优先（`[数字]` 走
+      intl_text.SECTION_NAMES，`[MapNNN]` 判 EVENT_TEXTS），文件名兜底，
+      覆盖全部 31 类文本；这里 try/except 全包，任何异常（import 环 /
+      文件读不了 / 都对不上）都退回 None，绝不让主流程挂掉。
+    ★ 判定结果同时用于两处：术语定向投送（processor 的 section 参数）
+      与类别提示词装配（translator 的 section 参数）。
+    """
+    try:
+        import cat_prompts as CP
+        return CP.section_for(src_path)
+    except Exception as e:
+        log.debug("文件 section 判定失败（按无 section 处理）：%s", e)
+    return None
+
+
+def _translate_core(src_path, lines=None, newline=None, show_header=True,
+                    batch_term_hook=None):
+    """对单个文件执行完整翻译流程（Runtime 已设置好 input/output/cache）。
+
+    batch_term_hook: 可选 callable(pairs) -> int，逐批术语回调；
+        默认 None（translate_paths / 术语重翻 / 润色等一律不传，行为不变）。
+        只有术语提取页流程会传它，见 term_extract.run_extract。
+    """
     # ★ 文本保护规则：按需装载（模式或规则文件改过才重新装载）
     import text_rules
     text_rules.ensure_applied()
     out_path = config.Runtime.output_file
     cache_path = config.Runtime.cache_file
+
+    # ★ 本文件的 section（名字类文件才有，如 MOVE_NAMES）：
+    #   整句术语直译与多译文投送都按它定向
+    sec = _file_section(src_path)
+    if sec:
+        log.info("文件 section：%s", sec)
 
     if show_header:
         emit(f"\n{'=' * 55}")
@@ -1350,7 +1408,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
         #   ★ 放在「纯控制符 / 资源路径」之前：像 "(?)" 这种整句都是符号、
         #     但用户明确给了术语译文的句子，要按术语翻，而不是原样保留。
         if getattr(config, "WHOLE_TERM_MATCH", True):
-            hit = PR.match_whole_term(txt)
+            # ★ 按 section 定向：名字类文件优先用自己 section 的译文
+            hit = PR.match_whole_term(txt, section=sec)
             if hit:
                 cache.put(txt, hit[1])
                 whole_hits.append((txt, hit[0], hit[1]))
@@ -1414,8 +1473,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
     term_stat_batches = []      # 每批一条 {术语: 命中句数}，跑完汇总落盘
 
     if todo:
-        if getattr(config, "SORT_TODO_BY_LEN", True):
-            todo.sort(key=len)
+        # ★ 按原文顺序翻译（不按长度排序）——上文的指代与语气依赖原顺序，
+        #   缓存键与原文顺序也一致，重跑补翻时输出文件行序稳定。
 
         client = OllamaClient()
         batches = _make_batches(todo)
@@ -1425,8 +1484,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
 
         # ★ 上文注入：批与批之间的「上文」按**原文件顺序**取——取每批
         #   第一条之前最近的若干条待翻句子（只收以句末标点结尾的，防止
-        #   把半句话当前文）。SORT_TODO_BY_LEN 开着时 todo 已按长度重排，
-        #   这里靠 ctx_pos 映射回原文件顺序；游戏对白最吃指代和语气，
+        #   把半句话当前文）。todo 本来就按原文件顺序排列，这里靠
+        #   ctx_pos 映射回原文件顺序；游戏对白最吃指代和语气，
         #   有上文比换大模型更提升质量。
         n_ctx = int(getattr(config, "CONTEXT_LINES", 0) or 0)
         ctx_source, ctx_pos = None, {}
@@ -1478,7 +1537,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
                     mode_of_entry=mode_of_entry, bi=bi,
                     conflict_records=conflict_records,
                     context_lines=_context_for(batch_texts),
-                    term_stats=term_stat_batches)
+                    term_stats=term_stat_batches, section=sec,
+                    batch_term_hook=batch_term_hook)
 
             with ThreadPoolExecutor(max_workers=conc) as ex:
                 futs = {}
@@ -1518,7 +1578,9 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
                                       bi=bi,
                                       conflict_records=conflict_records,
                                       context_lines=_context_for(batch_texts),
-                                      term_stats=term_stat_batches)
+                                      term_stats=term_stat_batches,
+                                      section=sec,
+                                      batch_term_hook=batch_term_hook)
 
                 cache.tick()
                 done += len(batch_texts)
@@ -1576,7 +1638,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True):
                                          + _derived_term_hits(entries,
                                                               out_lines)
                                          + _unapplied_term_hits(entries,
-                                                                out_lines)))
+                                                                out_lines,
+                                                                section=sec)))
         _print_summary(hits, report_path)
     except Exception as e:
         log.error("自动检查失败：%s", e)
@@ -1658,6 +1721,37 @@ def _print_summary(hits, report_path):
 # ================================================================
 # 核心 1：翻译
 # ================================================================
+def _drop_names_files(paths, action="该操作"):
+    """
+    把**名字类文件**从待处理清单里剔除（返回 (保留, 跳过)）。
+
+    ★ 名字文件（*_NAMES / 开头 [编号] 是名字区块的那批）归「术语提取」管，
+      翻译 / 检查报告 / 重翻 / 润色 / 换行重排都不该碰 —— 否则同一批名词
+      会被两条流水线各翻一遍，译法还可能不一致。
+    ★ 判定规则与 term_extract.find_names_files 完全一致（resolve_names），
+       这里只做「是不是」的判断，不重复实现一套。
+    """
+    keep, skipped = [], []
+    try:
+        import term_extract as TE
+    except Exception as e:                       # 模块缺失时不阻断主流程
+        log.warning("载入 term_extract 失败，跳过名字文件过滤：%s", e)
+        return list(paths or []), []
+
+    for p in paths or []:
+        if p and os.path.isfile(p) and TE.is_term_source_file(p):
+            skipped.append(p)
+        elif p:
+            keep.append(p)
+
+    if skipped:
+        emit(f"[跳过] {action}不处理名字类文本，已跳过 {len(skipped)} 个："
+             + "、".join(os.path.basename(p) for p in skipped[:5])
+             + (" 等" if len(skipped) > 5 else ""))
+        emit("      名字类文件请到「术语提取」里处理。")
+    return keep, skipped
+
+
 def translate_paths(paths, src_lang=None, tgt_lang=None, model=None):
     """
     翻译一组文件（无交互）。返回统计 dict。
@@ -1665,11 +1759,17 @@ def translate_paths(paths, src_lang=None, tgt_lang=None, model=None):
     _apply_lang_model(src_lang, tgt_lang, model)
     _announce_work_dir(paths)          # 整个文件夹 → 中间文件另存
 
+    paths, _skipped = _drop_names_files(paths, "翻译")
+
     log.info("=" * 50)
     log.info("开始翻译  共 %d 个文件  方向 %s → %s",
              len(paths), config.SOURCE_LANG, config.TARGET_LANG)
 
     total = len(paths)
+    if not total:
+        emit("没有需要翻译的文件（名字类文本已全部跳过）")
+        return {"files": 0, "total": 0}
+
     processed = 0
     for i, path in enumerate(paths, 1):
         if bridge.cancelled():
@@ -1739,8 +1839,9 @@ def check_file(path, write_report=True):
     hits = checker.check(out_lines, entries, special, report_path,
                          extra_hits=(_conflicts_as_hits(entries, out_lines)
                                      + _derived_term_hits(entries, out_lines)
-                                     + _unapplied_term_hits(entries,
-                                                            out_lines)))
+                                     + _unapplied_term_hits(
+                                         entries, out_lines,
+                                         section=_file_section(inp))))
     return hits
 
 
@@ -1794,6 +1895,7 @@ def _conflicts_as_hits(entries=None, out_lines=None):
 
 def check_paths(paths):
     """批量检查，返回 {path: hits}。"""
+    paths, _skipped = _drop_names_files(paths, "检查报告")
     _announce_work_dir(paths)
     result = {}
     for i, path in enumerate(paths, 1):
@@ -2037,119 +2139,6 @@ def _rename_conflict_keys(renames):
         save_term_conflicts(data)
 
 
-def apply_term_conflicts(choices, paths=None, src_lang=None, tgt_lang=None,
-                         model=None):
-    """
-    choices: [{"term": 原文, "value": 最终采用的译文,
-               "new_term": 可选，修改后的术语原文}, ...]
-             只处理 value 非空的项。
-    paths:   要重翻的文件（None / 空 → 只写字典不重翻）。
-
-    返回 {"saved": n, "renamed": n, "files": n, "removed": n}
-    """
-    import term_sync as TS
-
-    _announce_work_dir(paths)
-
-    mapping = {}
-    renames = {}
-    for c in (choices or []):
-        term = (c.get("term") or "").strip()
-        val = c.get("value")
-        new_term = (c.get("new_term") or "").strip()
-        if not term:
-            continue
-        if new_term and new_term != term:
-            renames[term] = new_term
-        if val is not None and str(val).strip():
-            mapping[term] = str(val).strip()
-
-    emit("\n" + "=" * 55)
-    emit("  解决术语冲突")
-    emit("=" * 55)
-
-    if not mapping and not renames:
-        emit("  没有选择任何要保留的译文，已取消")
-        return {"saved": 0, "renamed": 0, "files": 0, "removed": 0}
-
-    # ★ 修改术语原文：先改名（写回 term_dict.py），值再跟着新原文走
-    renamed = 0
-    if renames:
-        renamed = TS.rename_term_keys(renames)
-        if renamed:
-            emit(f"  ✔ 术语原文已改名 {renamed} 条")
-            for o, nv in list(renames.items())[:8]:
-                emit(f"    {o}  →  {nv}")
-            if len(renames) > 8:
-                emit(f"    … 其余 {len(renames) - 8} 条省略")
-            mapping = {renames.get(k, k): v for k, v in mapping.items()}
-            _rename_conflict_keys(renames)
-        else:
-            emit("  ⚠ 术语原文改名没有生效（见日志），译文仍按原原文写入")
-
-    if not mapping:
-        try:
-            TS.save_snapshot(TS.load_current_terms())
-        except Exception:
-            pass
-        drop_term_conflicts(list(renames.keys()))
-        log.info("解决术语冲突：改名 %d 条，无需重翻", renamed)
-        return {"saved": 0, "renamed": renamed, "files": 0, "removed": 0}
-
-    for t, v in list(mapping.items())[:10]:
-        emit(f"    {t}  →  {v}")
-    if len(mapping) > 10:
-        emit(f"    … 其余 {len(mapping) - 10} 条省略")
-
-    saved = TS.save_term_values(mapping)
-    emit(f"  ✔ 术语字典已更新 {saved} 条")
-
-    try:
-        PR.load_terms(force=True)
-    except Exception as e:
-        log.warning("重新载入术语表失败：%s", e)
-
-    files = removed = 0
-    if paths:
-        result = retranslate_terms_paths(
-            list(paths), src_lang, tgt_lang, model,
-            extra_terms=[renames.get(t, t) for t in mapping.keys()])
-        files = (result or {}).get("files", 0)
-        removed = (result or {}).get("removed", 0)
-    else:
-        emit("  （未选择文件，只更新术语字典；"
-             "选好文件后再点一次即可重翻相关句子）")
-        try:
-            TS.save_snapshot(TS.load_current_terms())
-        except Exception:
-            pass
-
-    # 处理完的冲突从记录里移除，避免报告一直报同一个
-    n = drop_term_conflicts(list(mapping.keys()) + list(renames.keys()))
-    if n:
-        emit(f"  ✔ 已清理 {n} 条冲突记录")
-
-    log.info("解决术语冲突：写入 %d 条，改名 %d 条，重翻 %d 个文件，删缓存 %d 条",
-             saved, renamed, files, removed)
-    return {"saved": saved, "renamed": renamed,
-            "files": files, "removed": removed}
-
-
-def scan_term_conflicts():
-    """读取当前落盘的术语冲突，返回 [(原文, 已有译文, 新增译文, 命中句数)]。"""
-    data = load_term_conflicts()
-    out = []
-    for term, item in data.items():
-        if not isinstance(item, dict):
-            continue
-        out.append((
-            term,
-            item.get("old", "") or "",
-            item.get("new", "") or "",
-            len(item.get("src") or []),
-        ))
-    out.sort(key=lambda x: (-x[3], x[0]))
-    return out
 
 
 # ================================================================
@@ -2462,6 +2451,11 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
     out_path = config.Runtime.output_file
     cache_path = config.Runtime.cache_file
 
+    # ★ 本文件的 section：润色时用它追加类别风格段（prompts/categories）
+    sec = _file_section(path)
+    if sec:
+        log.info("润色文件 section：%s", sec)
+
     if show_header:
         emit(f"\n{'=' * 55}")
         emit(f"  中文润色：{path}")
@@ -2546,7 +2540,7 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
             orig_dict[k] = cur
             src_safe_dict[k] = txt
 
-        result = polish_with_retry(client, items)
+        result = polish_with_retry(client, items, section=sec)
 
         # 单条补全
         for k, safe, _src in items:
@@ -2554,7 +2548,8 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
                 continue
             for attempt in range(getattr(config, "SINGLE_RETRIES", 3)):
                 try:
-                    r = polish_with_retry(client, [(k, safe, src_safe_dict[k])])
+                    r = polish_with_retry(client, [(k, safe, src_safe_dict[k])],
+                                          section=sec)
                     if r.get(k, "").strip():
                         result[k] = r[k]
                         break
@@ -2837,6 +2832,11 @@ def reflow_paths(paths, newline_cfg=None, space_cfg=None, blocks=None):
              None 或空 = 文件里所有区块都重排。
     """
     _announce_work_dir(paths)
+
+    paths, _skipped = _drop_names_files(paths, "换行重排")
+    if not paths:
+        emit("没有需要重排的文件（名字类文本已全部跳过）")
+        return {"files": 0, "changed": 0}
 
     log.info("=" * 50)
     log.info("换行重排  共 %d 个文件", len(paths))
@@ -3383,6 +3383,13 @@ def cmd_build_terms():
 
     emit(f"模式：{'追加到末尾' if mode == 'append' else '整份覆盖'}")
     build_terms_from_excel(excel_path, chosen, src, tgt, out_path, mode=mode)
+
+
+# ================================================================
+# 术语提取的检查报告（不走模型）
+# ================================================================
+
+
 
 
 def _choose_language(prompt, default_key, exclude=None):

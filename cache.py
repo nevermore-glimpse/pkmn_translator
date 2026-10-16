@@ -98,11 +98,6 @@ class Cache:
             self.data[key] = value
             self._dirty = True
 
-    def put_many(self, mapping):
-        with self._lock:
-            self.data.update(mapping)
-            if mapping:
-                self._dirty = True
 
     def remove_many(self, keys):
         """批量删除缓存条目，返回实际删除的数量。"""

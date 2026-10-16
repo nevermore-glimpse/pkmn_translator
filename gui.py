@@ -52,6 +52,10 @@ import term_sync as TS
 
 log = None  # 延迟到 main() 里初始化
 
+# 报告里问题类型的固定顺序（与 term_fix.KIND_ORDER 保持一致；GUI 筛选用）
+TFX_KIND_ORDER = ["译名为空", "同词不同译", "未翻（回显原文）",
+                  "译文残留英文", "疑似机翻残留"]
+
 
 # ================================================================
 # 主题：毛玻璃 + 宝可梦配色（精灵球红 / 宝可蓝 / 皮卡丘黄）
@@ -99,6 +103,7 @@ C_KEY     = POKE_RED      # 关键统计数字
 C_HINT    = TEXT_FAINT    # 说明文字
 C_WARN    = WARN_COLOR    # 需要注意
 C_OK      = OK_COLOR      # 成功 / 正常
+C_FLOW    = "#D64545"     # 翻译流程说明（正红，区别于灰色说明）
 
 # PBS 编辑界面：输入框用醒目的宝可蓝描边（聚焦时更深），一眼就能找到要改哪里
 FIELD_BORDER       = "#1667C4"   # 宝可蓝：够醒目但不刺眼
@@ -142,6 +147,9 @@ HANHUA_SUBMENUS = [
     ("termextract", "术语提取",
      "从游戏文本里读名字文件（宝可梦/招式/道具/特性/属性/地图…），"
      "交给模型翻好后写进术语表。"),
+    ("termcheck", "术语检查报告",
+     "只看术语提取的缓存与术语表，列出有问题的译名，可双击改译名并写回，"
+     "改译名不走模型；「术语重翻」删缓存重翻会调用模型。"),
     ("translate", "翻译",
      "选好文件，把原文翻成目标语言，生成译文与检查报告。"),
     ("report", "重翻检查报告",
@@ -157,6 +165,30 @@ HANHUA_SUBMENUS = [
     ("excel", "术语字典 / Excel 转换",
      "查看并编辑术语字典，或从 Excel 导进术语。"),
 ]
+
+# ★ 「游戏汉化」页右侧的翻译流程说明（原文照抄，不要改写 / 不要另加序号）。
+#   注意第六步里的 "\t" 是普通反斜杠 + t，不是制表符，必须写成 "\\tg[]"。
+HANHUA_FLOW_STEPS = [
+    "第一步：术语提取，所有要翻译的文件先走术语提取",
+    "第二步：术语检查，检查术语是否遗漏或错翻并直接改译文",
+    "第三步：翻译，翻译非术语文件",
+    "第四步：重翻检查报告，修正有问题的句子",
+    "第五步：检查术语，看是否要更新术语并修正相关句子",
+    "第六步：查看前缀字典，只翻译\\tg[]里的",
+    "第七步：中文润色，提供翻译质量",
+    "第八步：换行重排，重新设置句子的换行",
+    "第九步：翻译全部完成后，在9.术语字典里删除自动提取术语",
+]
+
+# ★ 「翻译流程」说明的字号（手动调整就改这两个数字，单位 pt）。
+#   17pt 是最小窗口 1240×760 下的边界：正文高 462px，加上 20pt 标题后
+#   仍不超过左侧 10 个按钮撑出来的 560px；再大一号（18pt）正文高 611px，
+#   版面会被撑高。标题固定比正文大 3pt，保持层级。
+HANHUA_FLOW_TITLE_PT = 20
+HANHUA_FLOW_BODY_PT = 17
+# wraplength 必须跟着字号一起放大：460 是 10pt 时代的取值，17pt 下沿用会把
+# 每行挤到更窄、行数变多，反而撑破版面。590 是 1240 最小窗口下的可用宽度。
+HANHUA_FLOW_WRAP = 590
 
 # ★ 同样的套路：「存档编辑」统合的 6 个编辑界面
 #   (页面键, 名称, 一句话说明)
@@ -1209,7 +1241,10 @@ class FilePanel(tk.Frame):
                    "_polished.txt", "_unknown_ctrl.txt",
                    "_cache.json", "_cache_edited.json",
                    "_conflicts.json", "_placeholder.json",
-                   "_polish_cache.json")
+                   "_polish_cache.json",
+                   # ★ 术语提取的缓存 / 报告：同样以 _cache.json 结尾，
+                   #   不显式排除会被「翻译缓存」过滤器当成翻译缓存列出来
+                   "_terms_cache.json", "_terms_report.txt")
 
     def __init__(self, master, bg=CARD, width=272, mode="source",
                  on_change=None, app=None, allow_game_root=False,
@@ -1312,21 +1347,34 @@ class FilePanel(tk.Frame):
             text += "\n也可点「游戏主程序」自动扫描游戏目录里的 txt 文件"
         return text
 
-    def _accept(self, name):
+    def _accept(self, name, path=""):
         low = name.lower()
         if self.mode == "report":
             return low.endswith("_translated_report.txt")
         if self.mode == "cache":
+            # ★ 术语提取的缓存也叫 xxx_terms_cache.json，结尾同样是
+            #   _cache.json —— 必须先排除它，否则会被当成翻译缓存选进去
+            if low.endswith("_terms_cache.json"):
+                return False
             return low.endswith("_cache.json")
         if self.mode == "translated":
             return low.endswith("_translated.txt")
         if self.mode == "dict":
             return low == "prefix_dict.json"
+        # ★ 源文件模式（翻译页）：名字类文件不列出来 ——
+        #   那批归「术语提取」管，翻译与重排都不该碰。
+        #   判据用 term_extract.resolve_names，与术语提取页完全一致。
+        try:
+            import term_extract as TE
+            if TE.is_term_source_file(path):
+                return False
+        except Exception:
+            pass
         return not low.endswith(self.SKIP_SUFFIX)
 
     def _filter(self, paths):
         return [p for p in paths
-                if os.path.isfile(p) and self._accept(os.path.basename(p))]
+                if os.path.isfile(p) and self._accept(os.path.basename(p), p)]
 
     # ---------- 选择 ----------
     def _initial(self):
@@ -1368,17 +1416,30 @@ class FilePanel(tk.Frame):
             os.path.join(folder, f)
             for f in os.listdir(folder)
             # ★ 只收文件（别把「翻译中间文件」这类子目录也列进来）
-            if self._accept(f) and os.path.isfile(os.path.join(folder, f))
+            if self._accept(f, os.path.join(folder, f))
+            and os.path.isfile(os.path.join(folder, f))
         )
         # ★ 再扫一层「翻译中间文件」夹 —— 缓存 / 报告 / 润色稿现在都放里面，
         #   用户选源文件夹时应该能直接选到它们（否则得再点进子目录一次）。
-        wd = os.path.join(folder, getattr(config, "WORK_DIR_NAME", ""))
-        if os.path.isdir(wd):
-            files += sorted(
-                os.path.join(wd, f)
-                for f in os.listdir(wd)
-                if self._accept(f) and os.path.isfile(os.path.join(wd, f))
-            )
+        #   游戏文本常按子目录分组（如 Text_chinese/A、/B），所以子目录下的
+        #   「翻译中间文件」也要扫到，否则报告 / 缓存会被整层跳过。
+        candidates = [folder] + [
+            os.path.join(folder, f)
+            for f in sorted(os.listdir(folder))
+            if os.path.isdir(os.path.join(folder, f))
+        ]
+        wd_name = getattr(config, "WORK_DIR_NAME", "")
+        for cand in candidates:
+            wd = os.path.join(cand, wd_name)
+            if os.path.isdir(wd):
+                files += sorted(
+                    os.path.join(wd, f)
+                    for f in os.listdir(wd)
+                    if self._accept(f, os.path.join(wd, f))
+                    and os.path.isfile(os.path.join(wd, f))
+                )
+            if len(files) >= 2000:      # 防大目录卡死，与 pick_game_root 同上限
+                break
         if not files:
             messagebox.showinfo("提示", self._hint_text().replace("\n", ""))
             return
@@ -1406,7 +1467,7 @@ class FilePanel(tk.Frame):
             for f in files:
                 if not f.lower().endswith(".txt"):
                     continue
-                if not self._accept(f):
+                if not self._accept(f, os.path.join(root, f)):
                     continue
                 found.append(os.path.join(root, f))
                 if len(found) >= 2000:
@@ -1885,9 +1946,6 @@ class SearchCombo(ttk.Combobox):
         if value is not None:
             self.set_value(value)
 
-    def set_resolver(self, fn):
-        """挂/换手输解析器（GameData.find_species 等）。"""
-        self._resolver = fn
 
     # -- 数据 --------------------------------------------------------------
     def set_pairs(self, pairs, keep: bool = True):
@@ -3508,6 +3566,7 @@ class App:
         self._page_intl()
         self._page_hanhua()
         self._page_termextract()
+        self._page_termcheck()
         self._page_translate()
         self._page_report()
         self._page_terms()
@@ -3620,6 +3679,28 @@ class App:
         fp.pack(fill="both", expand=True)
         self.file_panels.append(fp)
         return fp
+
+    def _drop_names_files(self, paths, action=""):
+        """
+        菜单 2–7 的公共入口：把**名字类文件**从待处理清单里剔除。
+
+        名字文件（*_NAMES / 开头 [编号] 是名字区块的那批）归「术语提取」管，
+        翻译 / 检查报告 / 术语重翻 / 中文润色 / 换行重排都不该碰它们 ——
+        否则同一批名词会被两条流水线各翻一遍，译法还可能不一致。
+
+        返回过滤后的清单；有跳过时弹一次提示（最多列 5 个文件名）。
+        """
+        import term_extract as TE
+
+        keep, skipped = TE.split_out_names_files(paths)
+        if skipped:
+            names = "、".join(os.path.basename(p) for p in skipped[:5])
+            more = f" 等 {len(skipped)} 个" if len(skipped) > 5 else ""
+            messagebox.showinfo(
+                "已跳过名字类文件",
+                f"{action or '该操作'}不处理名字类文本，已跳过：\n{names}{more}\n\n"
+                f"名字类文件请在「游戏汉化 → 术语提取」里处理。")
+        return keep
 
     def _sync_file_panels(self, paths):
         """
@@ -3846,6 +3927,13 @@ class App:
                 elif kind == "report":
                     self.set_busy(False, "检查完成")
                     self._fill_report(payload)
+                elif kind == "termcheck":
+                    self.set_busy(False, "术语检查完成")
+                    self._fill_termcheck(payload)
+                elif kind == "termcheck_applied":
+                    self._after_tc_applied(payload)
+                elif kind == "termcheck_retranslated":
+                    self._after_tc_retranslated(payload)
                 elif kind == "conflict_applied":
                     self.set_busy(False, "已应用手工编辑")
                     self._after_conflict_applied(payload)
@@ -4000,10 +4088,17 @@ class App:
                         _by = ("指纹完全吻合" if _exact else "最接近的一份基准")
                         self._emit_log(
                             f"[覆盖] 认出是 v{_bver}，用它覆盖\n")
+                    # ★ 这两个 ask 里会 run_async：必须先让本队列里的
+                    #   "done" 把 busy 清掉再弹确认框，否则 run_async 撞上
+                    #   busy=True → 弹「已有任务在运行」且覆盖静默不执行。
                     if _tag == "scene_map":
-                        self._do_overwrite_scene_map_ask(_d, _bver, _by)
+                        self.root.after(
+                            0, lambda: self._do_overwrite_scene_map_ask(
+                                _d, _bver, _by))
                     else:
-                        self._do_overwrite_menus_ask(_d, _bver, _by)
+                        self.root.after(
+                            0, lambda: self._do_overwrite_menus_ask(
+                                _d, _bver, _by))
                 elif kind == "dbg_scene_overwrite_done":
                     r = payload or {}
                     if r.get("ok"):
@@ -4120,6 +4215,39 @@ class App:
                               else "· 没有找到本工具做过的备份"),
                         fg=C_OK if n else C_KEY)
                     self._dbg_refresh_folder_info()
+                elif kind == "dbg_unpack_done":
+                    r = payload or {}
+                    if r.get("ok"):
+                        self.dbg_unpack_lbl.config(
+                            text=f"✔ 已解包 {r.get('plugins', 0)} 个插件 / "
+                                 f"{r.get('files', 0)} 个文件 → {r.get('root', '')}",
+                            fg=C_OK)
+                    else:
+                        errs = r.get("errors") or []
+                        self.dbg_unpack_lbl.config(
+                            text="✘ 解包失败：" + ("；".join(errs) if errs
+                                                else "未知原因"),
+                            fg=ERR_COLOR)
+                elif kind == "dbg_compile_done":
+                    r = payload or {}
+                    if r.get("ok"):
+                        n = r.get("updated", 0)
+                        bak = r.get("backup")
+                        self.dbg_compile_lbl.config(
+                            text=(f"✔ 已更新 {n} 个文件 → "
+                                  f"{r.get('container', '')}"
+                                  + (f"（备份 {os.path.basename(bak)}）"
+                                     if bak else "")
+                                  if n else
+                                  "· 没有需要更新的文件（改完 Plugins-p 里的 "
+                                  ".rb 再来点）"),
+                            fg=C_OK if n else C_KEY)
+                    else:
+                        errs = r.get("errors") or []
+                        self.dbg_compile_lbl.config(
+                            text="✘ 编译回容器失败：" + ("；".join(errs)
+                                                    if errs else "未知原因"),
+                            fg=ERR_COLOR)
                 elif kind == "prefix_done":
                     messagebox.showinfo("完成",
                                         "前缀字典已写入并应用到翻译文件")
@@ -4424,14 +4552,25 @@ class App:
         grid = tk.Frame(body, bg=CARD)
         grid.pack(fill="x")
         grid.grid_columnconfigure(1, weight=1)
-        for i, (key, name, desc) in enumerate(HANHUA_SUBMENUS):
+        for i, (key, name, _desc) in enumerate(HANHUA_SUBMENUS):
             GlassButton(grid, f"{i + 1}. {name}", width=228, height=46,
                         primary=(i == 0), bg=CARD, font=FONT_B,
                         command=lambda k=key: self.show(k)).grid(
                 row=i, column=0, sticky="w", pady=5)
-            tk.Label(grid, text=desc, bg=CARD, fg=C_HINT, font=FONT_SMALL,
-                     justify="left", wraplength=520).grid(
-                row=i, column=1, sticky="w", padx=(14, 0))
+
+        # ★ 右侧空白处：翻译流程说明（红色，逐行照抄 HANHUA_FLOW_STEPS）
+        #   字号定稿在 HANHUA_FLOW_TITLE_PT / HANHUA_FLOW_BODY_PT（见文件头），
+        #   wraplength 按最小窗口 1240 的可用宽取，保证最窄时也不冲出卡片。
+        flow = tk.Frame(grid, bg=CARD)
+        flow.grid(row=0, column=1, rowspan=len(HANHUA_SUBMENUS),
+                  sticky="nw", padx=(24, 0), pady=5)
+        tk.Label(flow, text="翻译流程（先启动本地模型服务）", bg=CARD, fg=C_FLOW,
+                 font=(FONT_FAMILY, HANHUA_FLOW_TITLE_PT, "bold")).pack(anchor="w")
+        self.hanhua_flow_lbl = tk.Label(
+            flow, text="\n".join(HANHUA_FLOW_STEPS), bg=CARD, fg=C_FLOW,
+            font=(FONT_FAMILY, HANHUA_FLOW_BODY_PT),
+            justify="left", wraplength=HANHUA_FLOW_WRAP)
+        self.hanhua_flow_lbl.pack(anchor="w", pady=(6, 0))
 
         # ★ 翻译期开关（默认值以 config.py 为准，勾选状态写回配置持久保存）
         optrow2 = tk.Frame(body, bg=CARD)
@@ -5078,28 +5217,40 @@ class App:
         left = tk.Frame(page, bg=BG_BASE)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.grid_columnconfigure(0, weight=1)
+        # ★ 行 1（名字文件卡）吃掉剩余高度。RoundCard 默认请求高度只有 10
+        #   （防 Canvas 默认 378x265 撑爆布局），pack(fill="x") 不撑高度 →
+        #   卡片塌成一条线、内容全看不见。必须 grid + 行权重，写法对齐
+        #   _page_translate / _page_terms / _page_polish。
+        left.grid_rowconfigure(1, weight=1)
 
         # ---- 卡 1：说明 ----
-        c1 = RoundCard(left, radius=16, pad=18)
-        c1.pack(fill="x", pady=(0, 10))
+        c1 = RoundCard(left, radius=16, pad=18, auto_height=True)
+        c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         tk.Label(c1.body, text="术语提取", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
         tk.Label(c1.body,
                  text="从名字文本文件里读专有名词，交给模型翻成目标语言，"
                       "写进术语表的「自动提取区」。\n"
-                      "可选单个名字文本，也可选整个文本文件夹。",
+                      "可选单个名字文本，也可选整个文本文件夹。\n"
+                      "翻译走与「翻译」同一套提示词（system_translate_jsonline），"
+                      "只是在翻完后把原文与译文计入术语表。\n"
+                      "与翻译一样带缓存：中途取消 / 中断后重跑，已翻过的"
+                      "条目不会重复送模型（缓存在目标文件夹的「翻译中间文件」夹）。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=560).pack(anchor="w", pady=(4, 0))
 
         # ---- 卡 2：识别到的名字文件 ----
         c2 = RoundCard(left, radius=16, pad=16)
-        c2.pack(fill="x", pady=(0, 10))
+        c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
         tk.Label(c2.body, text="识别到的名字文件", bg=CARD, fg=C_TITLE,
                  font=FONT_B).pack(anchor="w")
+        # ★ 整套文本夹能识别出几十个名字文件，列表放滚动区里，不会溢出卡片
+        scr_outer, scr_inner = make_scroll_area(c2.body, bg=CARD)
+        scr_outer.pack(fill="both", expand=True, pady=(6, 0))
         self.te_files_lbl = tk.Label(
-            c2.body, text="（还没选文件）", bg=CARD, fg=TEXT,
+            scr_inner, text="（还没选文件）", bg=CARD, fg=TEXT,
             font=FONT_SMALL, justify="left", anchor="w", wraplength=560)
-        self.te_files_lbl.pack(anchor="w", pady=(6, 0))
+        self.te_files_lbl.pack(anchor="w")
         tk.Label(c2.body,
                  text="读法（区块号优先）：① 开头的 [编号] 是名字区块（如 "
                       "[1] 宝可梦名 / [5] 招式 / [7] 道具 / [12] 属性 / [30] 昵称）；"
@@ -5110,8 +5261,8 @@ class App:
                  wraplength=560).pack(anchor="w", pady=(6, 0))
 
         # ---- 卡 3：预览 / 开始 ----
-        c3 = RoundCard(left, radius=16, pad=18)
-        c3.pack(fill="x")
+        c3 = RoundCard(left, radius=16, pad=18, auto_height=True)
+        c3.grid(row=2, column=0, sticky="ew")
         row = tk.Frame(c3.body, bg=CARD)
         row.pack(fill="x")
         GlassButton(row, "预览待翻条数", width=150, height=42, bg=CARD,
@@ -5120,6 +5271,11 @@ class App:
         GlassButton(row, "开始提取并翻译", width=180, height=46, primary=True,
                     bg=CARD, font=FONT_B,
                     command=self._te_run).pack(side="left", padx=(10, 0))
+        # ★ 提取之后的检查/修正功能：检查报告（可直接改译文，不走模型）
+        GlassButton(row, "检查报告", width=120, height=46, bg=CARD,
+                    font=FONT_B,
+                    command=self._goto_termcheck).pack(side="left",
+                                                       padx=(10, 0))
         self.te_stat_lbl = tk.Label(c3.body, text="", bg=CARD, fg=C_KEY,
                                     font=FONT_SMALL, justify="left",
                                     wraplength=560)
@@ -5169,7 +5325,7 @@ class App:
             return
         config.Runtime.set_dir(os.path.dirname(path) or config.BASE_DIR)
         self.te_target = path
-        self.te_src_lbl.config(text=os.path.basename(path))
+        self._sync_te_src_labels()
         self._te_preview()
 
     def _te_pick_folder(self):
@@ -5182,7 +5338,7 @@ class App:
             return
         config.Runtime.set_dir(folder)
         self.te_target = folder
-        self.te_src_lbl.config(text=folder)
+        self._sync_te_src_labels()
         self._te_preview()
 
     def _te_preview(self):
@@ -5222,10 +5378,17 @@ class App:
 
         lines = [f"{TE.label_of(k)}：{len(v)}"
                  for k, v in p["by_section"].items()]
+        # ★ 缓存命中要单独说：与正常翻译一样，「取消/中断后重跑」时
+        #   这部分不会重新送模型，用户看到数字才对得上。
+        cache_note = ""
+        if p.get("in_cache"):
+            cache_note = (f"\n其中 {p['in_cache']} 条上次已翻过（有缓存），"
+                          f"这次不会重复送模型。")
         self.te_stat_lbl.config(
             text=f"共识别 {len(p['files'])} 个名字文件、{p['found']} 条候选；"
                  f"术语表里还没有的有 {p['todo']} 条（只会翻这些）。\n"
                  + ("　".join(lines) if lines else "　（都已有译名）")
+                 + cache_note
                  + warn)
         self.te_info_lbl.config(text="已读取文本文件 ✔")
 
@@ -5249,22 +5412,452 @@ class App:
                 "NAME / NAMES / NICKNAMES 词，或开头 [编号] 是名字区块。")
             return
         if not p["todo"]:
-            messagebox.showinfo("提示", "术语表里已经有全部候选的译名，无需提取。")
+            # 没有待翻项也可能是「上次翻到一半」：缓存里的译文要补进术语表
+            msg = "术语表里已经有全部候选的译名，无需提取。"
+            if p.get("in_cache"):
+                msg = (f"待翻的都翻完了，但缓存里还有 {p['in_cache']} 条"
+                       f"上次翻好、没写进术语表的译名。\n"
+                       f"现在把它们补进术语表（自动提取区）吗？")
+                if not messagebox.askyesno("确认", msg):
+                    return
+                self.show("log")
+                self.run_async(
+                    lambda: TE.run_extract(
+                        target, cancel=lambda: self._cancel_flag),
+                    label=f"补写 {p['in_cache']} 条缓存术语…",
+                    done_label="术语提取完成")
+                return
+            messagebox.showinfo("提示", msg)
             return
+        resume = ""
+        if p.get("in_cache"):
+            resume = (f"\n其中 {p['in_cache']} 条上次已翻过（有缓存），"
+                      f"不会重复送模型。")
         if not messagebox.askyesno(
                 "确认", f"将从 {len(p['files'])} 个名字文件里读到的 "
                         f"{p['todo']} 条术语送模型翻译，"
-                        f"翻完自动写进术语表（自动提取区）。\n（批量大小 "
-                        f"{getattr(config, 'TERM_EXTRACT_BATCH', 40)} 条/次）"
+                        f"翻完自动写进术语表（自动提取区）。\n"
+                        f"（走与「翻译」同一条流水线，会同时产出译文文件"
+                        f"与检查报告）"
+                        f"{resume}"
+                        f"\n中途取消也没关系：已翻的会进缓存，下次接着翻。"
                         f"\n继续？"):
             return
         self.show("log")
+        # ★ run_extract 内部的正常翻译批循环看的是 bridge.cancelled()，
+        #   所以它会把传进去的 cancel 接到 bridge 上再还原。这里必须传
+        #   **GUI 自己的取消标志**，不能传 bridge.cancelled —— 那会让
+        #   run_extract 写成 bridge._cancel_fn = lambda: bridge.cancelled()，
+        #   自引用递归到上限后被 except 吞掉、恒返回 False，取消按钮就失效了。
         self.run_async(
-            lambda: TE.run_extract(target),
+            lambda: TE.run_extract(target, cancel=lambda: self._cancel_flag),
             label=f"提取并翻译 {p['todo']} 条术语…",
             done_label="术语提取完成",
         )
 
+    # ================================================================
+    # 页面：术语检查报告（只读缓存与术语表；改译名不走模型，重翻走模型）
+    # ================================================================
+    def _page_termcheck(self):
+        page = self.pages["termcheck"]
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+        page.grid_columnconfigure(1, weight=0)
+
+        left = tk.Frame(page, bg=BG_BASE)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_rowconfigure(1, weight=1)
+        left.grid_columnconfigure(0, weight=1)
+
+        c1 = RoundCard(left, radius=16, pad=18, auto_height=True)
+        c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        tk.Label(c1.body, text="术语检查报告", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        tk.Label(c1.body,
+                 text="只看术语提取的缓存与术语表，把有问题的译名列出来。\n"
+                      "双击「译名」列即可改，点「应用修改」写回缓存、译文文件"
+                      "与术语表（改译名 / 应用修改不走模型）；\n"
+                      "点「术语重翻」会删掉选中条目的缓存并重走翻译流水线"
+                      "（★ 会调用模型），\n"
+                      "重翻时每批翻完立刻把新译名并进术语表自动提取区，"
+                      "同一文件的后续批次马上用上。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=560).pack(anchor="w", pady=(4, 0))
+
+        c2 = RoundCard(left, radius=16, pad=14)
+        c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        head = tk.Frame(c2.body, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text="问题列表", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+        GlassButton(head, "刷新报告", width=104, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_term_check).pack(side="left", padx=12)
+        self.tc_stat = tk.Label(head, text="尚未检查", bg=CARD, fg=C_KEY,
+                                font=FONT_BIG)
+        self.tc_stat.pack(side="right")
+        attach_label_copy(self.tc_stat, self, "统计")
+
+        # 搜索框（与重翻检查报告页同风格）+ 问题类型筛选
+        sb = tk.Frame(c2.body, bg=CARD)
+        sb.pack(fill="x", pady=(8, 0))
+        tk.Label(sb, text="搜索", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL).pack(side="left")
+        self.tc_search = tk.StringVar()
+        ent = ttk.Entry(sb, textvariable=self.tc_search, width=16, font=FONT)
+        ent.pack(side="left", padx=6)
+        ent.bind("<KeyRelease>", lambda _e: self._render_tc_rows())
+        ent.bind("<Return>", lambda _e: self._render_tc_rows())
+        tk.Label(sb, text="问题类型", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL).pack(side="left", padx=(14, 4))
+        self.tc_kind_vars = {}
+        for kind in TFX_KIND_ORDER:
+            var = tk.BooleanVar(value=True)
+            self.tc_kind_vars[kind] = var
+            tk.Checkbutton(sb, text=kind, variable=var,
+                           bg=CARD, fg=TEXT, activebackground=CARD,
+                           selectcolor="#FFFFFF", font=FONT_SMALL,
+                           command=self._render_tc_rows).pack(side="left")
+
+        wrap = tk.Frame(c2.body, bg=CARD)
+        wrap.pack(fill="both", expand=True, pady=(8, 0))
+        cols = ("kind", "section", "src", "dst", "detail")
+        tree = ttk.Treeview(wrap, columns=cols, show="headings", height=3)
+        for c, w, t in (("kind", 130, "问题类型"), ("section", 92, "类别"),
+                        ("src", 170, "原文"), ("dst", 150, "译名（可编辑）"),
+                        ("detail", 200, "说明")):
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        sb2 = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb2.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb2.pack(side="right", fill="y")
+        # ★ 只开放「译名」列（#4）编辑，原文列只读
+        bind_tree_edit(tree, {"#4": True}, on_commit=self._on_tc_edit)
+        self.tc_tree = tree
+        tree.tag_configure("k_bad", background="#FFE9E9")
+        tree.tag_configure("k_warn", background="#FFF4D6")
+        tree.tag_configure("k_edit", background="#E3F2E1")
+        bind_tree_wheel(tree)
+        attach_tree_copy(tree, self)
+
+        c3 = RoundCard(left, radius=16, pad=18, auto_height=True)
+        c3.grid(row=2, column=0, sticky="ew")
+        btn_row = tk.Frame(c3.body, bg=CARD)
+        btn_row.pack(fill="x")
+        GlassButton(btn_row, "复制列表", width=118, height=46, bg=CARD,
+                    font=FONT_BIG,
+                    command=self._copy_tc_list).pack(side="left")
+        GlassButton(btn_row, "打开报告文件", width=140, height=46, bg=CARD,
+                    font=FONT_BIG,
+                    command=self._open_tc_report).pack(side="left", padx=10)
+        GlassButton(btn_row, "撤销改动", width=118, height=46, bg=CARD,
+                    font=FONT_BIG,
+                    command=self._undo_tc_edits).pack(side="left", padx=10)
+        GlassButton(btn_row, "应用修改", width=140, height=46, primary=True,
+                    bg=CARD, font=FONT_BIG,
+                    command=self._do_apply_tc).pack(side="left", padx=10)
+        GlassButton(btn_row, "术语重翻", width=140, height=46, primary=True,
+                    bg=CARD, font=FONT_BIG,
+                    command=self._do_tc_retranslate).pack(side="right")
+        tk.Label(c3.body,
+                 text="报告文件与术语缓存同目录（`<目标名>_terms_check.txt`）；"
+                      "本页数据都来自缓存与术语表，改译名 / 应用修改不走模型；"
+                      "「术语重翻」会删掉选中条目的缓存并重走翻译流水线"
+                      "（会调用模型），\n"
+                      "并把每批翻出的新译名逐批写进术语表自动提取区。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=560).pack(anchor="w", pady=(8, 0))
+
+        # 右侧：目标文件来源（与术语提取页共用 te_target）
+        holder = RoundCard(page, radius=16, pad=8, width=272)
+        holder.grid(row=0, column=1, sticky="nsew", rowspan=3)
+        holder.grid_propagate(False)
+        body = holder.body
+        tk.Label(body, text="要检查的文本", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", padx=8, pady=(8, 4))
+        GlassButton(body, "选择文本文件", width=150, height=38, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._te_pick_file).pack(anchor="w", padx=8)
+        GlassButton(body, "选择文件夹", width=150, height=38, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._te_pick_folder).pack(anchor="w", padx=8,
+                                                       pady=(6, 0))
+        self.tc_src_lbl = tk.Label(body, text="未选择", bg=CARD, fg=C_KEY,
+                                   font=FONT_SMALL, wraplength=250,
+                                   justify="left")
+        self.tc_src_lbl.pack(anchor="w", padx=8, pady=(6, 0))
+        self.tc_info_lbl = tk.Label(body, text="", bg=CARD, fg=C_HINT,
+                                    font=FONT_SMALL, wraplength=250,
+                                    justify="left")
+        self.tc_info_lbl.pack(anchor="w", padx=8, pady=(8, 0))
+        tk.Label(body,
+                 text="选单个名字文本，或整个游戏文本文件夹。\n"
+                      "读的就是术语提取缓存里已有的那些译名。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, wraplength=250,
+                 justify="left").pack(anchor="w", padx=8, pady=(10, 0))
+
+    def _te_target_ready(self, lbl):
+        """术语检查 / 修正共用的目标检查：没选目标就提示并返回 ""。"""
+        target = getattr(self, "te_target", "")
+        if not target:
+            messagebox.showwarning("提示", "请先在右侧选择文本文件或文件夹")
+            return ""
+        return target
+
+    def _do_term_check(self):
+        import term_fix as TFX
+
+        target = self._te_target_ready(None)
+        if not target:
+            return
+
+        def work():
+            hits = TFX.check_terms(target)
+            path = TFX.write_report(target, hits)
+            self.q.put(("termcheck", (hits, path)))
+
+        if self.busy:
+            messagebox.showinfo("提示", "已有任务在运行")
+            return
+        self.set_busy(True, "正在检查术语…")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _fill_termcheck(self, payload):
+        hits, path = payload if isinstance(payload, tuple) else (payload, "")
+        self.tc_hits = list(hits or [])
+        self.tc_report_path = path
+        self.tc_edits = {}           # {原文: 新译名}
+        self.tc_edit_stack = []      # [(原文, 旧译名, 新译名)] 供撤销
+        self._render_tc_rows()
+        n = len(self.tc_hits)
+        self.status_var.set(f"术语检查完成：{n} 处问题"
+                            + (f"　报告：{os.path.basename(path)}" if path
+                               else ""))
+
+    def _tc_filtered_hits(self):
+        """当前**筛选后显示**的问题条目（口径与 _render_tc_rows 完全一致）。"""
+        kw = (self.tc_search.get() or "").strip().lower()
+        kinds = {k for k, v in getattr(self, "tc_kind_vars", {}).items()
+                 if v.get()}
+        out = []
+        for h in getattr(self, "tc_hits", []) or []:
+            if kinds and h.get("kind", "") not in kinds:
+                continue
+            if kw and kw not in (h.get("src", "") + h.get("dst", "")
+                                 + h.get("detail", "")
+                                 + h.get("kind", "")).lower():
+                continue
+            out.append(h)
+        return out
+
+    def _render_tc_rows(self):
+        tree = self.tc_tree
+        for iid in tree.get_children():
+            tree.delete(iid)
+        edits = getattr(self, "tc_edits", {}) or {}
+        shown = 0
+        for h in self._tc_filtered_hits():
+            dst = edits.get(h.get("src", ""), h.get("dst", ""))
+            tag = ("k_bad" if h["kind"] in ("译名为空", "未翻（回显原文）",
+                                            "疑似机翻残留", "译文残留英文")
+                   else "k_warn")
+            if h.get("src", "") in edits:
+                tag = "k_edit"
+            tree.insert("", "end", values=(h.get("kind", ""),
+                                           h.get("section", ""),
+                                           h.get("src", ""),
+                                           dst or "（空）",
+                                           h.get("detail", "")), tags=(tag,))
+            shown += 1
+        total = len(getattr(self, "tc_hits", []) or [])
+        n_edit = len(edits)
+        txt = f"显示 {shown} / 共 {total} 处问题"
+        if n_edit:
+            txt += f" / 改 {n_edit}"
+        self.tc_stat.config(text=txt)
+
+    def _on_tc_edit(self, row, col, value):
+        """双击改完「译名」列：记进待应用清单（原文列不可编辑）。"""
+        try:
+            src = self.tc_tree.item(row)["values"][2]
+        except Exception:
+            return
+        if not str(value).strip():
+            messagebox.showinfo("提示", "译名不能为空；要清空请到术语字典里删。")
+            self._render_tc_rows()       # 回滚显示
+            return
+        self.tc_edits = getattr(self, "tc_edits", {}) or {}
+        self.tc_edit_stack = getattr(self, "tc_edit_stack", []) or []
+        old = ""
+        for h in getattr(self, "tc_hits", []) or []:
+            if h.get("src", "") == src:
+                old = h.get("dst", "") or ""
+                break
+        if value == old:
+            if src in getattr(self, "tc_edits", {}):
+                del self.tc_edits[src]
+        else:
+            self.tc_edits[src] = value
+            self.tc_edit_stack.append((src, old, value))
+        self._render_tc_rows()
+        self.q.put(("log", f"[术语检查] {src}：{old or '（空）'} → {value}\n"))
+
+    def _undo_tc_edits(self):
+        """撤销最近一次改动（可连续点）。"""
+        stack = getattr(self, "tc_edit_stack", None) or []
+        if not stack:
+            messagebox.showinfo("提示", "还没有改动可以撤销")
+            return
+        src, old, _new = stack.pop()
+        if src in self.tc_edits:
+            del self.tc_edits[src]
+        self._render_tc_rows()
+        self.q.put(("log", f"[术语检查] 已撤销：{src} → {old or '（空）'}\n"))
+
+    def _do_apply_tc(self):
+        import term_fix as TFX
+
+        target = self._te_target_ready(None)
+        if not target:
+            return
+        edits = dict(getattr(self, "tc_edits", {}) or {})
+        if not edits:
+            messagebox.showinfo("提示", "还没有改动：双击「译名」列改一条再应用")
+            return
+        if not messagebox.askyesno(
+                "确认",
+                f"将把 {len(edits)} 条译名写进：\n"
+                f"① 术语提取缓存\n"
+                f"② 名字文件的译文文件（如有）\n"
+                f"③ 术语表的自动提取区\n\n"
+                f"整个过程不调用模型。继续？"):
+            return
+
+        def work():
+            st = TFX.apply_fixes(target, edits)
+            self.q.put(("termcheck_applied", st))
+
+        self.show("log")
+        self.run_async(work, label=f"写入 {len(edits)} 条译名…",
+                       done_label="术语检查修改已应用")
+
+    def _after_tc_applied(self, st):
+        st = st or {}
+        msg = (f"术语检查修改完成：缓存 {st.get('cache', 0)} 条、"
+               f"术语表 {st.get('dict', 0)} 条")
+        if st.get("files"):
+            msg += f"、译文文件 {st['files']} 个"
+        if st.get("missing"):
+            msg += f"；有 {st['missing']} 条在译文文件里没找到对应行"
+        self.q.put(("log", msg + "\n"))
+        self.tc_edits = {}
+        self.tc_edit_stack = []
+        try:
+            self._do_term_check()        # 重新检查，刷新列表
+        except Exception:
+            pass
+
+    def _do_tc_retranslate(self):
+        """
+        「术语重翻」：对当前筛选显示的条目，删掉缓存里的 key，
+        再走一遍正常翻译流水线让模型重翻（★ 会调用模型）。
+        """
+        import term_fix as TFX
+
+        target = self._te_target_ready(None)
+        if not target:
+            return
+
+        hits = self._tc_filtered_hits()
+        items = [{"src": h.get("src", ""), "path": h.get("path", "")}
+                 for h in hits if h.get("src") and h.get("path")]
+        if not items:
+            messagebox.showinfo(
+                "提示", "当前筛选后没有可重翻的条目。\n"
+                        "（请先「刷新报告」，并确认问题类型没有全被取消勾选）")
+            return
+
+        n_files = len({it["path"] for it in items})
+        if not messagebox.askyesno(
+                "确认重翻",
+                f"将对当前筛选后显示的 {len(items)} 条术语重翻，"
+                f"涉及 {n_files} 个名字文件：\n\n"
+                f"① 删掉这些条目在翻译缓存里的 key\n"
+                f"② 走正常翻译流水线重翻（会重新解析、注入术语、"
+                f"分批送模型）\n\n"
+                f"★ 这一步会调用模型，请确认已配好模型。继续？"):
+            return
+
+        def work():
+            import term_extract as TE
+            # ★ 逐批提取：每批翻完立刻并进术语表并重载，同一文件后续批次
+            #   马上用上新译名（与术语提取页同一条流水线）。
+            st = TFX.retranslate(
+                target, items,
+                cancel=lambda: self._cancel_flag,
+                batch_term_hook=TE.make_batch_term_hook(None))
+            self.q.put(("termcheck_retranslated", st))
+
+        self.show("log")
+        self.run_async(work, label=f"重翻 {len(items)} 条…",
+                       done_label="术语重翻完成")
+
+    def _after_tc_retranslated(self, st):
+        st = st or {}
+        msg = (f"术语重翻完成：{st.get('translated', 0)} 条 / "
+               f"{st.get('files', 0)} 个文件，删掉缓存 {st.get('removed', 0)} 条")
+        self.q.put(("log", msg + "\n"))
+        # ★ 这条消息和 run_async 的 "done" 会落在**同一次** _pump 里，
+        #   现在 self.busy 还是 True，直接 _do_term_check() 会被 busy 挡掉；
+        #   挪到下一轮再刷新列表。
+        try:
+            self.root.after(150, self._do_term_check)
+        except Exception:
+            pass
+
+    def _copy_tc_list(self):
+        """把术语检查报告当前显示的内容复制成制表符分隔文本。"""
+        self.copy_to_clipboard(tree_text(self.tc_tree), "术语检查列表")
+
+    def _open_tc_report(self):
+        path = getattr(self, "tc_report_path", "")
+        if not path or not os.path.isfile(path):
+            messagebox.showinfo("提示", "还没有报告文件，请先点「刷新报告」")
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(path)          # noqa: S606
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            messagebox.showwarning("打开失败", f"{e}\n请手动打开：{path}")
+
+    def _goto_termcheck(self):
+        """术语提取 → 检查报告：带着同一个目标过去。"""
+        self.show("termcheck")
+        target = getattr(self, "te_target", "")
+        if target:
+            self._sync_te_src_labels()
+            self._do_term_check()
+        else:
+            self.tc_info_lbl.config(text="请在右侧选择文本文件或文件夹。")
+
+    def _sync_te_src_labels(self):
+        """术语页共用 te_target，把右侧来源标签同步成当前目标。"""
+        target = getattr(self, "te_target", "") or "未选择"
+        for lbl in ("te_src_lbl", "tc_src_lbl"):
+            w = getattr(self, lbl, None)
+            if w is not None:
+                try:
+                    w.config(text=target)
+                except Exception:
+                    pass
+
+    # ================================================================
+    # 页面：翻译
+    # ================================================================
     def _page_translate(self):
         page = self.pages["translate"]
         page.grid_columnconfigure(0, weight=1)
@@ -5323,6 +5916,9 @@ class App:
         paths = self.fp_translate.ensure()
         if not paths:
             messagebox.showwarning("提示", "请先在右侧选择要翻译的文件")
+            return
+        paths = self._drop_names_files(paths, "翻译")
+        if not paths:
             return
         src, tgt, model = self.src_var.get(), self.tgt_var.get(), self.model_var.get()
         if src and tgt and src == tgt:
@@ -6421,7 +7017,7 @@ class App:
                 srcs.append(s)
             else:
                 self._append_log(f"[跳过] 找不到报告对应的源文件：{p}\n")
-        return srcs
+        return self._drop_names_files(srcs, "检查报告 / 重翻")
 
     def _do_retranslate_report(self):
         paths = self._report_sources()
@@ -7599,7 +8195,10 @@ class App:
     def _do_reflow(self):
         paths = self.fp_reflow.ensure()
         if not paths:
-            messagebox.showwarning("提示", "请先选择要重排的文件")
+            messagebox.showwarning("提示", "请先在右侧选择要重排的文件")
+            return
+        paths = self._drop_names_files(paths, "换行重排")
+        if not paths:
             return
 
         # ★ 重排范围：勾了「仅重排选中的区块」就只动选中的那些
@@ -9710,6 +10309,44 @@ class App:
                  justify="left", wraplength=200).pack(anchor="w", padx=10,
                                                       pady=(10, 0))
 
+        # ---- 右侧最下：插件解包 / 编译回容器 ----
+        tk.Label(body, text="插件解包", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w", padx=10, pady=(14, 4))
+        GlassButton(body, "插件解包", width=196, height=36,
+                    bg=CARD, font=FONT_SMALL,
+                    command=self._do_unpack_plugins).pack(anchor="w", padx=10)
+        self.dbg_unpack_lbl = tk.Label(body, text="", bg=CARD, fg=C_KEY,
+                                       font=FONT_SMALL, wraplength=200,
+                                       justify="left")
+        self.dbg_unpack_lbl.pack(anchor="w", padx=10, pady=(6, 0))
+        attach_label_copy(self.dbg_unpack_lbl, self, "插件解包结果")
+        tk.Label(body,
+                 text="把 Data/PluginScripts.rxdata 解包到游戏目录的 "
+                      "Plugins-p 文件夹（每个插件一个子目录，"
+                      "插件里原有的子目录结构照原样保留）。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=200).pack(anchor="w", padx=10,
+                                                      pady=(6, 0))
+        GlassButton(body, "编译回容器", width=196, height=36,
+                    bg=CARD, font=FONT_SMALL,
+                    command=self._do_compile_back).pack(anchor="w", padx=10,
+                                                        pady=(10, 0))
+        # 单独一个标签：编译回容器的结果（更新了几个 / 备份名）和解包结果
+        # 是两件事，共用一个标签会让上一次的结果被覆盖掉，看着像丢了。
+        self.dbg_compile_lbl = tk.Label(body, text="", bg=CARD, fg=C_KEY,
+                                        font=FONT_SMALL, wraplength=200,
+                                        justify="left")
+        self.dbg_compile_lbl.pack(anchor="w", padx=10, pady=(6, 0))
+        attach_label_copy(self.dbg_compile_lbl, self, "编译回容器结果")
+        tk.Label(body,
+                 text="改完 Plugins-p 里的 .rb 后，点「编译回容器」才会生效"
+                      "—— 游戏运行时读的是 Data/PluginScripts.rxdata，"
+                      "不会自己去读 Plugins-p。写回前会先把原容器备份成 "
+                      "PluginScripts.rxdata.<时间戳>.bak。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=200).pack(anchor="w", padx=10,
+                                                      pady=(6, 0))
+
     # ---------- 菜单 5（开启DEBUG）：小工具 ----------
     _DEBUG_MODE_DESC = {
         "main": "方式①（通用）：在 Main 的 mainFunction 里写 $DEBUG=true，"
@@ -9953,18 +10590,6 @@ class App:
             except Exception:
                 pass
 
-    def _dbg_pick_folder(self):
-        """选游戏主程序 exe → 推出游戏根目录（同时把 exe 记下来）。"""
-        d, exe = pick_game_exe_dialog(
-            self.root,
-            initialdir=(config.Runtime.last_dir
-                        if config.Runtime.last_dir
-                        and os.path.isdir(config.Runtime.last_dir)
-                        else config.BASE_DIR),
-            title="选择游戏主程序")
-        if not d:
-            return
-        self._dbg_apply_selection(d, exe_path=exe)
 
 
     def _dbg_refresh_folder_info(self):
@@ -11716,6 +12341,38 @@ class App:
 
         self.run_async(work, label="还原中…", done_label="还原完成")
 
+    def _do_unpack_plugins(self):
+        """把 Data/PluginScripts.rxdata 解包成松散 .rb → <游戏目录>/Plugins-p。"""
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        self.show("log")
+        out = os.path.join(d, "Plugins-p")
+
+        def work():
+            import game_scripts as GS
+            res = GS.unpack_plugin_scripts(d, out, emit=self._emit_log)
+            self.q.put(("dbg_unpack_done", res))
+            return res
+
+        self.run_async(work, label="插件解包中…", done_label="插件解包完成")
+
+    def _do_compile_back(self):
+        """把 Plugins-p 里改过的 .rb 就地写回 Data/PluginScripts.rxdata。"""
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        self.show("log")
+        src = os.path.join(d, "Plugins-p")
+
+        def work():
+            import game_scripts as GS
+            res = GS.compile_back_plugin_scripts(d, src, emit=self._emit_log)
+            self.q.put(("dbg_compile_done", res))
+            return res
+
+        self.run_async(work, label="编译回容器中…", done_label="编译回容器完成")
+
     def _emit_log(self, text):
         """把命令行的输出同步到日志页。"""
         self.q.put(("log", f"{text}\n"))
@@ -11939,12 +12596,6 @@ class App:
                     command=lambda: self.show("saveedit")).pack(side="right")
         return lbl
 
-    def _no_save_hint(self, holder, text="还没有选择存档"):
-        for w in holder.winfo_children():
-            w.destroy()
-        tk.Label(holder, text=f"{text}\n\n请在右侧「选择游戏存档」里选好游戏目录与存档。",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
-                 wraplength=520).pack(anchor="w", padx=6, pady=16)
 
     def _make_tree(self, parent, columns, widths=None, height=12,
                    stretch_all=False):
@@ -12058,6 +12709,7 @@ class App:
         if sv is None:
             tk.Label(body, text="（右侧选中存档后这里会显示概览）", bg=CARD,
                      fg=C_HINT, font=FONT_SMALL).pack(anchor="w", pady=(4, 0))
+            self._fit_overview_card()
             return
         tr = sv.g("$Trainer").ivars
         party = [p for p in (tr.get("@party") or []) if not sv.empty_slot(p)]
@@ -12090,6 +12742,24 @@ class App:
         for ln in lines:
             tk.Label(body, text=ln, bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
                      anchor="w").pack(anchor="w")
+        self._fit_overview_card()
+
+    def _fit_overview_card(self):
+        """概览卡高度兜底。
+
+        auto_height 靠 body 的 <Configure> 驱动（_body_resize）。body 因故
+        没被 map 过时这条链一次都不触发，卡片会保持 RoundCard 默认的 10px
+        请求高度 → 整张卡看不见。这里按 body 的请求高度补一次（与
+        _body_resize 同公式），正常链生效时值相同、不会打架。
+        """
+        card = getattr(self, "overview_card", None)
+        body = getattr(self, "overview_body", None)
+        if card is None or body is None:
+            return
+        try:
+            card.configure(height=body.winfo_reqheight() + card.pad * 2 + 8)
+        except Exception:
+            pass
 
     # ================================================================
     # 子页面 1：主角编辑

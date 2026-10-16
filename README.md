@@ -216,6 +216,58 @@ char count + minimum gap) for `[map*]` blocks (`\n`) and for all other blocks
 Rewrapping only rearranges line breaks and spaces: it never changes the translated
 text and never calls the model, and running it twice with the same settings is a no-op.
 
+### Term Extraction (Game localization → Term extraction)
+
+Reads the proper nouns out of the game's exported name files (`ITEM_NAMES` /
+`MOVE_NAMES` / `TYPE_NAMES` / `POKEMON_NICKNAMES` …, or any file whose leading
+`[number]` block is a name block), sends them to the model, and writes the
+resulting `source → translation` pairs into the AUTO block of `term_dict.py`.
+
+**It is the regular translation pipeline**, just doing a different job:
+
+- it runs the exact same pipeline as Translate (menu 2) over the name files,
+  producing ordinary `*_translated.txt` files, ordinary translation caches
+  (`*_cache.json`) and check reports;
+- so **resume-from-cache, whole-sentence term substitution and injecting hit
+  terms into the prompt all work exactly as usual**;
+- the only difference is *when* the terminology list is updated: **after every
+  batch** those `source → translation` pairs are merged into the `term_dict.py`
+  AUTO block via `auto_terms.merge_into_term_dict()` and the list is reloaded
+  immediately, so **later batches of the same file use the new terms right
+  away**; a final whole-file merge runs at the end as a safety net (already
+  merged entries are not counted twice).
+
+Resuming and resetting the cache work just like ordinary translation (delete the
+corresponding `*_cache.json` to re-translate).
+
+#### Term check report (no model calls for edits; re-translation does call the model)
+
+Buttons to the right of "Start extraction & translation" on the term
+extraction page:
+
+| Button | What it does |
+| --- | --- |
+| Check report | Reads only the translation cache and the terminology list and classifies every entry into one of four mutually exclusive kinds, in this order — empty translation, untranslated (echoed source), leftover English in the translation, likely machine-translation leftovers — plus the additive same source/different translation — into `<target>_terms_check.txt`. The page filters by problem kind; **double-clicking the translation column edits a translation**, and "Apply" writes the changes into (1) the translation cache, (2) the name file's translated file, and (3) the AUTO block of the terminology list, with per-edit undo. **Editing a translation / "Apply" do not call the model.** |
+| Re-translate terms | For the rows currently shown after filtering: (1) deletes their keys from the translation cache, (2) re-runs the normal translation pipeline (re-parse, whole-sentence term lookup, term injection into the prompt, batched model calls), (3) merges each batch's new translations into the AUTO block of the terminology list and reloads it, exactly like the extraction page. **This one does call the model.** |
+
+> Name files (`*_NAMES`, or any file whose leading `[number]` block is a name
+> block) belong to term extraction only: translate / re-translate report /
+> terminology re-translation / Chinese polish / line rewrap all skip them
+> automatically, and the file panels no longer list them.
+
+#### Translation workflow (red text on the right of the Game-localization page)
+
+1. Term extraction — every file to translate goes through term extraction first
+2. Term fix — check the terms for omissions or mistranslations
+3. Translate — translate the non-term files
+4. Re-translate check report — fix the problematic sentences
+5. Check terms — see whether any term needs updating, and fix the related sentences
+6. Review the prefix dictionary — only `\tg[]` contents are translated
+7. Chinese polish — improve translation quality
+8. Line rewrap — re-wrap the sentences
+9. When everything is translated, delete the auto-extracted terms in 10. Terminology dictionary
+
+
 ### Terminology List
 
 Prepare an Excel file where each sheet has language column headers (e.g. `English`, `Simplified Chinese`).

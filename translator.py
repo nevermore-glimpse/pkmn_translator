@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 Ollama 客户端 + 批量翻译 / 中文润色。
-  · 翻译与术语提取一次完成（术语以 @@T: 行内联返回）
+  · 翻译：输出固定 JSON，每行 {"id":N,"text":"译文"}
+  · 术语提取（term_extract.py）**就是这条翻译流水线**：名字文件直接走
+    正常翻译，翻完由 term_extract 把「原文→译文」并进术语表
   · 整批失败 → 重试 → 拆分两半 → 递归
   · 无推理模式（think=False），旧版 Ollama 自动降级
   · 提示词模板外置到 prompts/ 目录（按目标语言覆盖），文件缺失用内置默认
-  · 输出格式固定 JSON：每行 {"id":N,"text":"译文"}（术语提取已改为
-    从名字文本文件抽取，见 term_extract.py）
   · 云端 API：多 Key 轮换 + 冷却阶梯 + 并发自适应（429 减半 / 成功 +1）
 """
 import os
@@ -92,31 +92,9 @@ JSON 字符串里的双引号必须转义成 \"；换行必须转义成 \n。
 正文里若出现 <数字> 字样的游戏内容，那是台词本身，原样保留在译文里。
 """
 
-_USER_TEMPLATE_JSONLINE = r"""{terms_block}{context_block}把下面每条翻译成{tgt}，每行输出一条 JSON，格式：
+_USER_TEMPLATE_JSONLINE = r"""{context_block}把下面每条翻译成{tgt}，每行输出一条 JSON，格式：
 {"id":<编号>,"text":"<译文>"}
-输入：
-{body}
-"""
-
-# ---------------- 术语提取（从名字文本文件提名字后丢给模型翻） ----------------
-SYSTEM_PROMPT_TERMS = r"""你是游戏术语本地化专家。用户给你一批游戏专有名词（宝可梦名 /
-招式名 / 道具名 / 特性名 / 属性名 / 训练家类型 / 性格名等），请逐个翻译成{tgt}。
-
-【要求】
-1. 用**官方或社区通行译名**：宝可梦、招式、道具、特性、属性都用大家熟知的译名
-   （例：Pikachu→皮卡丘、Thunderbolt→十万伏特、Leftovers→剩饭）。
-2. 拿不准的按「意译优先、音译兜底」，译文必须落在{tgt}，不要保留英文原文。
-3. 译文里不要出现控制码、括号注释、原文、罗马音，也不要加引号或序号。
-
-【输出】
-每行输出一条 JSON，输入有几条就输出几行，一个都不能少、不能合并：
-{"src":"<原文>","dst":"<译文>"}
-不要解释，不要空行，不要 markdown 代码围栏，不要注释。
-"""
-
-_USER_TEMPLATE_TERMS = r"""{header}把下面这些词条翻译成{tgt}，每行输出一条 JSON，格式：
-{"src":"<原文>","dst":"<译文>"}
-输入：
+{terms_block}输入：
 {body}
 """
 
@@ -257,50 +235,6 @@ def _nothink_hint():
         return "Ollama 用 think=false，其余服务请在服务端关闭"
 
 
-_TERM_LINE_RE = re.compile(
-    r'"src"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"dst"\s*:\s*"((?:[^"\\]|\\.)*)"')
-
-
-def _unescape_json_piece(s):
-    """JSON 字符串片段反转义（只处理常见几种，其余原样留下）。"""
-    return (s.replace('\\"', '"')
-             .replace("\\n", "\n")
-             .replace("\\t", "\t")
-             .replace("\\\\", "\\"))
-
-
-def _parse_term_lines(raw):
-    """
-    解析「术语名翻译」的输出，返回 {原文: 译文}。
-
-    主格式（prompt 要求的）：每行 {"src":"原文","dst":"译文"}
-    兜底格式：`原文=译文`（模型偶尔不听话）
-    译文为空 / 与原文相同 → 丢弃（交给上层的长度与中文校验再筛一遍）。
-    """
-    out = {}
-    if not raw:
-        return out
-    text, _had = split_leading_think(raw)
-    for line in text.splitlines():
-        line = line.strip().rstrip(",").strip()
-        if not line or _FENCE_RE.match(line):
-            continue
-        m = _TERM_LINE_RE.search(line)
-        if m:
-            k = _unescape_json_piece(m.group(1)).strip()
-            v = _unescape_json_piece(m.group(2)).strip()
-        elif "=" in line and not line.startswith("{"):
-            k, _, v = line.partition("=")
-            k = k.strip().strip('"').strip()
-            v = v.strip().strip('"').strip()
-        else:
-            continue
-        if not k or not v or k == v:
-            continue
-        out[k] = v
-    return out
-
-
 def _clean_terms(obj):
     """术语 dict 归一：丢掉空值 / 原文==译文 / 占位符型 key。"""
     out = {}
@@ -390,6 +324,8 @@ def _format_terms_block(term_pairs, limit=None):
     lines = ["【术语表·必须使用】"]
     for src, dst in items:
         lines.append(f"{src}={dst}")
+    # 结尾紧跟正文，注意力最集中，这里放硬约束，防止模型看到却忽略
+    lines.append("以下词条必须原样出现在译文里，不得改写、不得近义替换、不得音译。")
     lines.append("")     # 尾空行，与下面 {body} 隔开
     return "\n".join(lines) + "\n"
 
@@ -424,6 +360,11 @@ def _decode_by_line_count(raw, items):
             return {}
         text = "\n".join(chunk).strip()
         if not text:
+            return {}
+        # ★ 结构化输出防线：模型既然吐了编号格式（JSON 行 / <N> tag 行），
+        #   说明它不是「纯逐行回译」，行数对齐切出来的必然是原始 JSON 串
+        #   而不是译文 —— 整体拒绝，交给上层重试。
+        if text.startswith('{"id"') or re.match(r"<\s*\d+\s*>", text):
             return {}
         out[idx] = text
     if offset != len(lines):
@@ -729,7 +670,7 @@ class ApiScheduler:
         self._key_state = [{"fail": 0, "until": 0.0} for _ in range(n)]
         self._rr = 0                     # 轮询游标
         c_min = max(1, int(getattr(config, "CONCURRENCY_MIN", 1) or 1))
-        c_max = max(c_min, int(getattr(config, "CONCURRENCY_MAX", 16) or 16))
+        c_max = max(c_min, int(getattr(config, "CONCURRENCY_MAX", 300) or 300))
         explicit = concurrency is not None
         if not explicit:
             concurrency = resolve_concurrency()
@@ -842,13 +783,19 @@ def _is_local_provider():
 
 def resolve_concurrency():
     """
-    实际并发批数：TRANSLATE_CONCURRENCY > 0 就用它；
+    实际并发批数：TRANSLATE_CONCURRENCY > 0 就用它（按本地/云端钳到上限）；
     = 0（默认）→ 本地服务（Ollama / llama.cpp / LM Studio）1，云端 API 4。
+    上限：云端 CONCURRENCY_MAX（300），本地 LOCAL_CONCURRENCY_MAX（16）。
     """
     n = int(getattr(config, "TRANSLATE_CONCURRENCY", 0) or 0)
+    local = _is_local_provider()
+    if local:
+        cap = max(1, int(getattr(config, "LOCAL_CONCURRENCY_MAX", 16) or 16))
+    else:
+        cap = max(1, int(getattr(config, "CONCURRENCY_MAX", 300) or 300))
     if n > 0:
-        return n
-    if _is_local_provider():
+        return max(1, min(n, cap))
+    if local:
         return 1
     return 4
 
@@ -1131,8 +1078,18 @@ class OllamaClient:
         return _strip_noise(content)
 
     # ---------- 翻译 ----------
-    def _system_prompt(self):
-        """system 提示词：模板外置（prompts/ 可覆盖）+ 可选 <why> 思考块。"""
+    def _system_prompt(self, section=None):
+        """system 提示词：模板外置（prompts/ 可覆盖）+ 可选 <why> 思考块。
+
+        section: 可选，当前文件的文本类别（见 cat_prompts.section_for）。
+            非空且 prompts/categories/<SECTION>.txt 存在时，把类别段**追加在
+            末尾**；判不出 / 文件缺失 → 与改动前逐字节一致。
+
+        ★ 共享前缀仍然稳定：通用规则永远在最前面且逐字节不变，类别段只加在
+          它之后，所以 section 相同的批次前缀完全一致（KV 缓存照旧复用），
+          section 不同也只是在这个稳定前缀之后分叉。注意本函数每批都重建，
+          但重建出的字符串对同一 section 是同一个值。
+        """
         text = load_template("system_translate_jsonline.txt",
                              SYSTEM_PROMPT_JSONLINE)
         text = (text.replace("{src}", config.SOURCE_LANG)
@@ -1140,14 +1097,27 @@ class OllamaClient:
         if getattr(config, "THINKING_BLOCK", False):
             text = text.rstrip() + "\n\n" + load_template(
                 "thinking.txt", THINKING_BLOCK).rstrip()
+        if section:
+            # ★ 反向 import 会成环（cat_prompts 依赖本模块），只能延迟导入
+            try:
+                import cat_prompts as CP
+                block = CP.category_block(section)
+            except Exception as e:
+                log.debug("类别提示词装配失败（按无类别段处理）：%s", e)
+                block = ""
+            if block:
+                text = text.rstrip() + "\n\n" + block.rstrip()
         return text
 
-    def translate_batch(self, items, term_pairs=None, context_lines=None):
+    def translate_batch(self, items, term_pairs=None, context_lines=None,
+                        section=None):
         """
         items:      [(idx, safe_text), ...]
         term_pairs: 可选 [(原文, 译文), ...]，作为 prompt 里的术语表
         context_lines: 可选 [上文原文, ...]（前几条已译句子的原文），
                        拼在术语表与正文之间，明确标注「只提供语境、不要翻译」
+        section:    可选，当前文件的文本类别名（如 "SPECIES_NAMES"）——
+                   有 prompts/categories/<SECTION>.txt 就追加到 system 末尾
         返回:       {idx: translation}
         """
         if not items:
@@ -1173,10 +1143,21 @@ class OllamaClient:
                     .replace("{context_block}", context_block)
                     .replace("{tgt}", config.TARGET_LANG)
                     .replace("{body}", body))
-        raw = self.chat(self._system_prompt(), user_msg)
+
+        system = self._system_prompt(section)
+
+        raw = self.chat(system, user_msg)
 
         translations, _ = _parse_model_output(
             raw, expected={i for i, _t in items})
+
+        if not translations and len(items) == 1:
+            # ★ 单条批次不按编号过滤重解一次：小模型单条重试时习惯性写死
+            #   {"id":0,...}，真实编号会被 expected 过滤掉，译文被整条丢弃。
+            #   批里只有一条时 id 写成什么都只可能是它，不存在串行风险；
+            #   模型吐的 id 键重映射回本批条目的真实编号。
+            translations, _ = _parse_model_output(raw, expected=None)
+            translations = {items[0][0]: v for v in translations.values()}
 
         if not translations:
             # ★ 兜底：模型完全不吐编号时，按「每条源文本的行数」把响应切回来
@@ -1189,40 +1170,15 @@ class OllamaClient:
 
         return translations
 
-    # ---------- 术语名批量翻译（术语提取页用） ----------
-    def translate_terms(self, names, header=""):
-        """
-        把一批「术语名」翻成译文，返回 {原文: 译文}。
-
-        和逐句翻译分开：prompt 短、批大、不需要上下文，
-        用的是 prompts/system_term_extract.txt 专用提示词。
-        （术语提取页 —— 从名字文本文件提出名字后丢给模型）
-        """
-        items = [str(n).strip() for n in (names or []) if str(n).strip()]
-        if not items:
-            return {}
-        body = "\n".join(items)
-        user_msg = (load_template("user_term_extract.txt",
-                                  _USER_TEMPLATE_TERMS)
-                    .replace("{header}", header or "")
-                    .replace("{tgt}", config.TARGET_LANG)
-                    .replace("{body}", body))
-        system = load_template("system_term_extract.txt",
-                               SYSTEM_PROMPT_TERMS)
-        system = (system.replace("{src}", config.SOURCE_LANG)
-                        .replace("{tgt}", config.TARGET_LANG))
-        raw = self.chat(system, user_msg,
-                        temperature=getattr(config,
-                                            "TERM_EXTRACT_TEMPERATURE",
-                                            0.2))
-        return _parse_term_lines(raw)
-
     # ---------- 中文润色 ----------
-    def polish_batch(self, items):
+    def polish_batch(self, items, section=None):
         """
         items: [(idx, safe_text), ...]  safe_text 为已保护控制码的中文译文
                也接受 [(idx, safe_text, safe_src), ...]：
                第三项是原文（已保护），会作为末尾的【参考原文】交给模型比对。
+        section: 可选，当前文件的文本类别名 —— 有类别提示词时，
+               把它的**风格段**（【本文本类型】+【翻译方法】，见
+               cat_prompts.style_block 的取舍说明）追加到 system 末尾。
         返回:  {idx: polished}
         """
         if not items:
@@ -1248,6 +1204,17 @@ class OllamaClient:
                                  _POLISH_TEMPLATE).replace("{body}", body)
         system = load_template("system_polish.txt", POLISH_SYSTEM_PROMPT)
         system = system.replace("{tgt}", config.TARGET_LANG)
+        if section:
+            # ★ 同 _system_prompt：类别段只追加在末尾，共享前缀保持稳定；
+            #   反向 import 成环，故延迟导入。
+            try:
+                import cat_prompts as CP
+                block = CP.style_block(section)
+            except Exception as e:
+                log.debug("润色类别段装配失败（按无类别段处理）：%s", e)
+                block = ""
+            if block:
+                system = system.rstrip() + "\n\n" + block.rstrip()
 
         raw = self.chat(
             system, user_msg,
@@ -1262,11 +1229,12 @@ class OllamaClient:
 # 带重试的封装
 # ================================================================
 def translate_with_retry(client, batch, depth=0,
-                         term_pairs=None, context_lines=None):
+                         term_pairs=None, context_lines=None, section=None):
     """
     batch:      [(idx, safe_text), ...]
     term_pairs: 可选 [(原文, 译文), ...]，作为 prompt 里的术语表
     context_lines: 可选 [上文原文, ...]（透传给模型）
+    section:    可选，当前文件的文本类别名（透传给 translate_batch）
     返回:       {idx: translation}
 
     ★ 重试策略（借鉴 LinguaGacha）：整批失败 → 原样重试 BATCH_RETRIES 次
@@ -1282,7 +1250,7 @@ def translate_with_retry(client, batch, depth=0,
         try:
             return client.translate_batch(
                 batch, term_pairs=term_pairs,
-                context_lines=context_lines,
+                context_lines=context_lines, section=section,
             )
         except Exception as e:
             last_err = e
@@ -1299,7 +1267,7 @@ def translate_with_retry(client, batch, depth=0,
         for i in range(0, len(batch), size):
             chunk = batch[i:i + size]
             r = translate_with_retry(client, chunk, depth + 1,
-                                     term_pairs, context_lines)
+                                     term_pairs, context_lines, section)
             result.update(r)
         return result
 
@@ -1307,7 +1275,7 @@ def translate_with_retry(client, batch, depth=0,
     return {}
 
 
-def polish_with_retry(client, batch, depth=0):
+def polish_with_retry(client, batch, depth=0, section=None):
     """润色的重试封装（逻辑与翻译一致，但不带术语表）。"""
     if not batch:
         return {}
@@ -1316,7 +1284,7 @@ def polish_with_retry(client, batch, depth=0):
     last_err = None
     for attempt in range(retries + 1):
         try:
-            return client.polish_batch(batch)
+            return client.polish_batch(batch, section=section)
         except Exception as e:
             last_err = e
             log.warning("润色整批失败（第 %d/%d 次）：%s",
@@ -1331,7 +1299,7 @@ def polish_with_retry(client, batch, depth=0):
         result = {}
         for i in range(0, len(batch), size):
             chunk = batch[i:i + size]
-            r = polish_with_retry(client, chunk, depth + 1)
+            r = polish_with_retry(client, chunk, depth + 1, section)
             result.update(r)
         return result
 

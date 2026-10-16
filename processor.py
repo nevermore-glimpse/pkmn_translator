@@ -5,7 +5,9 @@
 占位符：@0@ @1@ @2@ ...（两侧自动补空格）
     · 若原文含 @数字@ 形式，自动升级为 ⟦0⟧ 避免冲突
     · maps 每项：{"token", "original", "added_left", "added_right"}
-    · \\n（小写）直接删除；\\N（大写）照常保护
+    · \\n（小写）**不是控制码**：它是换行位置标记，由 analyze_breaks /
+      apply_breaks 在译文里补回，送模型前用 strip_newlines() 剔除；
+    · \\N（大写）是真正的控制码，照常保护
 """
 import json
 import os
@@ -48,7 +50,7 @@ _CTRL_PAT_CORE = (
       r'|'
       r'(?:wtnp|wt|tg|ts|pn|PN|wu|HM|TM|se|ff|CN)'              # 无参数（长的在前）
       r'|'
-      r'[NnbcgwlvibrG]'                                          # 单字母
+      r'[NbcgwlvibrG]'                                           # 单字母
       r'|'
       r'[$.|!><^{}]'                                             # RPG Maker 符号型事件码
     r')'
@@ -128,6 +130,11 @@ SPEAKER_TAG_RE = re.compile(r'\\tg\[([^\]]*)\]')
 # 未识别控制码检测（原始文本中残留的 \字母）
 LEFTOVER_CTRL_RE = re.compile(r'\\[A-Za-z]+')
 
+# ★ 换行标记（反斜杠 + 小写 n）：**不是控制码**，只是「换行位置」的记号。
+#   由 analyze_breaks / apply_breaks 在译文里按原文位置补回，
+#   送模型前用 strip_newlines() 剔除。大写 \N 不在其中（那是真控制码）。
+_NL_RE = re.compile(r'\\n')
+
 ALL_CTRL_RE = _DelegatingRE(
     lambda: (
         r'(?:'
@@ -150,6 +157,8 @@ _CTRL_FOR_REWRAP = _DelegatingRE(
         + _HTML_ENTITY_PAT
         + r')'
         r'|@\d+@|⟦\d+⟧'
+        r'|\\n'      # ★ \n 已不在控制码类里，这里补回：rewrap 必须把 \n
+                     #   当成整体，绝不能在反斜杠与 n 之间插入换行
     )
 )
 
@@ -263,6 +272,9 @@ def has_translatable_text(text, src_lang=None):
     t = BRACE_RE.sub('', t)
     # 占位符 token（@0@ / ⟦0⟧）也不是自然语言
     t = re.sub(r'[@\u27e6]\d+[@\u27e7]', '', t)
+    # ★ \n 已是换行标记而非控制码，CTRL_RE 不再剥它：
+    #   这里显式剥掉，否则「整行只有 \n」会被当成含拉丁字母 n 的可译文本
+    t = _NL_RE.sub('', t)
     return bool(pat.search(t))
 
 
@@ -303,7 +315,7 @@ def protect(text, drop_newline=True):
 
     # ① 先删 \n（小写），\N（大写）保留
     if drop_newline:
-        text = re.sub(r'\\n', '', text)
+        text = _NL_RE.sub('', text)     # ★ 与 _NL_RE 单一来源，避免两处写法漂移
 
     # ② 冲突检测
     left, right = _PH_L_DEFAULT, _PH_R_DEFAULT
@@ -630,7 +642,11 @@ def _merge_placeholder_runs(text, maps, counter):
 def control_symbols(text, ignore_newline=True):
     """
     列出 text 里所有可识别的控制码（按出现顺序，可重复）。
-    \\n（小写）是换行符，由重排逻辑另行处理，默认不计入。
+    \\n（小写）是换行标记、不是控制码，已不在 CTRL_RE 里，默认不计入。
+
+    ★ ignore_newline 参数保留：调用方（润色流程）仍按位置传它，
+      且「文本保护规则」允许用户自定义额外正则，理论上仍可能匹配到 \\n，
+      所以这层过滤留着当防线，而不是当成死代码删掉。
     """
     if not text:
         return []
@@ -738,6 +754,12 @@ def detect_unknown_ctrl(text):
     i, n = 0, len(text)
     while i < n:
         if text[i] == '\\':
+            # ★ \n 是换行标记、不是控制码，不该被报成「未识别控制码」
+            #   （否则每句译文都会进「译文残留控制码」报告）
+            m_nl = _NL_RE.match(text, i)
+            if m_nl:
+                i = m_nl.end()
+                continue
             m = ALL_CTRL_RE.match(text, i)
             if m:
                 i = m.end()
@@ -783,6 +805,9 @@ def is_pure_control(text, min_text_len=None):
     t = HTML_TAG_RE.sub('', t)
     t = re.sub(_HTML_ENTITY_PAT, '', t)   # ★ HTML 实体也剥离
     t = CTRL_RE.sub('', t)
+    # ★ \n 已是换行标记而非控制码，CTRL_RE 不再剥它；
+    #   显式剥掉，否则 "\n\n\n" 剥完剩 "nnn" 会被误判成有可译内容
+    t = _NL_RE.sub('', t)
     t = TAG_RE.sub('', t)
     t = BRACE_RE.sub('', t)
     effective = _PURE_TEXT_RE.sub('', t)
@@ -919,6 +944,37 @@ _MULTI_MAP_LOWER = {}
 #   （term_dict.py 里 AUTO 块中的自动提取术语不算，见 match_whole_term）
 _TERM_WHOLE = {}
 
+# ★ 整句连写回退索引：{去空格小写原文: (原文, 译文)}，只收**原本含空格**的
+#   多词术语（Thunder Stone → thunderstone）。正文是术语的连写变体时
+#   （Thunderstone / Firestone）由 match_whole_term 最后一层回退接住。
+#   冲突先到先得（good 已按原文长度降序，更具体的优先），冲突时记日志。
+_TERM_WHOLE_CONCAT = {}
+
+# ★ 按文件分派的术语表（term_sections.json，由 scripts/gen_term_sections.py 生成）：
+#   _TERM_SECTIONS {section 名: {小写原文: 该 section 的译文}}
+#     —— 名字类文件里的同名条目在别的类别里有别的译法时，这个文件的整句术语
+#        要按自己的 section 取译文（Psychic 在招式表里是「精神强念」、
+#        在属性表里是「超能力」）。
+#   _TERM_VARIANTS {小写原文: [{"dst": 译文, "section": section 名或 None}, ...]}
+#     —— 同原文多译文的全量变体；文件没有 section（或该 section 里没有这个
+#        原文）时把这些变体并列投送，交给模型按上下文选。
+#   两个表都只读，加载失败一律静默退回空表（= 没有分派表时的旧行为）。
+_TERM_SECTIONS = {}
+_TERM_VARIANTS = {}
+
+# section 名 → 中文类别名（口径抄自 term_extract.SECTION_LABEL；
+# 只列 term_sections.json 会出现的 8 个，其余按 section 名兜底）
+TERM_SECTION_LABELS = {
+    "SPECIES_NAMES":         "宝可梦名",
+    "SPECIES_FORM_NAMES":    "宝可梦形态名",
+    "MOVE_NAMES":            "招式名",
+    "ITEM_NAMES":            "道具名",
+    "ABILITY_NAMES":         "特性名",
+    "TYPE_NAMES":            "属性名",
+    "TRAINER_TYPE_NAMES":    "训练家类型",
+    "REGION_LOCATION_NAMES": "地区地点名",
+}
+
 _WORD_CHARS = r'\w\u00C0-\u024F'
 _TOKEN_RE = re.compile(r'[' + _WORD_CHARS + r']+')
 _PLAIN_TERM_RE = re.compile(r'^[' + _WORD_CHARS + r']+$')
@@ -1011,6 +1067,65 @@ def _terms_file_key():
         return (config.TERM_FILE, 0, 0, bool(config.APPLY_TERMS))
 
 
+def _load_term_sections():
+    """
+    加载 term_sections.json（同原文多译文的 section 分派表）到
+    _TERM_SECTIONS / _TERM_VARIANTS 两个只读全局表。
+
+    ★ 任何异常（文件不存在 / JSON 坏 / 结构不符）都静默退回：
+      两表置空 + log.debug 一行，绝不抛 —— 没有分派表时的一切行为
+      与旧版完全一致。
+    ★ 随 load_terms() 一起调用，所以 load_terms(force=True) 会带着重载。
+    """
+    global _TERM_SECTIONS, _TERM_VARIANTS
+    _TERM_SECTIONS, _TERM_VARIANTS = {}, {}
+    try:
+        path = os.path.join(config.BASE_DIR, "term_sections.json")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("顶层不是 dict")
+        sections = data.get("sections")
+        variants = data.get("variants")
+        if not isinstance(sections, dict) or not isinstance(variants, dict):
+            raise ValueError("sections/variants 缺失或类型不符")
+
+        sec_map = {}
+        for sec, table in sections.items():
+            if not isinstance(sec, str) or not isinstance(table, dict):
+                continue
+            sec_map[sec] = {
+                str(k).strip().lower(): v
+                for k, v in table.items()
+                if isinstance(k, str) and isinstance(v, str)
+            }
+        _TERM_SECTIONS = sec_map
+
+        var_map = {}
+        for k, lst in variants.items():
+            if not isinstance(k, str) or not isinstance(lst, list):
+                continue
+            items = []
+            for it in lst:
+                if not isinstance(it, dict):
+                    continue
+                dst = it.get("dst")
+                if not isinstance(dst, str) or not dst:
+                    continue
+                sec = it.get("section")
+                # ★ section=null 的条目保留（section=None）
+                items.append({"dst": dst, "section":
+                              sec if isinstance(sec, str) else None})
+            if items:
+                var_map[k.strip().lower()] = items
+        _TERM_VARIANTS = var_map
+        log.debug("term_sections.json 加载：%d 个 section / %d 个变体键",
+                  len(_TERM_SECTIONS), len(_TERM_VARIANTS))
+    except Exception as e:
+        _TERM_SECTIONS, _TERM_VARIANTS = {}, {}
+        log.debug("term_sections.json 不可用，按无分派表处理：%s", e)
+
+
 # ----------------------------------------------------------------
 # term_dict.py 里的 AUTO 块（自动提取的术语）
 #   标记与写入逻辑见 auto_terms.AUTO_START / AUTO_END。
@@ -1058,7 +1173,7 @@ def load_terms(force=False):
     global _TERMS
     global _TERM_SINGLE, _TERM_MULTI, _MULTI_RE
     global _MULTI_MAP, _MULTI_MAP_LOWER, _TERMS_LOADED_KEY
-    global _TERM_WHOLE
+    global _TERM_WHOLE, _TERM_WHOLE_CONCAT
 
     if not config.APPLY_TERMS:
         if _TERMS or _TERM_SINGLE:
@@ -1148,6 +1263,28 @@ def load_terms(force=False):
             continue            # 先到先得：good 已按原文长度降序排好
         _TERM_WHOLE[lk] = (k, v)
 
+    # ---- 整句连写回退索引：只收含空格的多词术语 ----
+    #   Thunder Stone → thunderstone；正文 Thunderstone 由
+    #   match_whole_term 的最后一层回退接住。同键冲突先到先得。
+    _TERM_WHOLE_CONCAT = {}
+    concat_conflicts = 0
+    for lk, hit in _TERM_WHOLE.items():
+        if " " not in lk:
+            continue
+        ck = lk.replace(" ", "")
+        if ck in _TERM_WHOLE_CONCAT:
+            if _TERM_WHOLE_CONCAT[ck][1] != hit[1]:
+                concat_conflicts += 1
+                log.warning("连写回退索引冲突（保留先到的）：%s ← %s / %s",
+                            ck, _TERM_WHOLE_CONCAT[ck][0], hit[0])
+            continue
+        _TERM_WHOLE_CONCAT[ck] = hit
+    if concat_conflicts:
+        log.info("整句连写回退索引：%d 条，%d 条同键冲突（保留先到的）",
+                 len(_TERM_WHOLE_CONCAT), concat_conflicts)
+
+    _load_term_sections()
+
     _check_case_conflicts(good)
     log.info("术语表加载：%d 条（单词 %d / 多词 %d，跳过短词 %d 条）",
              len(_TERMS), len(_TERM_SINGLE), len(_TERM_MULTI), skipped_short)
@@ -1168,8 +1305,70 @@ _WHOLE_STRIP_CHARS = (
     "\"'“”‘’«»（）()"                            # 引号 / 括号
 )
 
+# ----------------------------------------------------------------
+# 整句复数匹配：正文正好是「某条手工术语 + 复数后缀」→ 直接用该术语译文。
+#   只取复数的三个后缀，不拉命名类派生后缀（-ite/-ites/-ium…，语义上
+#   不是复数）；后缀由短到长试，命中的是**最长**的词根，试法与
+#   _derived_lookup 一致。
+# ★ 词根门槛**单列**（=3），刻意不沿用 TERM_DERIVED_MIN_ROOT（=4）：
+#   整句已是一条完整的待翻文本、不再往后吞字符，误伤面比正文里的
+#   派生匹配小得多。实测 _TERM_WHOLE 里 3 字母词根共 45 条，能让
+#   Eggs / Dogs / Bats / Teas / Ores / Jams / Ices 这类复数形接住
+#   （门槛 4 时全部漏掉，共漏 53 条复数形）。
+#   正文里的派生匹配（_derived_lookup）仍守 4，避免 Rat 命中 Raticate。
+# ★ 按「直接替换」的约定，命中后只写术语的规范译名，不追加中文复数后缀。
+# ----------------------------------------------------------------
+_WHOLE_PLURAL_SUFFIXES = ("s", "es", "ies")
+_WHOLE_PLURAL_SUFFIX_ORDER = tuple(sorted(_WHOLE_PLURAL_SUFFIXES, key=len))
+_WHOLE_PLURAL_MIN_ROOT = 3    # 整句复数的词根最短长度（见上）
 
-def match_whole_term(text):
+
+def _whole_plural_lookup(core_lower, section=None):
+    """
+    整句正文的复数回退查表（只查手工术语表 _TERM_WHOLE）。
+
+    返回 (术语原文, 该句译文)；没有复数命中返回 None。
+    后缀由短到长试 → 先命中的词根最长（同时登记了 Altaria 与
+    Altarianite 时，Altarianites 会认更具体的 Altarianite）。
+
+    ★ section 非空时该 section 表优先：正文剥掉复数后缀后的词根
+      若出现在 _TERM_SECTIONS[section] 里，用该 section 的译文。
+    """
+    if not core_lower or len(core_lower) <= _WHOLE_PLURAL_MIN_ROOT:
+        return None
+    sec_table = _TERM_SECTIONS.get(section) if section else None
+    for suf in _WHOLE_PLURAL_SUFFIX_ORDER:
+        if not suf or not core_lower.endswith(suf):
+            continue
+        stem = core_lower[: -len(suf)]
+        # 「…ies」除了直接剥，还试 y 还原（Berries → Berry）
+        roots = (stem, stem + "y") if suf == "ies" else (stem,)
+        for root in roots:
+            # ★ 多词术语（Max Repel / Pokémon House…）词根含空格，
+            #   isalpha() 会把整类全部拒掉 → 复数规则对多词术语失效，
+            #   这里把空格视为合法字符。
+            # ★ 含数字的术语（HM06 / TM01 / B2F2）同理：isalpha() 全拒，
+            #   导致 HM06s 接不住 HM06 的复数。改为按 token 拆分，
+            #   每个 token 必须以字母开头、含字母或数字（拒绝纯符号、
+            #   拒绝 06s 这类以数字开头的碎片）。
+            if len(root) < _WHOLE_PLURAL_MIN_ROOT or not all(
+                    re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", tk) and
+                    any(c.isalnum() for c in tk)
+                    for tk in root.split(" ") if tk):
+                continue
+            if sec_table:
+                sec_dst = sec_table.get(root)
+                if sec_dst:
+                    whole = _TERM_WHOLE.get(root)
+                    src = whole[0] if whole else root
+                    return (src, sec_dst)
+            hit = _TERM_WHOLE.get(root)
+            if hit:
+                return hit
+    return None
+
+
+def match_whole_term(text, section=None):
     """
     整句术语匹配（手工术语专用）。
 
@@ -1177,17 +1376,45 @@ def match_whole_term(text):
     术语原文**（term_dict.py 里 AUTO 块中的自动提取术语不参与），
     就认为这句话的译文就是该术语的译文。
 
+    section：可选，当前文件的 section 名（term_extract.resolve_names 判定）。
+    ★ section 非空且该 section 表里有这个词时用该 section 的译文
+      （Psychic 在招式表文件里 → 「精神强念」，在属性表文件里 → 「超能力」）；
+      缺省或 section 里没有 → 完全维持旧的全局行为。
+
     返回 (命中的术语原文, 该句译文)；不匹配返回 None。
     译文 = 原来的标点**原样** + 术语译文（例如 "Yes!" → "是!"），
     所以标点只影响匹配，不会丢。
 
     ★ 先按整串原样查一次（术语本身可能就是 "(?)" 这种带标点的），
       查不到再剥首尾标点查一次。
+    ★ 仍查不到时，再试「正文 = 某条术语 + s / es / ies」这一层
+      （Psychics → Psychic，Altarianites → Altarianite，Berries → Berry）；
+      命中后同样只写该术语的规范译名，不追加中文复数后缀。
     """
     if not text or not _TERM_WHOLE:
         return None
 
-    hit = _TERM_WHOLE.get(text.strip().lower())
+    # ★ section 优先：分派表里这个 section 有该词 → 直接用它的译文
+    sec_table = _TERM_SECTIONS.get(section) if section else None
+    if sec_table:
+        sec_hit = sec_table.get(text.strip().lower())
+        if not sec_hit:
+            # 剥首尾标点再试一次（与下面的剥离口径一致）
+            n0 = len(text)
+            s0, e0 = 0, n0
+            while s0 < e0 and text[s0] in _WHOLE_STRIP_CHARS:
+                s0 += 1
+            while e0 > s0 and text[e0 - 1] in _WHOLE_STRIP_CHARS:
+                e0 -= 1
+            if s0 < e0:
+                sec_hit = sec_table.get(text[s0:e0].lower())
+        if sec_hit:
+            whole = _TERM_WHOLE.get(text.strip().lower())
+            src = whole[0] if whole else text.strip()
+            return (src, sec_hit)
+
+    stripped = text.strip().lower()
+    hit = _TERM_WHOLE.get(stripped)
     if hit:
         return hit
 
@@ -1200,14 +1427,98 @@ def match_whole_term(text):
         e -= 1
     if s >= e:
         return None                      # 整句都是标点，没有正文
-    if s == 0 and e == n:
-        return None                      # 首尾没有标点，上面已经查过了
 
-    core = text[s:e]
-    hit = _TERM_WHOLE.get(core.lower())
+    if s == 0 and e == n:
+        # ★ 不能在这里早退：Psychics 这种整句无首尾标点的情况正好落进
+        #   分支，而它要靠下面的复数规则。整串上面已查过一次，不再重复。
+        core_lower = stripped
+    else:
+        core_lower = text[s:e].lower()
+        hit = _TERM_WHOLE.get(core_lower)
+        if hit:
+            return (hit[0], text[:s] + hit[1] + text[e:])
+
+    hit = _whole_plural_lookup(core_lower, section=section)
     if not hit:
-        return None
+        # 连写回退：正文 = 多词术语的连写变体（Thunderstone ← Thunder Stone）
+        if _TERM_WHOLE_CONCAT:
+            hit = _TERM_WHOLE_CONCAT.get(core_lower.replace(" ", ""))
+        if not hit:
+            return None
     return (hit[0], text[:s] + hit[1] + text[e:])
+
+
+# ----------------------------------------------------------------
+# 同原文多译文投送（term_sections.json 的 variants）
+# ----------------------------------------------------------------
+def term_dst_variants(src, section=None):
+    """
+    给定术语原文 src 与文件 section，返回该投送的译文列表。
+
+    · src 不在 _TERM_VARIANTS → [该术语原本的译文]（与旧行为等价）；
+      术语原本的译文从 _TERM_WHOLE → _TERM_SINGLE 依次查，都没有则 [src]。
+    · 在 _TERM_VARIANTS 且 section 命中某变体 → 只返回 [该 section 的 dst]。
+    · 在 _TERM_VARIANTS 且无 section 或 section 不在其中 → 全部变体
+      dst（去重保序，section 非 null 的在前）。
+    """
+    key = (src or "").strip().lower()
+    variants = _TERM_VARIANTS.get(key)
+    if not variants:
+        default = None
+        whole = _TERM_WHOLE.get(key)
+        if whole:
+            default = whole[1]
+        else:
+            single = _TERM_SINGLE.get(key)
+            if single:
+                default = single[1]
+        return [default] if default else [src]
+
+    if section:
+        for it in variants:
+            if it.get("section") == section:
+                return [it["dst"]]
+
+    ordered, out, seen_dst = [], [], set()
+    for it in variants:                    # section 非 null 的条目排前面
+        if it.get("section") is not None:
+            ordered.append(it)
+    for it in variants:
+        if it.get("section") is None:
+            ordered.append(it)
+    for it in ordered:
+        if it["dst"] not in seen_dst:
+            seen_dst.add(it["dst"])
+            out.append(it["dst"])
+    return out or [src]
+
+
+def render_term_dst(src, section=None):
+    """
+    把 term_dst_variants 的结果渲染成**一个 dst 字符串**（喂给 prompt 用）。
+
+    · 只有一个译文 → 原样返回，不加任何标签/括号（旧输出逐字不变）；
+    · 多个译文 → " / " 连接，每个译文后跟场景标签（section 的中文名，
+      见 TERM_SECTION_LABELS；section 为 null 的变体不带标签），如
+      「精神强念（招式名）/ 超能力（属性名）」。
+    """
+    dsts = term_dst_variants(src, section=section)
+    if len(dsts) == 1:
+        return dsts[0]
+    parts = []
+    variants = _TERM_VARIANTS.get((src or "").strip().lower()) or []
+    seen = set()
+    for d in dsts:
+        if d in seen:
+            continue
+        seen.add(d)
+        label = None
+        for it in variants:                # 按译文找到它的 section 标签
+            if it["dst"] == d and it.get("section"):
+                label = TERM_SECTION_LABELS.get(it["section"], it["section"])
+                break
+        parts.append(f"{d}（{label}）" if label else d)
+    return " / ".join(parts)
 
 
 def find_terms(text, derived_out=None, allow_derived=None):
@@ -1433,6 +1744,21 @@ def _has_break_at(text, pos, mode):
     return pos < len(text) and text[pos] == ' '
 
 
+def strip_newlines(text):
+    r"""
+    删除文本里所有 `\n` 换行标记（反斜杠 + 小写 n），供上层在
+    「构建送模型的正文」时调用。
+
+    ★ 只删 `\n`：`\N`（大写）是真控制码，一律不动。
+    ★ 换行位置信息不靠这段文本传递 —— 调用方应先用 analyze_breaks(原文)
+      记下断点、再 strip_newlines 送模型，最后由 apply_breaks 补回。
+      两者顺序颠倒（先剔除再 analyze_breaks）会丢掉全部断点。
+    """
+    if not text:
+        return text
+    return _NL_RE.sub('', text)
+
+
 def analyze_breaks(text):
     """
     分析原文，返回 [bool, ...]：每个"标点单元"后是否紧跟 \\n。
@@ -1538,12 +1864,20 @@ def unwrap(text, mode="newline"):
     out = []
     i, n = 0, len(text)
     while i < n:
+        # ★ \n 已不在 ALL_CTRL_RE 里，这里单独认它：
+        #   newline 模式丢弃它（断点稍后按原文重补），space 模式原样保留
+        m_nl = _NL_RE.match(text, i)
+        if m_nl:
+            i = m_nl.end()
+            if mode == "newline":
+                continue
+            out.append(m_nl.group(0))
+            continue
+
         m = ALL_CTRL_RE.match(text, i)
         if m:
             token = m.group(0)
             i = m.end()
-            if mode == "newline" and token == '\\n':
-                continue
             out.append(token)
             continue
 

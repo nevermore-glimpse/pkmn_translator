@@ -62,7 +62,6 @@ EDITABLE = [
     ("MAX_INPUT_LINES",    "读取行数上限",      "int",   "只处理前 N 行；0 或负数=不限"),
     ("BATCH_SIZE",         "每批条数",          "int",   "建议 10-30"),
     ("MAX_BATCH_CHARS",    "单批字符上限",      "int",   "自适应分批：超过就提前切批"),
-    ("SORT_TODO_BY_LEN",   "按长度排序分批",    "bool",  "默认关=按原文件顺序翻；开=同批长度接近更稳"),
     ("MAX_TERMS_IN_PROMPT","prompt 术语上限",   "int",   "单批发给模型的术语条数"),
     ("BATCH_RETRIES",      "整批重试次数",      "int",   "失败时重试"),
     ("SINGLE_RETRIES",     "单条重试次数",      "int",   "失败时重试"),
@@ -81,7 +80,7 @@ EDITABLE = [
 
     # ---------- 并发与多 API Key ----------
     ("TRANSLATE_CONCURRENCY", "翻译并发批数", "int",
-     "0=自动（云端 API 4 / 本地 Ollama 1）"),
+     "0=自动（云端 4 / 本地 1）；上限：云端 300、本地 16"),
     ("API_KEYS",       "多 API Key",       "str",
      "每行一个，轮询使用；留空则只用 API 密钥"),
 
@@ -123,9 +122,7 @@ EDITABLE = [
     ("EXCEL_TARGET_LANG",  "Excel 目标语言列",  "str",   ""),
     ("EXCEL_APPEND",       "Excel 追加式写入",  "bool",  "True=新术语接末尾，False=整份覆盖"),
     ("TERM_EXTRACT_BATCH", "术语提取每批条数", "int",
-     "「术语提取」页每次送模型几条（从名字文本文件抽名字翻译）"),
-    ("TERM_EXTRACT_TEMPERATURE", "术语翻译温度", "float",
-     "术语提取时的采样温度，低一点译名更一致"),
+     "「术语提取」页预览显示用；实际分批按 BATCH_SIZE（与正常翻译一致）"),
     ("AUTO_EXTRACT_MIN_LEN", "术语最短长度", "int", ""),
 
     # ---------- 中文润色 ----------

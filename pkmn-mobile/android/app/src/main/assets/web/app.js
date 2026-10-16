@@ -724,14 +724,25 @@
       `&version=${encodeURIComponent($("owVersion").value.trim())}`);
     if (!plan.ok) { toast(plan.message); return; }
     const items = plan.data.items || [];
-    const preview = items.map((i) =>
-      `${i.has_target ? "覆盖" : "新建"}　${i.name}` +
-      (i.where ? `<br>　　<span class="sub">${esc(i.where)}</span>` : "")
-    ).join("\n") || "（没有需要覆盖的脚本）";
+    if (!items.length) return toast("没有需要覆盖的脚本");
+
+    // ★ 弹窗只负责问一句「是否开始执行」，清单放进可滚动正文。
+    //   原先几十行清单直接当弹窗正文、又没有高度上限，弹窗被撑满全屏，
+    //   小屏上「开始执行」按钮被顶出可视区，既看不到也点不到。
+    //   现在 .dlg-b 有 max-height + 自身滚动（见 style.css），按钮固定在最下面。
+    const listText = items.map((i) =>
+      `${i.has_target ? "覆盖" : "新建"}　${esc(i.name)}` +
+      (i.where ? `\n　　${esc(i.where)}` : "")).join("\n");
+
+    const body =
+      `<span class="warn">原作者对这些脚本的改动会被整份替换掉。</span>\n` +
+      `原文件会自动备份，之后可用「还原覆盖」恢复。\n\n` +
+      `<span class="hint">即将覆盖的 ${items.length} 个脚本：</span>\n` +
+      listText;
 
     const ok = await confirmBox(
-      `将覆盖 ${plan.data.count} 个脚本（v${plan.data.version}）`,
-      preview, "确认执行", true);
+      `将覆盖 ${plan.data.count} 个脚本（v${plan.data.version}）—— 开始执行吗？`,
+      body, "开始执行", true);
     if (!ok) return;
 
     const endpoint = kind === "scene_map"

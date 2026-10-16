@@ -2779,8 +2779,10 @@ def _section_rows(spec: dict, family: str, text: str,
             provided.add("@" + ivar)
         _post_process_ivars(cls, family, ivars, provided)
         if only_forms and base_of is not None:
+            _orig = orig_by_id.get(id_sym or "")
+            _orig_iv = _obj_ivars(_orig) if _orig is not None else {}
             _apply_form_inherit(ivars, base_of.get(
-                _sym(ivars.get("@species"))), family, provided)
+                _sym(ivars.get("@species"))), family, provided, _orig_iv)
         orig_obj = orig_by_id.get(id_sym or "")
         if orig_obj is not None:
             oiv = _obj_ivars(orig_obj)
@@ -2902,27 +2904,36 @@ _FORM_WILD = ("@wild_item_common", "@wild_item_uncommon", "@wild_item_rare")
 
 
 def _apply_form_inherit(ivars: Dict[str, Any], base: Optional[dict],
-                        family: str = "", provided: Optional[set] = None
-                        ) -> None:
+                        family: str = "", provided: Optional[set] = None,
+                        orig: Optional[dict] = None) -> None:
     """
     照官方 validate_compiled_pokemon_form：形态没写的属性从基础形态继承。
 
     ★ 不继承的话，提取时「与基础形态一致的字段不写」这条规则就失效，
       pokemon_forms.txt 会把所有默认值都吐出来（实测 2313 行变 6142 行）。
+    ★ 但如果原 .dat 里本来就有这个字段（克隆来的），以原值为准 —— 官方 v19
+      的形态写出/编译根本不管 Flags，硬按官方继承反而会把游戏数据抹掉。
     """
     if base is None:
         return
     provided = provided or set()
+    orig = orig or set()
+
+    def _has_orig(name):
+        return name in orig
+
     for name in _FORM_INHERIT_ALWAYS:
-        if name in base and ivars.get(name) is None:
+        if name in base and name not in provided and not _has_orig(name) \
+                and ivars.get(name) is None:
             ivars[name] = _clone_val(base[name])
     for name in _FORM_INHERIT_LIST:
-        if name not in base:
+        if name not in base or name in provided or _has_orig(name):
             continue
         cur = ivars.get(name)
         if cur is None or (isinstance(cur, (list, tuple)) and not cur):
             ivars[name] = _clone_val(base[name])
-    if all(ivars.get(name) is None for name in _FORM_WILD):
+    if all(ivars.get(name) is None for name in _FORM_WILD) and \
+            not any(_has_orig(name) for name in _FORM_WILD):
         for name in _FORM_WILD:
             if name in base:
                 ivars[name] = _clone_val(base[name])

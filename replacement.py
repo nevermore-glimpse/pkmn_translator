@@ -106,6 +106,21 @@ def _norm_rules(items):
 # 读写
 # ================================================================
 _CACHE = {}       # 路径 → (mtime, size, rules)
+_LOG_SEEN = {}    # kind → 上次打日志时的描述（配置没变就不重打）
+
+
+def _log_load_once(kind, msg, *args):
+    """
+    替换规则装载提示去重：同 kind 的装载描述没变就不再打。
+
+    ★ 只做展示层去重：配置（文件内容 / 启用名单）真的变了时，
+      描述会跟着变 → 自然重新打一条。warn/error 不受影响。
+    """
+    text = msg % args if args else msg
+    if _LOG_SEEN.get(kind) == text:
+        return
+    _LOG_SEEN[kind] = text
+    log.info("替换规则[%s]：%s", kind, text)
 
 
 def read_rules_file(path):
@@ -172,12 +187,15 @@ def load_rules(kind):
       ① PRE/POST_REPLACEMENT_FILE 指向的文件（配了就只用它）
       ② 预设目录下启用的预设（按文件名排序；PRESETS 名单可筛选）
       ③ 预设目录为空时，回落到旧版 replacements/<kind>_default.json
+
+    ★ 每种 kind 只在配置实际变化时打一条 log.info（防刷屏：
+      apply_pre/apply_post 是逐条文本调用的，没记忆的话每条译文
+      都会打一行「替换规则[post]：…」）。
     """
     user = _user_file(kind)
     if user and os.path.isfile(user):
         rules = read_rules_file(user)
-        log.info("替换规则[%s]：%d 条 ← %s（指定文件）",
-                 kind, len(rules), user)
+        _log_load_once(kind, "%d 条 ← %s（指定文件）", len(rules), user)
         return rules
 
     presets = list_presets(kind)
@@ -197,15 +215,14 @@ def load_rules(kind):
             if rs:
                 used.append(f"{p['name']}({len(rs)})")
             rules += rs
-        log.info("替换规则[%s]：%d 条 ← %s", kind, len(rules),
-                 "、".join(used) or "（空）")
+        _log_load_once(kind, "%d 条 ← %s", len(rules),
+                       "、".join(used) or "（空）")
         return rules
 
     legacy = _legacy_path(kind)
     if os.path.isfile(legacy):
         rules = read_rules_file(legacy)
-        log.info("替换规则[%s]：%d 条 ← %s（旧版单文件）",
-                 kind, len(rules), legacy)
+        _log_load_once(kind, "%d 条 ← %s（旧版单文件）", len(rules), legacy)
         return rules
     return []
 

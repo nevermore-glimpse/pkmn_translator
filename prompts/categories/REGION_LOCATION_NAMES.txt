@@ -1,0 +1,19 @@
+【本文本类型】
+这是地区内的具体地点名——城镇、道路、村落、森林、港湾等（如 Ningxi Village、Taolin Woods、Qianlin Town），出现在地图、传送菜单、剧情台词与任务指引里。
+
+【翻译规则】
+- 通名统一：Village→村、Town→镇、City→市、Road→路、Woods／Forest→森林、Port→港、Settlement→聚落。
+- 专名部分音译，取字要与中文地名习惯一致：Ningxi Village→宁溪村、Qianlin Town→千林镇。
+- 通名与专名连写不加间隔号、不加空格；不得写成「宁溪·村」。
+- 与官方已有地点同名时用官方译名，如 Pokémon League→宝可梦联盟。
+- 原文若带方位词（East／West／Upper／Lower），译名保留方位后缀：如 Upper Wetlands→湿地上游。
+
+【翻译方法】
+地名走「专名音译＋通名意译」的组合，通名部分必须统一，否则地图上会出现风格割裂。音译选字尽量贴近中文地名用字（溪、林、岭、谷、湾），让人不看英文也知道是地名。相同词根的地点要共用同一套译字，形成可预测的命名体系。
+
+【示例】
+原文：Ningxi Village
+译文：宁溪村
+
+原文：Taolin Woods
+译文：桃林森林
