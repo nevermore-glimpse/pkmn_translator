@@ -22,7 +22,6 @@ import struct
 import time
 import zlib
 
-from rubymarshal.reader import load as _rb_load
 from rubymarshal.classes import Symbol
 
 import config
@@ -461,12 +460,25 @@ def scan_plugins(game_dir, emit=None):
 # 写 PluginScripts.rxdata（照抄 compilePlugins）
 # ================================================================
 def _to_bytes(value):
-    if isinstance(value, bytes):
-        return value
+    """Marshal 写入用的原始字节。
+
+    ★ 容器里的条目是用 `_rb_load_bytesafe` 读的：Marshal String 一律按
+      latin1 解（一个字符 = 一个原始字节）。这种串**不能**走
+      `str(value).encode("utf-8")` —— 每个 ≥0x80 的字节会被再扩成两字节，
+      原文件里的 zlib 负载直接解压失败、非 ASCII 插件名变成乱码。
+      所以从容器读出来的串（有 `.text` 的）一律走 `GS._string_bytes` 取回
+      原始字节；meta.txt 解析出来的普通 str 走 UTF-8 编码。
+    """
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
     if isinstance(value, list):
         return [_to_bytes(x) for x in value]
+    if isinstance(value, dict):
+        return {k: _to_bytes(v) for k, v in value.items()}
     if isinstance(value, Symbol):
         return value
+    if isinstance(getattr(value, "text", None), str):
+        return GS._string_bytes(value)
     return str(value).encode("utf-8")
 
 
@@ -529,11 +541,11 @@ def compile_plugins(game_dir, emit=None, backup=True, out_path=None):
         have = {d[0] for d in scripts}          # 已编译的插件名（bytes）
         try:
             with open(out, "rb") as f:
-                old = _rb_load(f)
+                old = GS._rb_load_bytesafe(f)
         except Exception as e:                  # noqa: BLE001
             old = None
-            say(f"[插件] ⚠ 原 {PLUGIN_SCRIPTS_NAME} 读不出来（{e}），"
-                f"本次不做保留，直接整包重写")
+            say("[插件] ⚠ " + GS.rxdata_error_text(out, e)
+                + " —— 本次不做保留，直接整包重写")
         if isinstance(old, list):
             for e in old:
                 if not (isinstance(e, (list, tuple)) and len(e) >= 3):
@@ -1221,7 +1233,7 @@ def _inject_into_scripts(mode, path, body, say):
                 "bytes": len(body.encode("utf-8"))}
 
     with open(path, "rb") as f:
-        obj = _rb_load(f)
+        obj = GS._rb_load_bytesafe(f)
     if not isinstance(obj, list):
         raise ValueError(f"{path} 不是脚本数组，没法追加脚本")
 
@@ -1321,7 +1333,7 @@ def _script_bodies(game_dir):
             continue
         try:
             with open(path, "rb") as f:
-                obj = _rb_load(f)
+                obj = GS._rb_load_bytesafe(f)
         except Exception:
             continue
         if not isinstance(obj, list):
@@ -1363,9 +1375,9 @@ def remove_script_plugin(game_dir, emit=None):
 
         try:
             with open(path, "rb") as f:
-                obj = _rb_load(f)
+                obj = GS._rb_load_bytesafe(f)
         except Exception as e:
-            say(f"[还原] 读不了 {os.path.basename(path)}：{e}")
+            say("[还原] " + GS.rxdata_error_text(path, e))
             continue
         if not isinstance(obj, list):
             continue

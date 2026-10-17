@@ -67,6 +67,8 @@ RETRANSLATE_KINDS = {
 #   · 符号不匹配 / 特殊行 —— 需要人工判断
 NEVER_RETRANSLATE_KINDS = {
     "译文残留控制码", "特殊行", "控制码回退",
+    # 模型输出了真实换行，写缓存时已被自动压成空格 —— 提示供人工核对
+    "译文含真实换行",
 }
 
 # ★ 手工编辑产生的类型：报告里**默认不勾选**（所以不参与重翻），
@@ -76,22 +78,22 @@ MANUAL_KINDS = {"已编辑"}
 # ★ 「提示 / 抽查」类型：只是给你看一眼的线索，**不算问题** ——
 #   「术语冲突」自 2026-10-14 起也归这里（术语译法不一致，与句子质量无关，只提示、不计入问题数）。
 #   不计入「共 N 处问题」的汇总，界面上也不显示成红色。
-ADVISORY_KINDS = {"派生命中", "术语未应用", "术语冲突"}
+ADVISORY_KINDS = {"术语冲突"}
 
 # 报告里可能出现的问题类型（展示 / 排序用）
-# ★ 「派生命中」「术语未应用」「术语冲突」是「提示 / 抽查」类：默认不勾选（不显示、
-#   默认不重翻），勾上才显示；它们不会抑制该句的其它检查
+# ★ 「术语冲突」是「提示 / 抽查」类：默认不勾选（不显示、
+#   默认不重翻），勾上才显示；它不会抑制该句的其它检查
 #   （见 checker.check 的 info 标记）。
+# ★ 「派生命中」「术语未应用」已停用：不再扫描、不再进报告。
 REPORT_KIND_ORDER = [
     "翻译失败", "术语冲突", "控制码回退",
     "疑似未翻译", "疑似异常句",
     "译文残留占位符", "译文残留控制码",
+    "译文含真实换行",
     "符号不匹配", "标点结构", "特殊行", "已编辑",
-    "派生命中", "术语未应用",
 ]
 
 # ★ 「共 N 处问题」里的 N 只统计**要处理的问题**：
-#   · 提示 / 抽查类（派生命中）：只是线索，不是问题；
 #   · 手工编辑类（已编辑）：你自己改好的句子，不是问题；
 #   · 需手动类（译文残留控制码 / 特殊行 / 控制码回退）：报告里只有灰色
 #     提示、连勾选框都没有，同样不算问题。
@@ -111,7 +113,7 @@ def count_problems(hits):
 
     hits 可以传 [(源路径, hit), ...]（GUI 的 report_hits），
     也可以传 [hit, ...]；只数 PROBLEM_KINDS 里的类型，
-    「派生命中」这类提示**不计入**（758 条提示不该算成 758 处问题）。
+    「术语冲突」这类提示**不计入**（758 条提示不该算成 758 处问题）。
     """
     n = 0
     for item in hits or []:
@@ -144,6 +146,72 @@ def save_report_edit(src, dst, src_path=None):
                                 f"（先跑一次翻译才会生成）")
     cache = Cache(cache_file)
     return cache.save_edit(src, dst)
+
+
+def save_report_edit_and_apply(src, dst, src_path=None):
+    """
+    在报告里手工改一句译文，**立即落盘**：
+
+      ① 写进翻译缓存 + <缓存>_edited.json（同 save_report_edit）；
+      ② 就地改写译文文件（*_translated.txt）里这一句所在的行，
+         其余行一个字不动——「需手动」类型（译文残留控制码 / 特殊行 /
+         控制码回退 / 译文含真实换行等）保存后立刻生效，不用再点「应用已编辑」。
+
+    返回 save_report_edit 的结果 + {"file_written": True/False}。
+    """
+    res = save_report_edit(src, dst, src_path=src_path)
+
+    # ---- 定位译文文件：优先用调用方给的源文件，否则用 Runtime 当前输入 ----
+    path = (src_path or getattr(config.Runtime, "input_file", "") or "").strip()
+    out_path = ""
+    if path and os.path.isfile(path):
+        config.Runtime.set_input(path)
+        out_path = config.Runtime.output_file
+
+    res["file_written"] = False
+    if not (out_path and os.path.isfile(out_path)):
+        emit("  ⚠ 找不到译文文件，只写入了缓存（先跑一次翻译）")
+        return res
+
+    try:
+        src_lines, _ = P.read_file(path, config.INPUT_ENCODING)
+        out_lines, _ = P.read_file(out_path, config.OUTPUT_ENCODING)
+        # ★ 行数哨兵：译文文件混入过真实换行会整体错位，此时按 idx 写行
+        #   会写进错误的句子——宁可不写，让用户重翻该文件
+        if len(out_lines) != len(src_lines):
+            emit(f"  ⚠ 行数不一致（原文 {len(src_lines)} / 译文 "
+                 f"{len(out_lines)}），译文文件没改——请重新翻译该文件"
+                 f"（缓存已更新）")
+            return res
+        out_nl = P.detect_newline(out_path, default=os.linesep)
+
+        entries, _ = P.extract_entries(src_lines)
+        line_of = {}
+        for idx, esrc in entries:
+            key = (esrc or "").strip()
+            if key and key not in line_of:
+                line_of[key] = idx
+
+        idx = line_of.get((src or "").strip())
+        if idx is None or idx >= len(out_lines):
+            emit("  ⚠ 在原文里没定位到这一句，只写入了缓存")
+            return res
+
+        m = re.match(r'^([ \t]*)', src_lines[idx])
+        indent = m.group(1) if m else ""
+        new_line = indent + (dst or "")
+        if out_lines[idx] != new_line:
+            out_lines[idx] = new_line
+            tmp = out_path + ".tmp"
+            with open(tmp, "w", encoding=config.OUTPUT_ENCODING,
+                      newline="") as f:
+                f.write(out_nl.join(out_lines))
+            atomic_replace(tmp, out_path)
+            res["file_written"] = True
+            log.info("手工编辑已写入译文文件：%s 行 %d", out_path, idx + 1)
+    except Exception as e:
+        emit(f"  ⚠ 缓存已更新，但写译文文件失败：{e}")
+    return res
 
 
 # ================================================================
@@ -242,6 +310,14 @@ def apply_manual_edits(paths):
             out_lines, _ = P.read_file(out_path, config.OUTPUT_ENCODING)
         except Exception as e:
             emit(f"  读取失败：{e}")
+            continue
+        # ★ 行数哨兵：译文文件混入过真实换行会整体错位，此时按 idx 写行
+        #   会把文字写进错误的句子——宁可不写，让用户重翻该文件
+        if len(out_lines) != len(src_lines):
+            emit(f"  ⚠ 行数不一致（原文 {len(src_lines)} / 译文 "
+                 f"{len(out_lines)}），译文文件没改——请重新翻译该文件"
+                 f"（缓存已更新 {n_cache} 条）")
+            missing += 1
             continue
         # ★ 行尾按译文文件的原始字节定，别让 Windows 文本模式把 LF 变 CRLF
         out_nl = P.detect_newline(out_path, default=os.linesep)
@@ -568,9 +644,7 @@ def load_conflict_rows(src_paths):
     return out
 
 # ================================================================
-# 派生命中（方案 F）：报告里列出「术语词根派生词」命中，供抽查
-#   · 只提示，不改译文、不抑制这句的其它检查（info=True）
-#   · 与翻译时注入 prompt 的匹配同源（processor.find_derived_terms）
+# 派生命中（方案 F）：已停用 —— 不再扫描、不再进检查报告。
 # ================================================================
 def _has_derived_candidate(line):
     """
@@ -649,7 +723,7 @@ def _derived_term_hits(entries=None, out_lines=None):
 
 def _unapplied_term_hits(entries=None, out_lines=None, section=None):
     """
-    「术语未应用」：原文命中了术语表里的规范译名，译文里却没出现。
+    「术语未应用」：已停用 —— 不再扫描、不再进检查报告。
 
     借鉴 LinguaGacha 的「术语未应用」校对警告 —— 只作提示：
     · 不计入「共 N 处问题」（ADVISORY_KINDS）；
@@ -1287,16 +1361,30 @@ def _translate_batch(client, batch_texts, cache,
         else:
             final = body_final
 
-        final, fixed_ctrl = PR.repair_missing_controls(src_body, final)
-        if fixed_ctrl:
-            log.warning("[批 %d][%d] 译文缺失控制码 %s，已按原文补回",
-                        bi, k, fixed_ctrl)
-            extra_hits.append({
-                'src': src,
-                'kind': '控制码回退',
-                'dst': final,
-                'detail': f'译文缺失控制码 {fixed_ctrl}，已按原文原样补回',
-            })
+        if getattr(config, "REPAIR_MISSING_CONTROLS", False):
+            final, fixed_ctrl = PR.repair_missing_controls(src_body, final)
+            if fixed_ctrl:
+                log.warning("[批 %d][%d] 译文缺失控制码 %s，已按原文补回",
+                            bi, k, fixed_ctrl)
+                extra_hits.append({
+                    'src': src,
+                    'kind': '控制码回退',
+                    'dst': final,
+                    'detail': f'译文缺失控制码 {fixed_ctrl}，已按原文原样补回',
+                })
+        else:
+            # 不补回：把缺失清单原样上报，由检查报告兜底
+            # （借 repair_missing_controls 的检测逻辑，但丢弃补回后的译文）
+            _final, _fixed = PR.repair_missing_controls(src_body, final)
+            if _fixed:
+                log.warning("[批 %d][%d] 译文缺失控制码 %s，不补回，进检查报告",
+                            bi, k, _fixed)
+                extra_hits.append({
+                    'src': src,
+                    'kind': '控制码回退',
+                    'dst': final,
+                    'detail': f'译文缺失控制码 {_fixed}，未补回（REPAIR_MISSING_CONTROLS=False）',
+                })
 
         # ★ 译后替换（统一译文排版，默认开；发生在还原占位符之后）
         final, n_post = REPL.apply_post(final)
@@ -1304,7 +1392,16 @@ def _translate_batch(client, batch_texts, cache,
             log.debug("[批 %d][%d] 译后替换命中 %d 条规则", bi, k, n_post)
 
         log.debug("[批 %d][%d] 最终译文=%r", bi, k, final)
-        cache.put(src, final)
+        # ★ 写缓存前清洗真实换行（cache.put 内完成）；发生过清洗就上报，
+        #   由检查报告兜底供人工核对（防止压行破坏了排版/语气）。
+        if cache.put(src, final):
+            log.warning("[批 %d][%d] 译文含真实换行，已压成空格后写入缓存", bi, k)
+            extra_hits.append({
+                'src': src,
+                'kind': '译文含真实换行',
+                'dst': cache.get(src),
+                'detail': '模型输出含真实换行，已自动压成空格写入缓存（防止译文文件行数错位）',
+            })
         ok += 1
 
     # ★ 本批全部写进缓存之后：交给 hook（术语提取页用它把本批术语立刻并进
@@ -1633,13 +1730,18 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
     try:
         out_lines, _ = P.read_file(out_path, config.OUTPUT_ENCODING)
         report_path = _report_path()
+        # ★ 行数哨兵：译文文件物理行数必须与原文一致（parser.write_output
+        #   按行 join）。行数对不上 = 有译文混进了真实换行，从出错处往后
+        #   整份报告的行号全部错位（上一对的译文配到下一对上）——
+        #   此时逐行检查只会产出「牛头不对马嘴」的假配对，直接拒绝出报告。
+        if len(out_lines) != len(lines):
+            warn = (f"行数不一致（原文 {len(lines)} / 译文 {len(out_lines)}），"
+                    f"检查报告已跳过——译文可能混入真实换行，请重新翻译该文件")
+            emit(f"⚠ {warn}")
+            log.warning(warn)
+            return
         hits = checker.check(out_lines, entries, special, report_path,
-                             extra_hits=(failed + extra_hits
-                                         + _derived_term_hits(entries,
-                                                              out_lines)
-                                         + _unapplied_term_hits(entries,
-                                                                out_lines,
-                                                                section=sec)))
+                             extra_hits=(failed + extra_hits))
         _print_summary(hits, report_path)
     except Exception as e:
         log.error("自动检查失败：%s", e)
@@ -1697,8 +1799,8 @@ def _update_snapshot():
 
 def _print_summary(hits, report_path):
     c = Counter(h['kind'] for h in hits)
-    # ★ 「共 N 处问题」只数 PROBLEM_KINDS：提示类（派生命中 / 术语未应用 /
-    #   术语冲突）与需手动类（译文残留控制码 / 特殊行 / 控制码回退）都不算
+    # ★ 「共 N 处问题」只数 PROBLEM_KINDS：提示类（术语冲突）
+    #   与需手动类（译文残留控制码 / 特殊行 / 控制码回退）都不算
     emit(f"  共 {count_problems(hits)} 处问题：")
     shown = 0
     for k in REPORT_KIND_ORDER:
@@ -1836,12 +1938,16 @@ def check_file(path, write_report=True):
 
     entries, special = P.extract_entries(src_lines)
     report_path = _report_path()
+    # ★ 行数哨兵：行数不一致 = 有译文混进真实换行，从此行号全部错位，
+    #   逐行检查只会产出「牛头不对马嘴」的假配对——拒绝出报告。
+    if len(out_lines) != len(src_lines):
+        warn = (f"行数不一致（原文 {len(src_lines)} / 译文 {len(out_lines)}），"
+                f"检查报告已跳过——译文可能混入真实换行，请重新翻译该文件")
+        emit(f"⚠ {warn}")
+        log.warning(warn)
+        return []
     hits = checker.check(out_lines, entries, special, report_path,
-                         extra_hits=(_conflicts_as_hits(entries, out_lines)
-                                     + _derived_term_hits(entries, out_lines)
-                                     + _unapplied_term_hits(
-                                         entries, out_lines,
-                                         section=_file_section(inp))))
+                         extra_hits=_conflicts_as_hits(entries, out_lines))
     return hits
 
 

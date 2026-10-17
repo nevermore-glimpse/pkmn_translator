@@ -17,6 +17,8 @@ import shutil
 import time
 import zlib
 
+from rubymarshal.constants import TYPE_IVAR as _RB_TYPE_IVAR
+from rubymarshal.reader import Reader as _RbReader
 from rubymarshal.reader import load as _rb_load
 from rubymarshal.writer import Writer as _RbWriter
 from rubymarshal.writer import write as _rb_write
@@ -24,6 +26,104 @@ from rubymarshal.writer import write as _rb_write
 from logger import get_logger
 
 log = get_logger("game_scripts")
+
+
+# ================================================================
+# ★ 读 rxdata 的「二进制安全」解码（插件容器解不开的修法）
+# ================================================================
+# rubymarshal 的 Reader 对 Marshal String 是这样解字符串的（reader.py
+# 207-236）：`_get_encoding(attributes)` 默认给 "latin1"，但串上带了
+# `E => true`（= Ruby 的 UTF-8 标记）就按 "utf-8" 解；解不出来再 fallback
+# 到 `decode("unicode-escape")`。
+#
+#   ① 先撞 UnicodeDecodeError: 'utf-8' codec can't decode byte 0x9c in
+#      position 1: invalid start byte
+#   ② 再撞 UnicodeDecodeError: 'unicodeescape' codec can't decode bytes in
+#      position 245-246: truncated \xXX escape
+#
+# 于是整份 PluginScripts.rxdata 直接读不出来，外层只剩一句
+# 「插件容器里读不出任何脚本」（2026 那次排查耗时的主因就是这个两层
+# fallback 把真实原因吞了）。
+#
+# 修法：读侧统一走 latin1 —— 0x00–0xFF **任何字节序列**都能 1:1 解成
+# U+0000–U+00FF 的 str，永不抛异常，原始字节一个都不少。
+#   · 取原始字节 → `s.encode("latin1")`（见 _string_bytes，本来就是这么写的）；
+#   · 取文本     → `_text_from_bytesafe(s)`：先 encode("latin1") 拿回字节、
+#                  再按 UTF-8 解，这样中文插件名/文件名仍然是正常文本。
+# 只在**本项目自己读 rxdata 的路径**上生效（_bytesafe_reading /
+# _rb_load_bytesafe），绝不全局 monkeypatch 第三方库。
+#
+# ★ 二进制负载（zlib 源码）与真正的 UTF-8 文本串在容器里是混在一起的，
+#   所以**哪个消费点要文本、哪个要原始字节**必须分开看：
+#     原始字节 → 脚本源码（_decode_script_bytes 走 _string_bytes）
+#     文本     → 插件名 / 插件内文件名（_plugin_name_text）
+class _ByteSafeReader(_RbReader):
+    """
+    只读「二进制安全」版的 Reader：所有 Marshal String 按 latin1 解码。
+
+    ★ 只换 `_get_encoding` 这一个静态方法 —— 它是 Reader 里唯一决定
+      「String 用什么编码解」的地方，其余逻辑（对象表、link、symbol 表）
+      一律不动，行为上与原生 Reader 完全同构。
+    """
+
+    @staticmethod
+    def _get_encoding(attrs):
+        return "latin1"
+
+
+def _rb_load_bytesafe(fd):
+    """
+    二进制安全地读一份 Marshal 数据（专给 rxdata 用）。
+
+    与 `_rb_load` 的差别只在「String 按 latin1 解」—— 任何字节序列都能读成
+    str 而不抛异常。用**显式 wrapper**（自己 new 一个 Reader 子类）而不是
+    全局 monkeypatch，所以进程里其它用 rubymarshal 的地方一点不受影响，
+    也不存在「多线程同时读时被别人的上下文换回去」的问题。
+
+    调用方拿到 str 后自己决定怎么还原：
+      · 要原始字节 → `_string_bytes(value)`（内部就是 encode("latin1")）
+      · 要文本     → `_text_from_bytesafe(value)`
+    """
+    if fd.read(1) != b"\x04":
+        raise ValueError(r"Expected token \x04")
+    if fd.read(1) != b"\x08":
+        raise ValueError(r"Expected token \x08")
+    return _ByteSafeReader(fd).read()
+
+
+def rxdata_error_text(path, e, what="读取"):
+    """
+    把「读 rxdata 失败」的真实原因整理成一句人/日志能看懂的话。
+
+    ★ 以前这类失败只留一句 `读取 xxx 失败：<str(e)>`，而 str(e) 常常是空
+      的或只有半句（rubymarshal 的 UnicodeDecodeError 尤其如此）→ 用户只看
+      到「插件容器里读不出任何脚本」，真正的 UnicodeDecodeError 被吞掉，
+      排查全靠对着第三方库重跑一遍。这里补上：
+        · 异常类型全名（`UnicodeDecodeError` 而不是笼统的 "Exception"）；
+        · 异常消息原文（codec、非法字节、出错位置都在里面）；
+        · 出错的**字节偏移**（UnicodeDecodeError 的 .start，能直接定位
+          到容器里哪个串炸的）。
+    ★ 顺带给最常见的那类坑一句排查提示，省得下次再从头推一遍。
+    """
+    name = type(e).__name__
+    msg = str(e) or "(异常没有消息)"
+    parts = ["%s %s 失败：%s: %s" % (what, path, name, msg)]
+    start = getattr(e, "start", None)
+    if isinstance(start, int):
+        parts.append("（出错字节偏移 %d）" % start)
+    if name == "UnicodeDecodeError":
+        parts.append(
+            "—— 容器里有解不开编码的 Marshal String（rubymarshal 里带 "
+            "E=true 的串会按 utf-8 解、失败后再按 unicode-escape 解，"
+            "两次都可能炸）；本项目读 rxdata 走 _rb_load_bytesafe。")
+    return "".join(parts)
+
+
+def log_rxdata_error(path, e, what="读取"):
+    """把读 rxdata 的真实失败原因写进日志，并返回那句话（给调用方复用）。"""
+    text = rxdata_error_text(path, e, what=what)
+    log.warning(text)
+    return text
 
 
 # ----------------------------------------------------------------
@@ -49,6 +149,30 @@ class _NoLinkWriter(_RbWriter):
     def must_write(self, obj):
         self.objects[id(obj)] = len(self.objects)
         return True
+
+    # ---- 「二进制安全读 ↔ 写回」的往返保真 ----------------------------
+    # 串是 `_rb_load_bytesafe` 读出来的：RubyString.text 是**按 latin1 解出来**
+    # 的一串字符，一个字符恰好等于一个原始字节。原生 Writer 会按 UTF-8 编码
+    # 它（`obj.encode("utf-8")`），于是 ≥0x80 的字节全被扩成两字节 —— 原文件
+    # 里的 zlib 负载直接解压失败，「读出来原样写回」就不再等价。
+    # 所以这里统一 `encode("latin1")`：字节一个不少地还原。
+    #   · 真正的 UTF-8 中文名（E=true）：原文件存的是 UTF-8 字节，latin1
+    #     解 → latin1 编，字节原样回来，写回后仍是合法 UTF-8；
+    #   · 二进制负载：任意字节 1:1 还原。
+    def write_ruby_string(self, obj):
+        text = getattr(obj, "text", None)
+        if not isinstance(text, str):
+            return _RbWriter.write_ruby_string(self, obj)
+        attrs = getattr(obj, "attributes", None) or {}
+        try:
+            blob = text.encode("latin1")
+        except UnicodeEncodeError:
+            # 有 >U+00FF 的字符（不是从 latin1 解出来的串）→ 退回 utf-8。
+            blob = text.encode("utf-8")
+        if self.must_write(obj):
+            self.fd.write(_RB_TYPE_IVAR)
+            self.write_bytes(blob)
+            self.write_attributes(attrs if attrs else {"E": True})
 
 
 def _rb_write_safe(fd, obj):
@@ -144,9 +268,9 @@ def loader_scripts_dir(game_dir):
         return ""
     try:
         with open(rx, "rb") as f:
-            obj = _rb_load(f)
+            obj = _rb_load_bytesafe(f)
     except Exception as e:                        # noqa: BLE001
-        log.warning("识别 loader 形态时读 %s 失败：%s", rx, e)
+        log_rxdata_error(rx, e, what="识别 loader 形态时读")
         return ""
     if not isinstance(obj, list) or not obj or len(obj) > _LOADER_MAX_ENTRIES:
         return ""
@@ -218,7 +342,7 @@ def _script_file_prefix(game_dir):
         return ""
     try:
         with open(rx, "rb") as f:
-            obj = _rb_load(f)
+            obj = _rb_load_bytesafe(f)
     except Exception:                             # noqa: BLE001
         return ""
     if not isinstance(obj, list) or len(obj) > _LOADER_MAX_ENTRIES:
@@ -476,18 +600,47 @@ def _text(value):
     return raw.decode("utf-8", "replace")
 
 
-def _decode_script_bytes(raw):
+def _text_from_bytesafe(value):
     """
-    脚本源码的原始字节 → 文本（zlib 解压 + 解码；空/读不出来返回 ""）。
+    「二进制安全解码出来的串」→ 正常文本（插件名 / 文件名这类文本字段用）。
+
+    ★ `_rb_load_bytesafe` 为了不抛异常，把所有 Marshal String 一律按
+      latin1 解（一个字节 ↔ 一个 U+00XX 字符）。纯 ASCII 不受影响，但
+      **中文插件名 / 文件名会变成 ‰∏≠Êñá 这种乱码** —— 它们的原始字节
+      其实是 UTF-8，得「先 encode("latin1") 拿回字节、再按 UTF-8 解」。
+    ★ 不是合法 UTF-8（真·二进制乱码 / 其它编码）就退回 latin1 原样展开，
+      保证永不抛异常（与 `_text` 的兜底策略一致）。
+    """
+    raw = _string_bytes(value)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin1", "replace")
+
+
+def _decompress_script(raw):
+    """
+    脚本源码的原始字节 → (解压后的原始字节, zlib 错误信息)。
 
     ★ Scripts.rxdata 与 PluginScripts.rxdata 里的源码都是
       `Zlib::Deflate.deflate(...)` 压过的，解压用同一个 zlib.decompress。
+    ★ 没压缩 / 解压失败 → 原样返回原字节 + 错误信息（""/错误文本），
+      这样上层既能拿到字节、也能把「为什么没解压」报出来。
     """
     code = _string_bytes(raw)
+    if not code:
+        return code, ""
     try:
-        code = zlib.decompress(code)
-    except zlib.error:
-        pass                      # 没压缩就直接用
+        return zlib.decompress(code), ""
+    except zlib.error as e:
+        return code, str(e)       # 没压缩就直接用，但把原因带回给调用方
+
+
+def _decode_script_bytes(raw):
+    """
+    脚本源码的原始字节 → 文本（zlib 解压 + 解码；空/读不出来返回 ""）。
+    """
+    code, _err = _decompress_script(raw)
     if not code:
         return ""
     return code.decode("utf-8", "replace")
@@ -523,9 +676,9 @@ def read_rxdata_entries(path):
     """
     try:
         with open(path, "rb") as f:
-            obj = _rb_load(f)
+            obj = _rb_load_bytesafe(f)
     except Exception as e:
-        log.warning("读取 %s 失败：%s", path, e)
+        log_rxdata_error(path, e)
         return [], 0
     if not isinstance(obj, list):
         return [], 0
@@ -549,8 +702,11 @@ def write_rxdata_entry(path, index, new_text, expect=None):
       写进 B 条目」这种会毁工程的损坏 —— 而不是默默写坏。
     备份由调用方负责（各自的备份命名规则不一样）。
     """
-    with open(path, "rb") as f:
-        obj = _rb_load(f)
+    try:
+        with open(path, "rb") as f:
+            obj = _rb_load_bytesafe(f)
+    except Exception as e:                        # noqa: BLE001
+        raise RuntimeError(rxdata_error_text(path, e)) from e
     if not isinstance(obj, list) or not 0 <= index < len(obj):
         raise RuntimeError(
             f"脚本下标 {index} 越界（这个文件共 "
@@ -580,8 +736,11 @@ def add_rxdata_script(path, title, source, before_title="Main"):
       追加到末尾的话新脚本还没定义完游戏就已经开跑 → 必须排在它前面。
       找不到 Main 就追加到末尾。
     """
-    with open(path, "rb") as f:
-        obj = _rb_load(f)
+    try:
+        with open(path, "rb") as f:
+            obj = _rb_load_bytesafe(f)
+    except Exception as e:                        # noqa: BLE001
+        raise RuntimeError(rxdata_error_text(path, e)) from e
     if not isinstance(obj, list):
         raise RuntimeError(f"{os.path.basename(path)} 不是脚本列表，放弃新增")
     used = set()
@@ -666,9 +825,9 @@ def read_plugin_entries(path):
     """
     try:
         with open(path, "rb") as f:
-            obj = _rb_load(f)
+            obj = _rb_load_bytesafe(f)
     except Exception as e:                        # noqa: BLE001
-        log.warning("读取 %s 失败：%s", path, e)
+        log_rxdata_error(path, e)
         return []
     if not isinstance(obj, list):
         return []
@@ -676,7 +835,7 @@ def read_plugin_entries(path):
     for pi, entry in enumerate(obj):
         if not isinstance(entry, (list, tuple)) or len(entry) < 3:
             continue
-        plugin = _text(entry[0])
+        plugin = _text_from_bytesafe(entry[0])
         files = entry[2]
         if not isinstance(files, (list, tuple)):
             continue
@@ -686,7 +845,8 @@ def read_plugin_entries(path):
             text = _decode_script_bytes(scr[1])
             if not text:
                 continue
-            out.append((pi, fi, plugin_script_label(plugin, _text(scr[0])),
+            out.append((pi, fi,
+                        plugin_script_label(plugin, _text_from_bytesafe(scr[0])),
                         text))
     return out
 
@@ -721,8 +881,11 @@ def write_plugin_entry(path, key, new_text, expect=None):
         pi, fi = key
     except (TypeError, ValueError):
         raise RuntimeError("插件脚本下标不对：%r" % (key,))
-    with open(path, "rb") as f:
-        obj = _rb_load(f)
+    try:
+        with open(path, "rb") as f:
+            obj = _rb_load_bytesafe(f)
+    except Exception as e:                        # noqa: BLE001
+        raise RuntimeError(rxdata_error_text(path, e)) from e
     if not isinstance(obj, list):
         raise RuntimeError(
             "%s 不是插件脚本表，放弃写入" % os.path.basename(path))
@@ -1373,16 +1536,12 @@ def _plugin_name_text(value):
     """
     Marshal String（插件名 / 插件内文件名）→ 文本。
 
-    ★ rubymarshal 读出来的 RubyString 是按 latin1 解的，中文得先
-      encode("latin1") 拿回原始字节、再按 UTF-8 解码才能还原；
-      万一不是合法 UTF-8 就 replace 兜底（宁可有个别替换符，也不抛异常）。
+    ★ 容器是用 `_rb_load_bytesafe` 读的（String 一律按 latin1 解，见上面
+      的「二进制安全」说明），所以这里必须**先 encode("latin1") 拿回原始
+      字节、再按 UTF-8 解** —— 直接用这个串会得到 `‰∏≠Êñá` 这种乱码。
+      万一不是合法 UTF-8 就 latin1 原样展开（宁可有个别怪字符，也不抛异常）。
     """
-    raw = _string_bytes(value)
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        # 万一不是合法 UTF-8：latin1 原样还原，至少不抛异常。
-        return raw.decode("latin1", "replace")
+    return _text_from_bytesafe(value)
 
 
 def _plugin_rel_parts(rel):
@@ -1469,20 +1628,37 @@ def unpack_plugin_scripts(game_dir, out_dir=None, emit=None):
         res["errors"].append(msg)
         say(msg)
         return res
-    # 闸：现成的读法读不出任何脚本（结构不符 / 空文件）就别往下走了。
+    # 闸：容器读不出来就别往下走了（真实原因由 read_plugin_entries 落日志）。
+    # ★ 读两遍是刻意的：外层 unpack 用的是**原始 Marshal 结构**（要保住
+    #   插件的 meta、原始文件名与 0 字节脚本），read_plugin_entries 只是
+    #   「这个容器确实读得出来」的闸门。
+    obj = None
+    obj_error = None
     if not read_plugin_entries(path):
-        msg = "插件容器里读不出任何脚本：%s" % path
-        res["errors"].append(msg)
-        say(msg)
-        return res
-    try:
-        with open(path, "rb") as f:
-            obj = _rb_load(f)
-    except Exception as e:                       # noqa: BLE001
-        msg = "读取 %s 失败：%s" % (path, e)
-        res["errors"].append(msg)
-        say(msg)
-        return res
+        # 闸没过：自己再读一次，这次把真实原因带到回显里（不让它只留一句
+        # 「读不出任何脚本」——那是上次排查耗掉几天的主因）。
+        try:
+            with open(path, "rb") as f:
+                obj = _rb_load_bytesafe(f)
+        except Exception as e:                    # noqa: BLE001
+            obj_error = rxdata_error_text(path, e)
+        if obj is None:
+            msg = (obj_error if obj_error
+                   else "插件容器里读不出任何脚本：%s" % path)
+            res["errors"].append(msg)
+            say(msg)
+            log.warning("插件解包失败：%s", msg)
+            return res
+    if obj is None:
+        try:
+            with open(path, "rb") as f:
+                obj = _rb_load_bytesafe(f)
+        except Exception as e:                    # noqa: BLE001
+            msg = rxdata_error_text(path, e)
+            res["errors"].append(msg)
+            say(msg)
+            log.warning("插件解包失败：%s", msg)
+            return res
     if not isinstance(obj, list):
         msg = "%s 不是插件脚本表" % path
         res["errors"].append(msg)
@@ -1510,7 +1686,16 @@ def unpack_plugin_scripts(game_dir, out_dir=None, emit=None):
                 res["errors"].append(
                     "插件 %s 第 %s 个文件没有可用文件名，已跳过" % (pname, fi))
                 continue
-            text = _decode_script_bytes(scr[1])   # zlib 解压 + UTF-8 解码
+            raw = _string_bytes(scr[1])
+            try:
+                pl = zlib.decompress(raw)
+                text = pl.decode("utf-8", "replace")
+            except zlib.error as e:
+                res["errors"].append(
+                    "插件 %s 第 %s 个文件 zlib 解压失败（%s），原样写出"
+                    % (pname, fi, e))
+                pl = raw
+                text = raw.decode("utf-8", "replace")
             dest = os.path.join(pdir, *parts)
             try:
                 d = os.path.dirname(dest)
@@ -1612,11 +1797,12 @@ def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
         return res
     try:
         with open(path, "rb") as f:
-            obj = _rb_load(f)
+            obj = _rb_load_bytesafe(f)
     except Exception as e:                       # noqa: BLE001
-        msg = "读取 %s 失败：%s" % (path, e)
+        msg = rxdata_error_text(path, e)
         res["errors"].append(msg)
         say(msg)
+        log.warning("插件编译回容器失败：%s", msg)
         return res
     if not isinstance(obj, list):
         msg = "%s 不是插件脚本表，放弃写回" % path

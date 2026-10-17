@@ -70,6 +70,8 @@ EDITABLE = [
     ("TARGET_LANG",        "目标语言",          "str",   "如 简体中文"),
     ("ASK_LANG_EACH_TIME", "每次询问语言",      "bool",  "翻译前是否弹语言选择"),
     ("PREFIX_DICT_ENABLE", "启用前缀字典", "bool", "句首控制码由字典管理"),
+    ("REPAIR_MISSING_CONTROLS", "控制码回退补回", "bool",
+     "开=译文缺失控制码时按原文补回；关=不补回，直接进检查报告"),
     ("SKIP_PURE_CONTROL", "跳过纯控制符", "bool", "剥离后无内容的句子不翻译"),
     ("PURE_CONTROL_MIN_LEN", "纯控制符阈值", "int", "剥离后最少保留几个字"),
     ("SKIP_PATH_LINES", "跳过资源路径", "bool", "形如 A/B/C 的行不翻译"),

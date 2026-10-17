@@ -15,5 +15,3 @@
 原文：An item that prevents weak wild Pokémon from appearing for 100 steps after its use.
 译文：使用后 100 步之内，弱小的野生宝可梦不会出现的道具。
 
-原文：A long, thin, bright-red string to be held by a Pokémon. If the holder becomes infatuated, so does the foe.
-译文：让宝可梦携带的又长又细的鲜红绳子。携带者陷入着迷状态时，对手也会着迷。

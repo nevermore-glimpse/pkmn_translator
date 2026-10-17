@@ -2956,9 +2956,9 @@ def write_aide_to_rxdata(game_dir, version=None, emit=None):
         return {"ok": False, "action": "missing", "index": -1, "total": 0}
     try:
         with io.open(path, "rb") as f:
-            obj = GS._rb_load(f)
+            obj = GS._rb_load_bytesafe(f)
     except Exception as e:                              # noqa: BLE001
-        say(f"[方式七] ⚠ 读 PluginScripts.rxdata 失败：{e}")
+        say("[方式七] ⚠ " + GS.rxdata_error_text(path, e))
         return {"ok": False, "action": "read_error", "index": -1, "total": 0}
     if not isinstance(obj, list):
         return {"ok": False, "action": "bad_format", "index": -1, "total": 0}
@@ -2967,7 +2967,9 @@ def write_aide_to_rxdata(game_dir, version=None, emit=None):
     hits = []
     for i, ent in enumerate(obj):
         try:
-            if ent and str(ent[0]) == XQK_PLUGIN_NAME:
+            # ★ 容器是 `_rb_load_bytesafe` 读的（String 按 latin1 解），
+            #   非 ASCII 名字用 str() 会得到乱码 → 必须走 _plugin_name_text。
+            if ent and GS._plugin_name_text(ent[0]) == XQK_PLUGIN_NAME:
                 hits.append(i)
         except (TypeError, IndexError):
             continue
@@ -3285,9 +3287,10 @@ def fix_plugin_load_order(game_dir, emit=None):
     if not os.path.isfile(path):
         return 0
     try:
-        obj = GS._rb_load(io.open(path, "rb"))
+        with io.open(path, "rb") as f:
+            obj = GS._rb_load_bytesafe(f)
     except Exception as e:                              # noqa: BLE001
-        say(f"[方式七] ⚠ 读 PluginScripts.rxdata 失败：{e}")
+        say("[方式七] ⚠ " + GS.rxdata_error_text(path, e))
         return 0
     if not isinstance(obj, list):
         return 0
@@ -3295,7 +3298,7 @@ def fix_plugin_load_order(game_dir, emit=None):
     def _idx(name):
         for i, ent in enumerate(obj):
             try:
-                if ent and str(ent[0]) == name:
+                if ent and GS._plugin_name_text(ent[0]) == name:
                     return i
             except (TypeError, IndexError):
                 continue
@@ -3339,7 +3342,8 @@ def undo_fix_plugin_load_order(game_dir, emit=None):
     if not os.path.isfile(path):
         return 0
     try:
-        obj = GS._rb_load(io.open(path, "rb"))
+        with io.open(path, "rb") as f:
+            obj = GS._rb_load_bytesafe(f)
     except Exception:                                   # noqa: BLE001
         return 0
     if not isinstance(obj, list):
@@ -3348,7 +3352,7 @@ def undo_fix_plugin_load_order(game_dir, emit=None):
     for user, _provider in XQK_ORDER_RULES:
         for i, ent in enumerate(obj):
             try:
-                if ent and str(ent[0]) == user:
+                if ent and GS._plugin_name_text(ent[0]) == user:
                     if i == 0:
                         break
                     obj.insert(0, obj.pop(i))

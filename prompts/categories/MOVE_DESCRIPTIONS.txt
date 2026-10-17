@@ -14,6 +14,3 @@
 【示例】
 原文：The user attacks with a sinister beam of light. It may also confuse the target.
 译文：使用者射出诡异的光束攻击目标。有时会使目标陷入混乱状态。
-
-原文：The user vibrates its wings to generate a damaging sound wave. It may also lower the target's Sp. Def stat.
-译文：使用者振动翅膀，产生具有破坏力的音波。有时会降低目标的特防。

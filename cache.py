@@ -2,6 +2,7 @@
 """原文 → 译文 缓存，每 N 批落盘一次，支持 Ctrl+C 后继续。"""
 import json
 import os
+import re
 import threading
 import time
 
@@ -9,6 +10,21 @@ import config
 from logger import get_logger
 
 log = get_logger("cache")
+
+# ★ 缓存里的译文禁止含「真实换行」：写回时会按行 join 成物理行，
+#   一条译文多个物理行会让译文文件行数超过原文，检查报告从此错位
+#   （上一对的译文被配到下一对上）。写缓存前把真实换行压成空格。
+_NEWLINE_RUN_RE = re.compile(r"\r\n|\r|\n+")
+
+
+def sanitize_value(value):
+    """去掉译文里的真实换行（\r\n / \r / \n → 空格），返回 (新值, 是否有改动)。"""
+    if not isinstance(value, str) or not value:
+        return value, False
+    if "\n" not in value and "\r" not in value:
+        return value, False
+    cleaned = _NEWLINE_RUN_RE.sub(" ", value)
+    return cleaned, True
 
 
 def atomic_replace(tmp, path, retries=6, delay=0.12):
@@ -94,9 +110,12 @@ class Cache:
             return self.data.get(key, default)
 
     def put(self, key, value):
+        """写入缓存；译文里的真实换行会被压成空格。返回是否发生了清洗。"""
+        value, changed = sanitize_value(value)
         with self._lock:
             self.data[key] = value
             self._dirty = True
+        return changed
 
 
     def remove_many(self, keys):

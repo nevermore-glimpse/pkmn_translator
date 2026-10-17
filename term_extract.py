@@ -67,9 +67,10 @@ r"""
    · **检查报告** `<中间文件夹>/<主名>_report.txt`（checker 生成）。
 
    取消 / 崩溃后重跑，缓存里已有的条目不重新送模型，所以「取消」不再等于白干。
-   另外还写一份**术语提取汇总报告** `<目标名>_terms_report.txt`
-   （放在缓存所在的那个中间文件夹里）：说明本次把哪些「原文 → 译文」
-   并进了术语表 AUTO 块、新增多少、冲突多少、还剩多少条没翻出来。
+
+   ★ 本模块与 term_fix 都**不写术语专用报告**：不再产出
+     `<目标名>_terms_report.txt`（提取汇总）与 `<目标名>_terms_check.txt`
+     （问题清单）。提取结果只体现在术语表 AUTO 块、翻译缓存与日志里。
 
 后续的配套功能
 ------------
@@ -483,55 +484,8 @@ def existing_keys():
 #     · 译文 = 与源文件同目录的 <主名>_translated.txt（_translate_core 回写）
 #     · 检查报告 = <中间文件夹>/<主名>_report.txt（checker 生成）
 #   这里不再推导缓存路径，也不再产出 *_terms_cache.json；
-#   只保留一份「整份提取结束后写」的术语汇总报告。
-
-
-def terms_stem(target):
-    """
-    术语汇总报告的主干名：`<目标名>_terms_report.txt` 里的 `<目标名>`。
-
-    target 是文件夹 → 用文件夹名（Text_chinese → Text_chinese_terms_report.txt）；
-    target 是单个文件 → 用它**所在文件夹**名，这样同一个文本夹里的
-    ITEM_NAMES.txt / MOVE_NAMES.txt … 共用一份报告，而不是一个文件一份。
-    """
-    if not target:
-        return "terms"
-    if os.path.isfile(target):
-        base = os.path.basename(os.path.dirname(os.path.abspath(target)))
-    else:
-        base = os.path.basename(os.path.abspath(target))
-    stem, _ext = os.path.splitext((base or "").strip())
-    return stem or "terms"
-
-
-def terms_dir(target, files=None):
-    """
-    术语中间文件（汇总报告 / 检查报告）该放哪个目录。
-
-    ★ 与名字文件的**普通翻译缓存**同目录：缓存放哪，报告就放哪 ——
-      缓存路径由 commands.cache_path_for 推导（有「翻译中间文件」夹就用它，
-      没有就与源文件同目录），这里只取它的上级目录，不另立一套规矩。
-    ★ 一个名字文件都没有 → 返回 ""（没东西可报告，也别往源文件夹里丢文件）。
-    """
-    if not target:
-        return ""
-    if files is None:
-        files = find_names_files(target)
-    if not files:
-        return ""
-    import commands as C
-    d = os.path.dirname(C.cache_path_for(files[0]) or "")
-    if d:
-        return d
-    return os.path.dirname(os.path.abspath(files[0]))
-
-
-def terms_report_path(target, files=None):
-    """术语汇总报告路径：<术语中间文件夹>/<目标名>_terms_report.txt。"""
-    d = terms_dir(target, files)
-    if not d:
-        return ""
-    return os.path.join(d, f"{terms_stem(target)}_terms_report.txt")
+#   ★ 也不再产出任何「术语专用报告」（_terms_report.txt / _terms_check.txt）——
+#     术语的成果只落在术语表 AUTO 块与普通翻译缓存里，不额外写审计文件。
 
 
 # ================================================================
@@ -602,13 +556,12 @@ def plan(target, use_cache=True):
       ③ 剩下的（todo）→ 这次真正送模型的。
 
     返回 {"found", "todo", "by_section", "files", "problems",
-          "in_term", "in_cache", "cache_path", "report_path"}
+          "in_term", "in_cache", "cache_path"}
       · files      : 识别到的名字文件（含区块号 / 类别 / 条数）
       · by_section : {区块名(小写): [待翻, ...]}
       · problems   : [(路径, 原因), ...]
       · cache_path : 名字文件的**普通翻译缓存**路径（多个文件时给它们共用的
                      中间文件夹）
-      · report_path: 整份提取结束后写的那份术语汇总报告路径
     """
     file_metas, all_names, problems = collect(target)
     files = [m["path"] for m in file_metas]
@@ -654,98 +607,7 @@ def plan(target, use_cache=True):
             "problems": problems,
             "in_term": n_term,
             "in_cache": n_cache,
-            "cache_path": cache_path,
-            "report_path": terms_report_path(target, files)}
-
-
-# ================================================================
-# 报告（整份提取结束后写一份汇总，说明本次并进了哪些术语）
-# ================================================================
-def _write_report(target, files, recs, pairs, stats, conflicts, notes,
-                  status="完成"):
-    """
-    写术语提取汇总报告 `<目标名>_terms_report.txt`（不调模型）。
-
-    内容：本次把哪些「原文 → 译文」并进了术语表 AUTO 块、新增 / 冲突多少、
-    还有多少条没翻出来。**这是可选的审计文件**，与正常翻译产出的检查报告
-    不重叠：那些查句子，这份查「自动进术语表的条目」。
-    """
-    path = stats.get("report_path") or terms_report_path(target, files)
-    if not path:
-        return None
-
-    head = [
-        "# 术语提取报告",
-        f"# 状态：{status}",
-        f"# 时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"# 目标：{target}",
-        f"# 名字文件 {stats.get('files', 0)} 个，候选 {stats.get('found', 0)} 条；"
-        f"术语表已有 {stats.get('in_term', 0)}，"
-        f"缓存已有 {stats.get('in_cache', 0)}，"
-        f"本次待翻 {stats.get('todo', 0)}",
-        f"# 本次：新翻 {stats.get('translated', 0)} 条，"
-        f"新增进术语表 {stats.get('added', 0)} 条，"
-        f"冲突 {stats.get('conflicts', 0)} 条，"
-        f"仍缺译名 {stats.get('empty', 0)} 条",
-        "=" * 70,
-        "",
-    ]
-
-    body = []
-    body.append("## 名字文件与它们的翻译缓存")
-    body.append("-" * 70)
-    for r in recs:
-        body.append(f"  {os.path.basename(r['path'])}　[{r['label']}]　"
-                    f"候选 {len(r['names'])} 条，已翻 {len(r['cached'])} 条")
-        body.append(f"      缓存：{r['cache_path']}")
-    body.append("")
-
-    if pairs:
-        body.append(f"## 本次并入术语表的 {len(pairs)} 条")
-        body.append("-" * 70)
-        for k, v in pairs.items():
-            body.append(f"  {k}  →  {v}")
-        body.append("")
-
-    if conflicts:
-        body.append(f"## 术语表里已有、译法不同 {len(conflicts)} 条（保留原有译文）")
-        body.append("-" * 70)
-        for c in conflicts:
-            body.append(f"  {c.get('src')}：已有「{c.get('old')}」，"
-                        f"本次「{c.get('new')}」")
-        body.append("")
-
-    if notes:
-        body.append(f"## 同词不同译 {len(notes)} 条（保留先到的）")
-        body.append("-" * 70)
-        for k, keep, drop in notes:
-            body.append(f"  {k}：保留「{keep}」，忽略「{drop}」")
-        body.append("")
-
-    if stats.get("empty"):
-        body.append(f"## 仍缺译名 {stats['empty']} 条")
-        body.append("-" * 70)
-        body.append("  这些候选在缓存里没有可用译名（模型没返回 / 回显原文），")
-        body.append("  术语表里也没有 —— 重跑一次术语提取就会再送模型。")
-        body.append("")
-
-    body.append("## 续翻说明")
-    body.append("-" * 70)
-    body.append("  · 名字文件走的就是菜单 2「翻译」那条流水线：译文、缓存、")
-    body.append("    检查报告都由它产出，这里只额外把缓存里的「原文 → 译文」")
-    body.append("    并入术语表（term_dict.py 的自动提取区）。")
-    body.append("  · 取消 / 中断后重跑：缓存里已翻的候选不会重复送模型。")
-    body.append("  · 想全部重翻，删掉上面各文件的 `*_cache.json` 即可。")
-    body.append("")
-
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="") as f:
-            f.write("\n".join(head + body))
-    except Exception as e:
-        log.warning("写术语提取报告失败（不影响结果）：%s", e)
-        return None
-    return path
+            "cache_path": cache_path}
 
 
 # ================================================================
@@ -828,8 +690,7 @@ def run_extract(target, batch_size=None, progress=None, cancel=None,
                 传了就临时顶替它（跑完还原）
 
     返回统计 dict：found / todo / translated / added / conflicts / empty /
-    files / conflict_notes / in_term / in_cache / cancelled /
-    report_path / cache_path
+    files / conflict_notes / in_term / in_cache / cancelled / cache_path
     """
     import bridge
     import commands as C
@@ -842,7 +703,7 @@ def run_extract(target, batch_size=None, progress=None, cancel=None,
              "added": 0, "conflicts": 0, "empty": 0, "files": len(files),
              "conflict_notes": [], "in_term": p["in_term"],
              "in_cache": p["in_cache"], "cancelled": False,
-             "report_path": p["report_path"], "cache_path": p["cache_path"]}
+             "cache_path": p["cache_path"]}
     t0 = time.time()
 
     if not files:
@@ -972,9 +833,6 @@ def run_extract(target, batch_size=None, progress=None, cancel=None,
                 empty += 1
         stats["empty"] = empty
 
-        status = "已取消" if cancelled else "完成"
-        _write_report(target, files, recs, pairs, stats, dict_conflicts, notes,
-                      status=status)
     finally:
         if has_batch:
             config.BATCH_SIZE = saved_batch
@@ -989,8 +847,6 @@ def run_extract(target, batch_size=None, progress=None, cancel=None,
              "（已取消）" if cancelled else "完成", stats["found"],
              stats["todo"], stats["translated"], stats["added"],
              stats["conflicts"], stats["empty"], elapsed)
-    if stats["report_path"]:
-        log.info("术语提取报告：%s", stats["report_path"])
     return stats
 
 

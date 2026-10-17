@@ -361,7 +361,8 @@ class RoundCard(tk.Canvas):
     """毛玻璃卡片：圆角 + 描边 + 底部投影，内部放一个 Frame。"""
 
     def __init__(self, master, radius=16, fill=CARD, border=CARD_BORDER,
-                 shadow=SHADOW, pad=14, bg=None, auto_height=False, **kw):
+                 shadow=SHADOW, pad=14, bg=None, auto_height=False,
+                 scrollable=False, **kw):
         bg = bg or BG_BASE
         kw.setdefault("width", 10)     # Tk Canvas 默认请求 378x265，会撑爆布局
         kw.setdefault("height", 10)
@@ -373,8 +374,16 @@ class RoundCard(tk.Canvas):
         self.pad = pad
         self.auto_height = auto_height   # True: 高度由内容决定（不被拉伸时用）
 
-        self.body = tk.Frame(self, bg=fill)
-        self._win = self.create_window(0, 0, window=self.body, anchor="nw")
+        if scrollable:
+            # 内容超高时整块滚动：窗口里放的是滚动区 outer（仍被钉成卡片
+            # 尺寸，见 _resize），self.body 指向滚动区的 inner —— inner 不
+            # 再被钉高，超高部分溢出后可由画布滚动。外部 card.body 写法不变。
+            _outer, _inner = make_scroll_area(self, bg=fill)
+            self.body = _inner
+            self._win = self.create_window(0, 0, window=_outer, anchor="nw")
+        else:
+            self.body = tk.Frame(self, bg=fill)
+            self._win = self.create_window(0, 0, window=self.body, anchor="nw")
         self.bind("<Configure>", self._resize)
         if auto_height:
             self.body.bind("<Configure>", self._body_resize)
@@ -1300,16 +1309,18 @@ class FilePanel(tk.Frame):
                                      wraplength=max(100, width - 150))
             self.root_lbl.pack(side="left", padx=6)
 
-        outer, inner = make_scroll_area(self, bg=bg)
-        outer.pack(fill="both", expand=True, padx=6, pady=(4, 8))
-        self.list_inner = inner
+        # ★ 列表不再自己滚：整块面板由外层右栏的可滚卡片承载（决策 B）。
+        #   这里保留 list_inner 这个名字与「塞子控件」的语义，只把画布容器
+        #   换成普通 Frame，让列表按自然高度展开。
+        self.list_inner = tk.Frame(self, bg=bg)
+        self.list_inner.pack(fill="both", padx=6, pady=(4, 8))
 
         # ★ 在列表空白处右键 → 复制所有已选文件的完整路径
         attach_copy(self.list_inner, [
             ("复制已选文件的完整路径", self._paths_text),
         ], app=self.app, hotkey=False)
 
-        self._hint = tk.Label(inner, text=self._hint_text(),
+        self._hint = tk.Label(self.list_inner, text=self._hint_text(),
                               bg=bg, fg=C_HINT, font=FONT_SMALL,
                               justify="left",
                               wraplength=max(120, self.panel_w - 62))
@@ -2167,11 +2178,11 @@ class SavePanel(tk.Frame):
         self.count_lbl = tk.Label(r2, text="", bg=bg, fg=C_KEY, font=FONT_BIG)
         self.count_lbl.pack(side="left", padx=(10, 0))
 
-        outer, inner = make_scroll_area(self, bg=bg)
-        outer.pack(fill="both", expand=True, padx=6, pady=(2, 4))
-        self.list_inner = inner
+        # ★ 同 FilePanel：去掉内层滚动，整块面板跟着右栏卡片一起滚。
+        self.list_inner = tk.Frame(self, bg=bg)
+        self.list_inner.pack(fill="both", padx=6, pady=(2, 4))
         self._hint = tk.Label(
-            inner,
+            self.list_inner,
             text="点「选择存档文件」挑一个 .rxdata\n"
                  "（可以一次选多个；列表里点一下切换）\n\n"
                  "存档一般在游戏目录里，或在\n"
@@ -2504,9 +2515,11 @@ class PokemonForm:
         self.quick_lbl.pack(fill="x")
         bind_autowrap(self.quick_lbl, pad=4, minimum=120)
 
-        outer, inner = make_scroll_area(f, bg=CARD)
-        outer.pack(fill="both", expand=True, pady=(6, 0))
-        g = inner
+        # ★ 表单内容不再自己滚：整个 PokemonForm 由所在右栏卡片滚动承载。
+        #   继续用 make_scroll_area 的话，画布 height=10 会在没有固定高度的
+        #   父容器里塌成 0 高，整个表单看不见。
+        g = tk.Frame(f, bg=CARD)
+        g.pack(fill="both", pady=(6, 0))
 
         # --- 基本 ---
         sec = tk.Frame(g, bg=CARD)
@@ -3236,11 +3249,12 @@ class PbsGamePanel(tk.Frame):
         tk.Label(self, text="游戏里的 PBS 文件", bg=bg, fg=C_TITLE,
                  font=FONT_B).pack(anchor="w", padx=10)
 
-        outer, inner = make_scroll_area(self, bg=bg)
-        outer.pack(fill="both", expand=True, padx=6, pady=(2, 4))
-        self.list_inner = inner
+        # ★ 同 FilePanel：去掉内层滚动，整块面板跟着右栏卡片一起滚。
+        self.list_inner = tk.Frame(self, bg=bg)
+        self.list_inner.pack(fill="both", padx=6, pady=(2, 4))
         self._hint = tk.Label(
-            inner, text="先在上面选好游戏。\n\n支持的版本：Essentials v19 / "
+            self.list_inner,
+            text="先在上面选好游戏。\n\n支持的版本：Essentials v19 / "
                         "v20 / v21（v16～v18 的老游戏\n自带 PBS 目录，"
                         "交给游戏自己编译就行）。",
             bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
@@ -5002,7 +5016,8 @@ class App:
         self._refresh_plugin_font()
 
         # ---- 右侧：游戏文件夹 + 提示 ----
-        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272,
+                                scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         body = fp_holder.body
@@ -5283,7 +5298,8 @@ class App:
         attach_label_copy(self.te_stat_lbl, self, "术语提取结果")
 
         # ---- 右侧：文本文件来源 ----
-        holder = RoundCard(page, radius=16, pad=10, width=300)
+        holder = RoundCard(page, radius=16, pad=10, width=300,
+                           scrollable=True)
         holder.grid(row=0, column=1, sticky="nsew")
         holder.grid_propagate(False)
         body = holder.body
@@ -5548,9 +5564,6 @@ class App:
         GlassButton(btn_row, "复制列表", width=118, height=46, bg=CARD,
                     font=FONT_BIG,
                     command=self._copy_tc_list).pack(side="left")
-        GlassButton(btn_row, "打开报告文件", width=140, height=46, bg=CARD,
-                    font=FONT_BIG,
-                    command=self._open_tc_report).pack(side="left", padx=10)
         GlassButton(btn_row, "撤销改动", width=118, height=46, bg=CARD,
                     font=FONT_BIG,
                     command=self._undo_tc_edits).pack(side="left", padx=10)
@@ -5561,8 +5574,9 @@ class App:
                     bg=CARD, font=FONT_BIG,
                     command=self._do_tc_retranslate).pack(side="right")
         tk.Label(c3.body,
-                 text="报告文件与术语缓存同目录（`<目标名>_terms_check.txt`）；"
-                      "本页数据都来自缓存与术语表，改译名 / 应用修改不走模型；"
+                 text="本页数据都来自缓存与术语表，不生成报告文件；"
+                      "双击「译名」列改完点「应用修改」即可同时更新缓存、"
+                      "译文文件（如有）与术语表自动提取区（不走模型）；"
                       "「术语重翻」会删掉选中条目的缓存并重走翻译流水线"
                       "（会调用模型），\n"
                       "并把每批翻出的新译名逐批写进术语表自动提取区。",
@@ -5570,7 +5584,8 @@ class App:
                  wraplength=560).pack(anchor="w", pady=(8, 0))
 
         # 右侧：目标文件来源（与术语提取页共用 te_target）
-        holder = RoundCard(page, radius=16, pad=8, width=272)
+        holder = RoundCard(page, radius=16, pad=8, width=272,
+                           scrollable=True)
         holder.grid(row=0, column=1, sticky="nsew", rowspan=3)
         holder.grid_propagate(False)
         body = holder.body
@@ -5614,8 +5629,7 @@ class App:
 
         def work():
             hits = TFX.check_terms(target)
-            path = TFX.write_report(target, hits)
-            self.q.put(("termcheck", (hits, path)))
+            self.q.put(("termcheck", (hits, "")))
 
         if self.busy:
             messagebox.showinfo("提示", "已有任务在运行")
@@ -5626,14 +5640,11 @@ class App:
     def _fill_termcheck(self, payload):
         hits, path = payload if isinstance(payload, tuple) else (payload, "")
         self.tc_hits = list(hits or [])
-        self.tc_report_path = path
         self.tc_edits = {}           # {原文: 新译名}
         self.tc_edit_stack = []      # [(原文, 旧译名, 新译名)] 供撤销
         self._render_tc_rows()
         n = len(self.tc_hits)
-        self.status_var.set(f"术语检查完成：{n} 处问题"
-                            + (f"　报告：{os.path.basename(path)}" if path
-                               else ""))
+        self.status_var.set(f"术语检查完成：{n} 处问题")
 
     def _tc_filtered_hits(self):
         """当前**筛选后显示**的问题条目（口径与 _render_tc_rows 完全一致）。"""
@@ -5820,20 +5831,6 @@ class App:
         """把术语检查报告当前显示的内容复制成制表符分隔文本。"""
         self.copy_to_clipboard(tree_text(self.tc_tree), "术语检查列表")
 
-    def _open_tc_report(self):
-        path = getattr(self, "tc_report_path", "")
-        if not path or not os.path.isfile(path):
-            messagebox.showinfo("提示", "还没有报告文件，请先点「刷新报告」")
-            return
-        try:
-            if os.name == "nt":
-                os.startfile(path)          # noqa: S606
-            else:
-                import subprocess
-                subprocess.Popen(["xdg-open", path])
-        except Exception as e:
-            messagebox.showwarning("打开失败", f"{e}\n请手动打开：{path}")
-
     def _goto_termcheck(self):
         """术语提取 → 检查报告：带着同一个目标过去。"""
         self.show("termcheck")
@@ -5906,7 +5903,8 @@ class App:
                                                            pady=(8, 0))
 
         # 右侧文件栏
-        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272,
+                                scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "source")
@@ -6019,7 +6017,7 @@ class App:
         tree = ttk.Treeview(wrap, columns=cols, show="headings", height=3)
         for c, w, t in (("kind", 78, "类型"), ("line", 44, "行"),
                         ("src", 178, "原文"), ("dst", 178, "译文"),
-                        ("detail", 176, "说明")):
+                        ("detail", 176, "来源")):
             tree.heading(c, text=t)
             tree.column(c, width=w, anchor="w")
         sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
@@ -6069,7 +6067,8 @@ class App:
 
         self.c3_normal.pack(fill="x")
 
-        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272,
+                                scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "report")
@@ -6303,13 +6302,16 @@ class App:
             elif has_filter and kind not in sel:
                 continue
             shown += 1
+            # ★ 说明列显示该句所属的源文件名（多文件报告一眼区分）；
+            #   report_iid_map 存 (path, hit)，编辑时能精确定位对应缓存
             iid = tree.insert("", "end", values=(
                 kind, h.get("line_no", ""),
                 (h.get("src") or "")[:200],
                 (h.get("dst") or "")[:200],
-                (h.get("detail") or "")[:200],
+                (os.path.basename(_path)
+                 if _path else (h.get("detail") or ""))[:200],
             ))
-            self.report_iid_map[iid] = h
+            self.report_iid_map[iid] = (_path, h)
         total = commands.count_problems(getattr(self, "report_hits", []))
         if kw:
             short = kw if len(kw) <= 12 else kw[:12] + "…"
@@ -6898,15 +6900,25 @@ class App:
         hit = getattr(self, "report_iid_map", {}).get(iid)
         if hit is None:
             return
-        self._open_report_edit(iid, hit)
+        # hit = (源文件路径, hit dict)
+        if isinstance(hit, tuple):
+            src_path, hit = hit
+        else:
+            src_path = None
+        self._open_report_edit(iid, hit, src_path=src_path)
 
-    def _open_report_edit(self, iid, hit):
+    def _open_report_edit(self, iid, hit, src_path=None):
         """
         编辑单句译文：上方原文（只读，用来对照）、下方译文（可编辑）。
         保存后写入翻译缓存，并把这句归入「已编辑」类型。
+        src_path: 该行属于哪个源文件（多文件报告时精确锁定对应缓存）。
         """
         src = hit.get("src") or ""
         dst = hit.get("dst") or ""
+        # ★ 原类型是「需手动」（不自动重翻）时：保存后立即写缓存+译文文件，
+        #   不再等「应用已编辑」。先记下原类型（保存后 hit 会被改成「已编辑」）。
+        orig_kind = hit.get("kind") or ""
+        manual_kind = orig_kind in commands.NEVER_RETRANSLATE_KINDS
         if not src.strip():
             messagebox.showinfo("提示", "这一行没有原文，无法定位缓存条目")
             return
@@ -6923,8 +6935,12 @@ class App:
         tk.Label(body, text="编辑译文", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
         tk.Label(body,
-                 text="保存后：写入翻译缓存，并把这一句归入「已编辑」类型"
-                      "（默认不勾选，也不会被重翻覆盖）。",
+                 text=("保存后：写入翻译缓存**并直接更新译文文件**，"
+                       "并把这一句归入「已编辑」类型"
+                       "（默认不勾选，也不会被重翻覆盖）。"
+                       if manual_kind else
+                       "保存后：写入翻译缓存，并把这一句归入「已编辑」类型"
+                       "（默认不勾选，也不会被重翻覆盖）。"),
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=600).pack(anchor="w", pady=(4, 10))
 
@@ -6962,7 +6978,12 @@ class App:
                         "保存空译文会让这一句在游戏里显示为空。\n确定吗？"):
                     return
             try:
-                res = commands.save_report_edit(src, new)
+                if manual_kind:
+                    res = commands.save_report_edit_and_apply(src, new,
+                                                              src_path=src_path)
+                else:
+                    res = commands.save_report_edit(src, new,
+                                                    src_path=src_path)
             except Exception as e:
                 messagebox.showerror("保存失败", str(e))
                 return
@@ -6980,9 +7001,15 @@ class App:
             if var is not None:
                 var.set(True)
             self._render_report_rows()
-            self.status_var.set("已保存：译文写入缓存，该句归入「已编辑」")
-            self._append_log(f"[编辑] 已写入缓存：{os.path.basename(res['cache'])}"
-                             f"（{len(new)} 字）\n")
+            if manual_kind and res.get("file_written"):
+                self.status_var.set("已保存：译文写入缓存与译文文件，该句归入「已编辑」")
+                self._append_log(f"[编辑] 已写入缓存与译文文件："
+                                 f"{os.path.basename(res['cache'])}"
+                                 f"（{len(new)} 字）\n")
+            else:
+                self.status_var.set("已保存：译文写入缓存，该句归入「已编辑」")
+                self._append_log(f"[编辑] 已写入缓存：{os.path.basename(res['cache'])}"
+                                 f"（{len(new)} 字）\n")
 
         def cancel():
             win.destroy()
@@ -7162,7 +7189,8 @@ class App:
                     bg=CARD, command=self._do_apply_terms).pack(side="left",
                                                                padx=(8, 0))
 
-        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272,
+                                scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "cache")
@@ -7590,7 +7618,8 @@ class App:
                     font=FONT_BIG,
                     command=self._do_apply_prefix_terms).pack(side="right")
 
-        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272,
+                                scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "cache")
@@ -7748,7 +7777,8 @@ class App:
                  bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(anchor="w",
                                                            pady=(8, 0))
 
-        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272,
+                                scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         fp = self._make_file_panel(fp_holder, "cache")
@@ -7796,7 +7826,8 @@ class App:
         self._build_reflow_panel(c1.body)
 
         # ---- 右侧：待操作的译文 txt 文件 ----
-        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272,
+                                scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         self.fp_reflow = self._make_file_panel(fp_holder, "translated",
@@ -8335,7 +8366,7 @@ class App:
         right = tk.Frame(self.excel_view, bg=BG_BASE, width=330)
         right.grid(row=0, column=1, sticky="nsew")
         right.pack_propagate(False)
-        card = RoundCard(right, radius=16, pad=14)
+        card = RoundCard(right, radius=16, pad=14, scrollable=True)
         card.pack(fill="both", expand=True)
         tk.Label(card.body, text="提示", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
@@ -8600,7 +8631,7 @@ class App:
         right = tk.Frame(view, bg=BG_BASE, width=316)
         right.grid(row=0, column=1, sticky="nsew")
         right.pack_propagate(False)
-        card = RoundCard(right, radius=16, pad=14)
+        card = RoundCard(right, radius=16, pad=14, scrollable=True)
         card.pack(fill="both", expand=True)
         tk.Label(card.body, text="术语字典", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
@@ -9377,7 +9408,8 @@ class App:
                     command=self._pv_open_home).pack(side="left")
 
         # ---------- 右侧：切换适配 ----------
-        right = RoundCard(page, radius=16, pad=12, width=272)
+        right = RoundCard(page, radius=16, pad=12, width=272,
+                          scrollable=True)
         right.grid(row=0, column=1, sticky="nsew")
         right.grid_propagate(False)
         tk.Label(right.body, text="切换适配", bg=CARD, fg=C_TITLE,
@@ -9388,9 +9420,11 @@ class App:
                                    justify="left", wraplength=238)
         self.pv_from_to.pack(fill="x", pady=(4, 6))
 
-        outer, inner = make_scroll_area(right.body, bg=CARD)
-        outer.pack(fill="both", expand=True)
-        self.pv_adapt_text = tk.Text(inner, wrap="word", font=FONT_SMALL,
+        # ★ 右栏卡片自己会滚了，这里再套一层 make_scroll_area 会变成
+        #   「滚动套滚动」，画布 height=10 在无固定高的父容器里塌成 0 高 →
+        #   适配清单整个看不见。Text 不给 height（默认 24 行）即可自然撑开。
+        self.pv_adapt_text = tk.Text(right.body, wrap="word",
+                                     font=FONT_SMALL,
                                      bg=CARD, fg=TEXT, relief="flat", bd=0,
                                      highlightthickness=0, spacing1=3,
                                      spacing3=3)
@@ -10278,7 +10312,8 @@ class App:
         self.dbg_hint_lbl.pack(anchor="w", pady=(6, 0))
 
         # ---- 右侧：游戏启动程序（exe）----
-        fp_holder = RoundCard(page, radius=16, pad=8, width=272)
+        fp_holder = RoundCard(page, radius=16, pad=8, width=272,
+                                scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
         body = fp_holder.body
@@ -11127,7 +11162,7 @@ class App:
         holder = tk.Frame(page, bg=BG_BASE, width=340)
         holder.grid(row=0, column=1, sticky="nsew")
         holder.pack_propagate(False)
-        card = RoundCard(holder, radius=16, pad=12)
+        card = RoundCard(holder, radius=16, pad=12, scrollable=True)
         card.pack(fill="both", expand=True)
         self.pbs_panel = PbsGamePanel(card.body, bg=CARD, app=self)
         self.pbs_panel.pack(fill="both", expand=True)
@@ -11411,7 +11446,7 @@ class App:
         ecol = tk.Frame(right, bg=BG_BASE, width=300)
         ecol.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         ecol.pack_propagate(False)
-        ecard = RoundCard(ecol, radius=16, pad=12)
+        ecard = RoundCard(ecol, radius=16, pad=12, scrollable=True)
         ecard.pack(fill="both", expand=True)
         self.pbs_entry_title = tk.Label(ecard.body, text="（选一个文件）",
                                         bg=CARD, fg=C_TITLE,
@@ -12569,7 +12604,7 @@ class App:
         holder = tk.Frame(page, bg=BG_BASE, width=panel_width)
         holder.grid(row=0, column=1, sticky="nsew")
         holder.pack_propagate(False)
-        card = RoundCard(holder, radius=16, pad=12)
+        card = RoundCard(holder, radius=16, pad=12, scrollable=True)
         card.pack(fill="both", expand=True)
         panel = SavePanel(card.body, bg=CARD, app=self)
         panel.pack(fill="both", expand=True)
@@ -13040,7 +13075,7 @@ class App:
 
         holder.pack(fill="both", expand=True)
 
-        rcard = RoundCard(wrap, radius=16, pad=12)
+        rcard = RoundCard(wrap, radius=16, pad=12, scrollable=True)
         rcard.grid(row=0, column=1, sticky="nsew")
         self.party_form = PokemonForm(rcard.body, self)
         self.party_form.frame.pack(fill="both", expand=True)
@@ -13410,7 +13445,7 @@ class App:
 
         holder.pack(fill="both", expand=True, pady=(6, 4))
 
-        rcard = RoundCard(wrap, radius=16, pad=12)
+        rcard = RoundCard(wrap, radius=16, pad=12, scrollable=True)
         rcard.grid(row=0, column=1, sticky="nsew")
         self.box_form = PokemonForm(rcard.body, self)
         self.box_form.frame.pack(fill="both", expand=True)
@@ -13578,7 +13613,7 @@ class App:
                     command=self._switch_all_off).pack(side="left")
 
         # ---- 右卡：全局变量 ----
-        rcard = RoundCard(wrap, radius=16, pad=12)
+        rcard = RoundCard(wrap, radius=16, pad=12, scrollable=True)
         rcard.grid(row=0, column=1, sticky="nsew")
         tk.Label(rcard.body, text="全局变量", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")

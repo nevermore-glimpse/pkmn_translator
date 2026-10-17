@@ -60,7 +60,7 @@ def resource_dir(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.7.6"
+VERSION     = "1.7.7"
 APP_NAME    = "宝可梦同人工具"
 APP_TITLE   = f"{APP_NAME} v{VERSION}"
 
@@ -450,6 +450,10 @@ EXCEL_TARGET_LANG = "简体中文"
 EXCEL_APPEND      = True
 # ---------- 句首控制码字典 ----------
 PREFIX_DICT_ENABLE = True    # 启用句首控制码前缀字典
+# ---------- 控制码回退 ----------
+# True  = 译文缺失控制码时按原文补回
+# False = 不补回，缺失清单原样进检查报告（kind: 控制码回退）
+REPAIR_MISSING_CONTROLS = False
 # ---------- 文本保护规则（text_preserve） ----------
 # 目录名（与 config.py 同级）。规则文件格式与用法见该目录下 README.md。
 TEXT_PRESERVE_DIR = "text_preserve"

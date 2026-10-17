@@ -10,12 +10,12 @@ r"""
    不一致。为此单开这个功能，与「重翻检查报告 / 术语更新后重翻」同型：
 
    · **检查报告**（check_terms）：只读缓存与术语表，列出问题条目
-     （没译出来的、同词不同译的、译名可疑的），生成中间报告文件；
+     （没译出来的、同词不同译的、译名可疑的）；
      界面上双击「译名」列即可改，点「应用」把改动同时写进
        ① 名字文件的**普通翻译缓存**（`*_cache.json`，按 key 增量改）
        ② 名字文件对应的译文文件（`*_translated.txt`，有的话）
        ③ 术语表的 AUTO 块（`term_dict.py`）
-   原文列只读；**检查报告与「应用修改」都不调用模型**。
+   原文列只读；**检查与「应用修改」都不调用模型，也不写任何报告文件**。
    另有 `retranslate()`：把选中条目的缓存 key 删掉后重走翻译流水线，
    **这一步会调用模型**（见「术语重翻」按钮）。
 
@@ -33,24 +33,23 @@ r"""
 ----
     p = term_fix.plan(target)                  # 统计：多少条、几类有问题
     hits = term_fix.check_terms(target)        # 问题条目（不写文件）
-    path = term_fix.write_report(target)       # 写 <目标名>_terms_check.txt
     n = term_fix.apply_fixes(target, fixes)    # fixes = {原文: 新译名}
     st = term_fix.retranslate(target, items)   # 删缓存 + 走流水线重翻（调模型）
+
+★ 本模块不写任何报告文件（`_terms_check.txt` 已移除）；问题条目只展示在
+  GUI 的「术语检查报告」页里，改译名用「应用修改」直接写回三处。
 """
 import io
 import json
 import os
 import re
-import time
 
 import config
 from logger import get_logger
 
 log = get_logger("term_fix")
 
-CHECK_REPORT_SUFFIX = "_terms_check.txt"
-
-# 报告里问题类型的固定顺序（与 commands.REPORT_KIND_ORDER 同风格）
+# 问题类型的固定顺序（与 commands.REPORT_KIND_ORDER 同风格）
 KIND_ORDER = ["译名为空", "同词不同译", "未翻（回显原文）",
               "译文残留英文", "疑似机翻残留"]
 
@@ -110,9 +109,8 @@ def plan(target):
     统计一遍缓存里的术语（不调模型、不写文件）。
 
     返回 {"total", "sections", "in_dict", "not_in_dict", "problems",
-          "cache_path", "report_path"}
+          "cache_path"}
       · cache_path：名字文件的普通翻译缓存（多个文件时给它们共用的中间文件夹）
-      · report_path：检查报告路径
     """
     secs = _sections(target)
     pairs = _term_dict_pairs()
@@ -145,7 +143,6 @@ def plan(target):
         "not_in_dict": not_in_dict,
         "problems": len(problems),
         "cache_path": cache_path,
-        "report_path": report_path_for(target),
     }
 
 
@@ -234,101 +231,6 @@ def _looks_untranslated(text):
     t = re.sub(r'[\[\]{}<>@#~%$^&*_=|/\\\'"“”‘’()（）…·・.,;:!?！？，。、；：\s]',
                '', t)
     return not t
-
-
-# ================================================================
-# 报告
-# ================================================================
-def report_path_for(target):
-    """检查报告路径：放名字文件的**翻译中间文件夹**，`<目标名>_terms_check.txt`。"""
-    import term_extract as TE
-
-    d = TE.terms_dir(target)
-    if not d:
-        return ""
-    return os.path.join(d, f"{TE.terms_stem(target)}{CHECK_REPORT_SUFFIX}")
-
-
-def write_report(target, hits=None):
-    """
-    写术语提取的检查报告 `<目标名>_terms_check.txt`。
-
-    hits 为 None 时自己跑一遍 check_terms。返回报告路径（没得写返回 ""）。
-    """
-    if hits is None:
-        hits = check_terms(target)
-    path = report_path_for(target)
-    if not path:
-        return ""
-
-    secs = _sections(target)
-    total = sum(len(s["items"]) for s in secs)
-    pairs = _term_dict_pairs()
-
-    head = [
-        "# 术语提取检查报告",
-        f"# 时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"# 目标：{target}",
-        f"# 名字文件：{len(secs)} 个（术语 {total} 条，取自各自的普通翻译缓存）",
-        f"# 术语表：{config.TERM_FILE}（{len(pairs)} 条）",
-        f"# 发现问题：{len(hits)} 处",
-        "#",
-        "# 说明：本报告只读翻译缓存与术语表；改译名 / 应用修改不走模型，",
-        "#       点「术语重翻」删掉这些条目的缓存并重走翻译流水线时会调用模型。",
-        "#       在检查报告里双击译文列改，点「应用修改」即可同时",
-        "#       更新缓存、译文文件（如有）与术语表的自动提取区。",
-        "=" * 70,
-        "",
-    ]
-
-    body = []
-    if not hits:
-        body.append("（没有发现问题）")
-        body.append("")
-    else:
-        groups = {}
-        for h in hits:
-            groups.setdefault(h["kind"], []).append(h)
-        for kind in KIND_ORDER + [k for k in groups if k not in KIND_ORDER]:
-            items = groups.get(kind)
-            if not items:
-                continue
-            body.append(f"## {kind}　{len(items)} 条")
-            body.append("-" * 70)
-            for h in items:
-                body.append(f"  [{h['section']}] {h['src']}")
-                body.append(f"      译名：{h['dst'] or '（空）'}")
-                body.append(f"      说明：{h['detail']}")
-            body.append("")
-
-    # 附一份分类统计 + 缓存位置，方便一眼看出覆盖情况
-    sections = {}
-    for s in secs:
-        sections[s["label"]] = sections.get(s["label"], 0) + len(s["items"])
-    if sections:
-        body.append("## 各类条数")
-        body.append("-" * 70)
-        for k, v in sorted(sections.items(), key=lambda kv: -kv[1]):
-            body.append(f"  {k}：{v}")
-        body.append("")
-
-    if secs:
-        body.append("## 数据来源（名字文件的普通翻译缓存）")
-        body.append("-" * 70)
-        for s in secs:
-            body.append(f"  {os.path.basename(s['path'])}　[{s['label']}]　"
-                        f"{len(s['items'])} 条")
-            body.append(f"      缓存：{s['cache_path']}")
-        body.append("")
-
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with io.open(path, "w", encoding="utf-8", newline="") as f:
-            f.write("\n".join(head + body))
-    except Exception as e:
-        log.warning("写术语检查报告失败（不影响结果）：%s", e)
-        return ""
-    return path
 
 
 # ================================================================
