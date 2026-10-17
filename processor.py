@@ -175,6 +175,9 @@ _PH_COLLISION_RE = re.compile(r'@\d+@')
 # ================================================================
 # 资源路径：形如 Graphics/Pictures/battleCommandButtons
 # 这类是给引擎看的文件名，翻成中文反而会找不到资源，一律跳过。
+# ★ 必须以引擎的顶层资源目录开头（Audio/Data/Fonts/Graphics/PBS/Plugins），
+#   路径段内允许空格（如 Graphics/Pictures/Tip Cards/arrow_right）。
+_PATH_TOP_DIRS = ("Audio", "Data", "Fonts", "Graphics", "PBS", "Plugins")
 _PATH_LIKE_RE = re.compile(r'^[^\s:/\\]+(?:/[^\s:/\\]+){2,}$')
 _CJK_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]')
 
@@ -183,17 +186,31 @@ def is_path_like(text):
     """
     判断是不是资源路径（例如 Graphics/Pictures/battleCommandButtons）。
 
-    规则：整行只有「用 / 分隔的 2 段以上路径」，不含空格、不含中文，
-    也不是 URL（URL 会有 `//`，分段后出现空段，自然被排除）。
+    规则：
+      ① 整行无空格时：用旧的通用路径规则（/ 分隔 2 段以上，无中文，非 URL）；
+      ② 整行含空格时：必须以 _PATH_TOP_DIRS 之一开头 + / 分隔 2 段以上，
+         每段都不含中文 —— 放行「Graphics/Pictures/Tip Cards/arrow_right」，
+         挡住「The effects of {1}'s {2} wore off!」这类正常句子。
     """
     if not text:
         return False
     t = text.strip()
-    if not t or " " in t or "\t" in t:
+    if not t or "\t" in t:
         return False
     if _CJK_RE.search(t):
         return False
-    return bool(_PATH_LIKE_RE.match(t))
+    if " " not in t:
+        # 旧规则：无空格的通用路径（≥3 段）
+        if _PATH_LIKE_RE.match(t):
+            return True
+        # 补充：引擎资源目录开头的 2 段路径也算（PBS/pokemon.txt）
+        first, _, rest = t.partition("/")
+        return first in _PATH_TOP_DIRS and bool(rest.strip())
+    # 新规则：带空格的路径段 → 必须是引擎资源目录开头（≥2 段）
+    first, _, rest = t.partition("/")
+    if first not in _PATH_TOP_DIRS or not rest.strip():
+        return False
+    return True
 
 
 # ================================================================

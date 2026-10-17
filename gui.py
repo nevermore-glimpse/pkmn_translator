@@ -2124,6 +2124,470 @@ def btn_grid(parent, specs, columns=2, bg=None, width=118, height=33):
     return grid
 
 
+# ================================================================
+# 存档编辑：字段级校验 / 写回差异 / 编码标记 —— 表格化小工具
+#   ★ 这一节全是**纯函数**（不碰 Tk）：把内核给的 dict 列表格式化成
+#     Treeview 的行数据，可以脱离窗口单独跑测试。
+# ================================================================
+SAVE_ISSUE_COLUMNS = [("lv", "等级"), ("where", "位置"),
+                      ("field", "字段"), ("why", "原因")]
+SAVE_DIFF_COLUMNS = [("where", "位置"), ("field", "字段"),
+                     ("old", "原值"), ("new", "新值")]
+SAVE_DIFF_ROW_CAP = 200        # 写回前差异清单最多列这么多条，多出来的注明
+
+
+def _save_norm_field(name):
+    """字段名归一化：去掉 @ / $ / 下划线 / 空白再转小写（校验标红靠它匹配）。"""
+    s = "" if name is None else str(name)
+    for ch in ("@", "$", "_", " ", "\t", "\n"):
+        s = s.replace(ch, "")
+    return s.strip().lower()
+
+
+def _save_visible_text(text):
+    """
+    把文本里残留的孤立代理字符转成可见的 \\uXXXX 转义（只影响显示，不改数据）。
+
+    ★ 0xDC80..0xDCFF 是 Python 的 surrogateescape 区间：旧版内核对没解码成功的
+      Ruby 字符串只做了 repr，这些字符会原样进到界面，Tk 铺到表格里就成了方块/
+      乱码，某些平台还会直接抛 TclError。
+    """
+    s = "" if text is None else str(text)
+    if not any(0xD800 <= ord(ch) <= 0xDFFF for ch in s):
+        return s
+    out = []
+    for ch in s:
+        if 0xD800 <= ord(ch) <= 0xDFFF:
+            out.append("\\u%04x" % ord(ch))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _save_issue_rows(items):
+    """校验 / 读取提示 → Treeview 行数据 [(iid, (等级, 位置, 字段, 原因)), ...]。"""
+    rows = []
+    for i, it in enumerate(items or []):
+        if not isinstance(it, dict):
+            it = {"原因": str(it)}
+        rows.append((str(i), (str(it.get("等级") or "警告"),
+                              _save_visible_text(it.get("位置") or "—"),
+                              _save_visible_text(it.get("字段") or "—"),
+                              _save_visible_text(
+                                  str(it.get("原因") or "").replace("\n", " ")))))
+    return rows
+
+
+def _save_diff_rows(changes, cap=SAVE_DIFF_ROW_CAP):
+    """写回差异 → (Treeview 行数据, 被截断的条数)。"""
+    items = [c for c in (changes or []) if isinstance(c, dict)]
+    rows = []
+    for i, c in enumerate(items[:cap]):
+        old = c.get("原值") if "原值" in c else c.get("旧值")
+        rows.append((str(i), (str(c.get("位置") or "—"),
+                              str(c.get("字段") or "—"),
+                              sfmt(old), sfmt(c.get("新值")))))
+    return rows, max(0, len(items) - cap)
+
+
+def _save_byte_note(diff_count, roundtrip):
+    """
+    写回前的「字节级结论」文字 + 级别（ok / warn / err）。
+
+    ★ roundtrip=None 表示内核还没提供 roundtrip_ok()，这时只说差异条数，
+      不硬下结论（降级路径）。
+    """
+    if roundtrip is True:
+        return "未改动任何字段：写出的字节与原文件完全一致", "ok"
+    if diff_count:
+        return (f"有 {diff_count} 处改动：写出的字节与原文件不同"
+                f"（改过东西本来就会变，属于预期）"), "warn"
+    return ("★ 字段级比对没发现改动，但写出的字节与原文件不同：说明还有"
+            "无法归因的字节差异（可能是外层封装／逐流封装重排）。"
+            "建议先备份存档，再决定要不要写入。"), "err"
+
+
+def _save_encoding_health(report):
+    """encoding_report() → 一句话健康度摘要（拿不到报告返回「未知」）。"""
+    if not isinstance(report, dict) or not report:
+        return "未知（内核未提供编码标记统计）"
+    bad = int(report.get("nonascii_unmarked") or 0)
+    marked = int(report.get("nonascii_marked") or 0)
+    susp = len(report.get("suspicious") or [])
+    if bad <= 0 and susp == 0:
+        return f"健康（非 ASCII 字符串都带标记：{marked} 个）"
+    parts = [f"{bad} 个非 ASCII 字符串没带 UTF-8 标记"]
+    if marked:
+        parts.append(f"带标记 {marked} 个")
+    if susp:
+        parts.append(f"可疑 {susp} 处")
+    return "需注意（" + "，".join(parts) + "）"
+
+
+def _save_encoding_note(report):
+    """编码标记的完整说明（放进读取提示条，用来解释「游戏仍报编码错」）。"""
+    if not isinstance(report, dict) or not report:
+        return ""
+    marked = int(report.get("nonascii_marked") or 0)
+    bad = int(report.get("nonascii_unmarked") or 0)
+    binm = int(report.get("nonascii_binary") or 0)
+    if not (marked or bad or binm):
+        return ""
+    txt = (f"编码标记：非 ASCII 字符串里带 UTF-8 标记 {marked} 个、"
+           f"未带标记 {bad} 个")
+    if binm:
+        txt += f"、按二进制原样保留 {binm} 个"
+    txt += "。"
+    if bad:
+        txt += ("★ 写回后若游戏仍报 ASCII-8BIT / UTF-8 不兼容，"
+                "说明这款游戏用的是别的编码方案（不是本工具写得不对）。")
+    return txt
+
+
+def _save_filter_rows(rows, keyword):
+    """
+    按关键词过滤表格行（名字 / 编号 / 位置都能搜；空关键词原样返回）。
+
+    ★ 行 iid 仍是数据里的原始下标，过滤只是「少显示几行」—— 筛完再选中
+      一行，依然能对回正确的宝可梦 / 道具。
+    """
+    k = str(keyword or "").strip().lower()
+    if not k:
+        return list(rows or [])
+    out = []
+    for row in rows or []:
+        try:
+            iid, values = row
+        except (TypeError, ValueError):
+            continue
+        text = (str(iid) + " "
+                + " ".join(str(v) for v in (values or ()))).lower()
+        if k in text:
+            out.append((iid, values))
+    return out
+
+
+def _save_tree_col_kinds(values_rows, ncols):
+    """
+    判断每一列是不是「纯数字列」（用来右对齐）。
+
+    ★ 空表 / 空单元格不算数字；只要有一格是文字，这列就按左对齐处理 ——
+      「（空）」这种占位符正好落在文字一侧。
+    """
+    kinds = []
+    for i in range(ncols):
+        seen = False
+        numeric = True
+        for row in values_rows:
+            if i >= len(row):
+                continue
+            txt = str(row[i]).strip()
+            if not txt:
+                continue
+            seen = True
+            if not re.fullmatch(r"-?\d+(\.\d+)?", txt):
+                numeric = False
+                break
+        kinds.append(bool(seen and numeric))
+    return kinds
+
+
+# ★ 下面是旧版内核的兜底：旧内核 validate() 的「字段」用中文名（金钱 / 等级 /
+#   个体值…），而表单变量键是英文（money / level / iv0…）。新版内核会在每条
+#   问题里带「字段键」（稳定英文键），_highlight_save_issues 优先用它直接匹配；
+#   只有没有「字段键」时才查这张表 —— 它只兜旧版内核，别指望它覆盖新增校验项。
+SAVE_FIELD_ALIASES = {
+    "金钱": ("money",),
+    "名字": ("name",),
+    "训练家名": ("name",),
+    "训练家id": ("id",),
+    "id": ("id",),
+    "服装编号": ("outfit",),
+    "语种": ("language",),
+    "昵称": ("nick",),
+    "等级": ("level",),
+    "经验": ("exp",),
+    "形态": ("form",),
+    "个体值": ("iv0", "iv1", "iv2", "iv3", "iv4", "iv5"),
+    "努力值": ("ev0", "ev1", "ev2", "ev3", "ev4", "ev5"),
+    "hp": ("hp",),
+    "招式": ("move0", "move1", "move2", "move3"),
+    "pp": ("mpp0", "mpp1", "mpp2", "mpp3"),
+    "亲密度": ("happy",),
+    "孵化步数": ("eggsteps",),
+    "pid": ("pid",),
+    "初训家": ("ot",),
+}
+
+
+def _save_highlight_keys(field, where=""):
+    """
+    「校验问题里的一条」→ 要标红的输入框键名集合（已归一化）。
+
+    ★ 先按中文别名表翻（金钱 → money），翻不出来就把原字段名归一化后原样
+      返回 —— 内核以后直接给英文键名时也不用改这里。
+    """
+    raw = _save_norm_field(field)
+    keys = set()
+    for alias in (raw, _save_norm_field(where)):
+        if alias and alias in SAVE_FIELD_ALIASES:
+            keys.update(SAVE_FIELD_ALIASES[alias])
+    if raw:
+        keys.add(raw)
+    return keys
+
+
+def _dialog_parent(master):
+    """弹窗用的父控件：传进来的是 App 时换成它的 root 窗口。"""
+    if hasattr(master, "tk"):
+        return master
+    root = getattr(master, "root", None)
+    return root if hasattr(root, "tk") else master
+
+
+def _center_window(win, master, y_div=3):
+    """弹窗居中到 master（与 _AskText._center 同一套算法）。"""
+    try:
+        x = master.winfo_rootx() + (master.winfo_width()
+                                    - win.winfo_width()) // 2
+        y = master.winfo_rooty() + (master.winfo_height()
+                                    - win.winfo_height()) // y_div
+        win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+    except Exception:
+        pass
+
+
+class SaveIssuesDialog(tk.Toplevel):
+    """
+    存档校验 / 读取提示的详情窗口。
+
+    ★ 不用 messagebox 堆纯文本：问题逐条列成表格（等级 / 位置 / 字段 / 原因），
+      一眼就能看出是哪个字段出的问题。
+    ★ 默认按钮跟着「有没有错误级」走：有错误 → 默认「返回修改」（别手一抖
+      就把坏数据写进去）；只有警告 → 默认「继续写入」。
+    """
+
+    def __init__(self, master, title, items, allow_write=False,
+                 encoding_note=""):
+        # ★ master 可能传进来的是 App（它没有 .tk）——Toplevel 只认控件，
+        #   这里统一换成 App.root，弹窗才建得起来
+        master = _dialog_parent(master)
+        tk.Toplevel.__init__(self, master, bg=BG_BASE)
+        self.result = "back"
+        self.title(title)
+        self.transient(master)
+        self.minsize(640, 360)
+
+        items = list(items or [])
+        errs = [it for it in items
+                if isinstance(it, dict) and str(it.get("等级")) == "错误"]
+
+        card = RoundCard(self, radius=16, pad=16)
+        card.pack(fill="both", expand=True, padx=12, pady=12)
+        body = card.body
+        card.configure(width=800, height=440)
+
+        tk.Label(body, text=title, bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        if items:
+            head = (f"共 {len(items)} 条：错误 {len(errs)} 条、"
+                    f"警告 {len(items) - len(errs)} 条。")
+        else:
+            head = "没有发现问题。"
+        hl = tk.Label(body, text=head, bg=CARD,
+                      fg=(ERR_COLOR if errs else C_WARN), font=FONT_B,
+                      anchor="w", justify="left")
+        hl.pack(fill="x", pady=(2, 6))
+        bind_autowrap(hl, pad=4, minimum=200)
+
+        wrap = tk.Frame(body, bg=CARD)
+        wrap.pack(fill="both", expand=True)
+        tree = ttk.Treeview(wrap, columns=[c[0] for c in SAVE_ISSUE_COLUMNS],
+                            show="headings", height=12)
+        for ck, ctitle in SAVE_ISSUE_COLUMNS:
+            tree.heading(ck, text=ctitle)
+            tree.column(ck, width=(74 if ck == "lv" else 180),
+                        minwidth=60, anchor="w", stretch=(ck == "why"))
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        for iid, values in _save_issue_rows(items):
+            tree.insert("", "end", iid=iid, values=values)
+        bind_tree_wheel(tree)
+        try:
+            attach_tree_copy(tree, app=master)
+        except Exception:
+            pass
+
+        if encoding_note:
+            nl = tk.Label(body, text=encoding_note, bg=CARD, fg=C_HINT,
+                          font=FONT_SMALL, anchor="w", justify="left")
+            nl.pack(fill="x", pady=(6, 0))
+            bind_autowrap(nl, pad=4, minimum=200)
+
+        btns = tk.Frame(body, bg=CARD)
+        btns.pack(fill="x", pady=(10, 0))
+        if allow_write:
+            default_write = not errs
+            GlassButton(btns, "返回修改", width=110, height=38, bg=CARD,
+                        font=FONT_SMALL, primary=not default_write,
+                        command=self._back).pack(side="right")
+            GlassButton(btns, "仍要写入", width=120, height=38,
+                        primary=default_write, bg=CARD, font=FONT_SMALL,
+                        command=self._write).pack(side="right", padx=8)
+            self._default = "write" if default_write else "back"
+        else:
+            GlassButton(btns, "关闭", width=110, height=38, primary=True,
+                        bg=CARD, font=FONT_SMALL,
+                        command=self._back).pack(side="right")
+            self._default = "back"
+
+        self.bind("<Return>", lambda _e: self._run_default())
+        self.bind("<Escape>", lambda _e: self._back())
+        self.protocol("WM_DELETE_WINDOW", self._back)
+
+        self.update_idletasks()
+        _center_window(self, master)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+
+    def _run_default(self):
+        if self._default == "write":
+            self._write()
+        else:
+            self._back()
+
+    def _write(self):
+        self.result = "write"
+        self.destroy()
+
+    def _back(self):
+        self.result = "back"
+        self.destroy()
+
+
+class SaveWriteDialog(tk.Toplevel):
+    """
+    写回前确认：差异清单 + 字节级结论 + 备份 / 读档提示。
+
+    ★ 「回游戏重新读档」这句必须留着 —— 玩家最常见的困惑就是
+      「我改了存档，怎么游戏里没变化」（继续游戏不会重读存档）。
+    ★ diff 为空但 roundtrip 为 False 时说明有无法归因的字节差异，
+      这时默认按钮不给「写入」，先让用户看清再决定。
+    """
+
+    def __init__(self, master, sv, changes, roundtrip):
+        master = _dialog_parent(master)      # ★ 同上：App 没有 .tk
+        tk.Toplevel.__init__(self, master, bg=BG_BASE)
+        self.result = False
+        self.title("保存到存档")
+        self.transient(master)
+        self.minsize(720, 440)
+
+        items = [c for c in (changes or []) if isinstance(c, dict)]
+        rows, cut = _save_diff_rows(items)
+        note, level = _save_byte_note(len(items), roundtrip)
+        color = {"ok": OK_COLOR, "warn": WARN_COLOR,
+                 "err": ERR_COLOR}.get(level, C_HINT)
+
+        card = RoundCard(self, radius=16, pad=16)
+        card.pack(fill="both", expand=True, padx=12, pady=12)
+        body = card.body
+        card.configure(width=940, height=520)
+
+        tk.Label(body, text="保存到存档", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        pl = tk.Label(body, text=f"写入这个文件：{sv.path}", bg=CARD,
+                      fg=C_KEY, font=FONT_SMALL, anchor="w", justify="left")
+        pl.pack(fill="x", pady=(2, 6))
+        bind_autowrap(pl, pad=4, minimum=200)
+
+        # 字节级结论先给出来：别等写完才发现对不上
+        nl = tk.Label(body, text=note, bg=CARD, fg=color, font=FONT_B,
+                      anchor="w", justify="left")
+        nl.pack(fill="x", pady=(0, 6))
+        bind_autowrap(nl, pad=4, minimum=200)
+
+        tk.Label(body, text="下面是要写进去的字段改动（位置 / 字段 / 原值 → 新值）：",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 anchor="w").pack(anchor="w")
+
+        wrap = tk.Frame(body, bg=CARD)
+        wrap.pack(fill="both", expand=True, pady=(2, 0))
+        tree = ttk.Treeview(wrap, columns=[c[0] for c in SAVE_DIFF_COLUMNS],
+                            show="headings", height=13)
+        for ck, ctitle in SAVE_DIFF_COLUMNS:
+            tree.heading(ck, text=ctitle)
+            tree.column(ck, width=(200 if ck == "where" else 130),
+                        minwidth=60, anchor="w", stretch=(ck == "where"))
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        for iid, values in rows:
+            tree.insert("", "end", iid=iid, values=values)
+        bind_tree_wheel(tree)
+        try:
+            attach_tree_copy(tree, app=master)
+        except Exception:
+            pass
+
+        if not rows:
+            tk.Label(body, text="（没有任何字段被改动）", bg=CARD, fg=C_HINT,
+                     font=FONT_SMALL, anchor="w").pack(anchor="w", pady=(4, 0))
+        elif cut:
+            tk.Label(body,
+                     text=f"★ 只列出前 {SAVE_DIFF_ROW_CAP} 条，"
+                          f"另有 {cut} 条改动没显示（照样会写入）。",
+                     bg=CARD, fg=C_WARN, font=FONT_SMALL,
+                     anchor="w").pack(anchor="w", pady=(4, 0))
+
+        bak = str(getattr(sv, "path", "") or "") + ".bak"
+        tip_txt = ""
+        if not os.path.exists(bak):
+            tip_txt += f"第一次保存会先生成备份 {os.path.basename(bak)}。\n"
+        tip_txt += ("要在游戏里看到效果，需要回游戏重新「读档」"
+                    "（继续游戏不会重读存档）。")
+        tl = tk.Label(body, text=tip_txt, bg=CARD, fg=C_WARN,
+                      font=FONT_SMALL, anchor="w", justify="left")
+        tl.pack(fill="x", pady=(8, 0))
+        bind_autowrap(tl, pad=4, minimum=200)
+
+        btns = tk.Frame(body, bg=CARD)
+        btns.pack(fill="x", pady=(10, 0))
+        default_ok = level != "err"
+        GlassButton(btns, "取消", width=96, height=38, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._cancel).pack(side="right")
+        GlassButton(btns, "仍要写入" if not default_ok else "写入存档",
+                    width=124, height=38, primary=default_ok, bg=CARD,
+                    font=FONT_B,
+                    command=self._ok).pack(side="right", padx=8)
+
+        self.bind("<Return>", lambda _e: (self._ok() if default_ok
+                                          else self._cancel()))
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        self.update_idletasks()
+        _center_window(self, master)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+
+    def _ok(self):
+        self.result = True
+        self.destroy()
+
+    def _cancel(self):
+        self.result = False
+        self.destroy()
+
+
 class SavePanel(tk.Frame):
     """
     右侧「选择游戏存档」侧边栏。
@@ -3367,6 +3831,12 @@ class App:
         self.save_panels = []      # 各页右侧的「选择游戏存档」侧边栏
         self.save_path = None      # 当前选中的存档
         self.save_obj = None       # 当前存档的 SaveFile（全局共用一份）
+        # ★ 页面顶部的「读取提示」条 / 校验标红的输入框，统一记在这里，
+        #   切存档和重新校验时才能一次性清干净（不记住旧控件就清不掉）
+        self._save_bars = {}       # 页面键 → 顶部「读取提示」条 Frame
+        self._save_highlights = []  # [(控件, 原 style), ...]（校验标红用）
+        self._save_left = {}       # 页面键 → 该页左半区 Frame（找输入框用）
+        self._save_search = {}     # 页面键 → (搜索用 StringVar, 输入框)
 
         # PBS 编辑（菜单 3）
         self.pbs_panel = None      # 右侧「选择游戏主程序」侧边栏
@@ -3417,6 +3887,7 @@ class App:
         self._build_sidebar()
         self._build_content()
         self._build_status()
+        self._bind_save_hotkeys()   # ★ Ctrl+S / F5 / Ctrl+F（只在存档页生效）
 
         bridge.set_sinks(
             print_fn=lambda s: self.q.put(("log", s)),
@@ -3450,6 +3921,11 @@ class App:
         st.map("TCombobox", fieldbackground=[("readonly", "#FFFFFF")])
         st.configure("TEntry", fieldbackground="#FFFFFF",
                      bordercolor=CARD_BORDER, padding=3)
+        # ★ 存档校验标红用：出问题的字段输入框换成这个 style（改回
+        #   "TEntry" 即清除）。用语义色常量，不另开一套配色。
+        st.configure("SaveErr.TEntry", fieldbackground="#FDECEA",
+                     bordercolor=ERR_COLOR, lightcolor=ERR_COLOR,
+                     darkcolor=ERR_COLOR, foreground=TEXT, padding=3)
         st.configure("Treeview", background="#FFFFFF",
                      fieldbackground="#FFFFFF", borderwidth=0,
                      rowheight=38, font=FONT)
@@ -12502,6 +12978,340 @@ class App:
     #   一个入口页 + 5 个编辑子页面；右侧统一是「选择游戏存档」侧边栏。
     #   全局共用一份 SaveFile（self.save_obj），改完点「保存到存档」写回。
     # ================================================================
+    # ================================================================
+    # 存档编辑：校验 / 差异 / 提示条 / 快捷键 的公共部件
+    #   ★ 内核（save_tools）里的 validate / warnings / diff_against_disk /
+    #     encoding_report 是后加的，可能还没落地：**一律 getattr 判空**，
+    #     拿不到就跳过对应功能，绝不因此抛 AttributeError。
+    # ================================================================
+    def _save_call(self, sv, name, default=None):
+        """安全调用内核的新方法：不存在 / 抛异常都退回 default。"""
+        fn = getattr(sv, name, None)
+        if not callable(fn):
+            return default
+        try:
+            return fn()
+        except Exception as e:                                  # noqa: BLE001
+            if log:
+                log.warning("存档接口 %s 调用失败：%s", name, e)
+            return default
+
+    def _save_issues_of(self, sv):
+        """sv.validate()（写回前校验）；拿不到返回 None 表示「这项没法做」。"""
+        if sv is None:
+            return None
+        items = self._save_call(sv, "validate", default=None)
+        return items if isinstance(items, list) else None
+
+    def _save_warnings_of(self, sv):
+        """sv.warnings（读取阶段的问题）；属性不存在返回 None。"""
+        if sv is None:
+            return None
+        items = getattr(sv, "warnings", None)
+        return items if isinstance(items, list) else None
+
+    def _save_diff_of(self, sv):
+        if sv is None:
+            return None
+        items = self._save_call(sv, "diff_against_disk", default=None)
+        return items if isinstance(items, list) else None
+
+    def _save_roundtrip(self, sv):
+        """roundtrip_ok()；拿不到返回 None（=未知，不硬下结论）。"""
+        if sv is None:
+            return None
+        fn = getattr(sv, "roundtrip_ok", None)
+        if not callable(fn):
+            return None
+        try:
+            return bool(fn())
+        except Exception:                                        # noqa: BLE001
+            return None
+
+    def _save_encoding_report(self, sv):
+        rep = self._save_call(sv, "encoding_report", default=None)
+        return rep if isinstance(rep, dict) else None
+
+    # ---------------- 页面顶部「读取提示」条 ----------------
+    def _make_save_bar(self, parent, key, pady=(0, 8)):
+        """在页面顶部预留一条提示位（没内容时高度为 0，不造成布局跳动）。"""
+        bar = tk.Frame(parent, bg=BG_BASE)
+        bar.pack(fill="x", pady=pady)
+        self._save_bars[key] = bar
+        return bar
+
+    def _render_save_bar(self, key):
+        """按当前存档重画提示条：有读取问题 / 编码提示才显示，否则收成 0 高。"""
+        bar = self._save_bars.get(key)
+        if bar is None:
+            return
+        try:
+            if not bar.winfo_exists():
+                return
+        except Exception:
+            return
+        for w in bar.winfo_children():
+            w.destroy()
+        sv = self.save_obj
+        if sv is None:
+            return
+        items = self._save_warnings_of(sv) or []
+        note = _save_encoding_note(self._save_encoding_report(sv))
+        if not items and not note:
+            return
+        errs = [it for it in items
+                if isinstance(it, dict) and str(it.get("等级")) == "错误"]
+        color = ERR_COLOR if errs else WARN_COLOR
+        inner = tk.Frame(bar, bg=CARD_ALT, highlightthickness=1,
+                         highlightbackground=color)
+        inner.pack(fill="x")
+        head = tk.Frame(inner, bg=CARD_ALT)
+        head.pack(fill="x", padx=10, pady=(6, 2))
+        title = "⚠ 存档读取提示"
+        if items:
+            title += f"（{len(items)}）"
+            if errs:
+                title += f"　其中错误 {len(errs)} 条"
+        lbl = tk.Label(head, text=title, bg=CARD_ALT, fg=color, font=FONT_B,
+                       anchor="w", justify="left")
+        lbl.pack(side="left")
+        if items:
+            GlassButton(head, "查看详情", width=96, height=30, bg=CARD_ALT,
+                        font=FONT_SMALL,
+                        command=lambda its=list(items), nt=note:
+                        SaveIssuesDialog(self, "存档读取提示", its,
+                                         allow_write=False,
+                                         encoding_note=nt)
+                        ).pack(side="right")
+        if note:
+            nl = tk.Label(inner, text=note, bg=CARD_ALT, fg=C_HINT,
+                          font=FONT_SMALL, anchor="w", justify="left")
+            nl.pack(fill="x", padx=10, pady=(0, 6))
+            bind_autowrap(nl, pad=12, minimum=160)
+
+    def _refresh_save_bars(self):
+        for key in list(self._save_bars):
+            self._render_save_bar(key)
+
+    # ---------------- 校验标红 ----------------
+    def _iter_widgets(self, root):
+        """递归遍历控件树（找输入框用）。"""
+        stack = [root]
+        while stack:
+            w = stack.pop()
+            yield w
+            try:
+                stack.extend(w.winfo_children())
+            except Exception:
+                continue
+
+    # 页面键 → 字段来源（标红时按「位置」限定来源，避免同名键跨页误标）
+    _SAVE_PAGE_SOURCE = {"save_trainer": "tr", "save_party": "party",
+                         "save_box": "box"}
+    # 「位置」文案里的关键词 → 字段来源（内核的 validate 用中文短名指位置）
+    _SAVE_SOURCE_WORDS = (("电脑", "box"), ("箱子", "box"),
+                          ("队伍", "party"), ("主角", "tr"),
+                          ("训练家", "tr"))
+
+    def _save_form_of(self, source):
+        if source == "party":
+            return getattr(self, "party_form", None)
+        if source == "box":
+            return getattr(self, "box_form", None)
+        return None
+
+    def _save_var_field_map(self):
+        """
+        字段来源（tr / party / box）→ {StringVar 的 Tcl 名: 字段名}。
+
+        ★ 必须按来源分开建表：party_form 与 box_form 是同一个 PokemonForm
+          类，两边都有 "level" / "nick" 这类键，混成一张表会互相覆盖，
+          结果是「电脑箱子里的等级坏了」把「队伍页的等级框」也标红。
+        """
+        mp = {"tr": {}, "party": {}, "box": {}}
+        for key, var in (getattr(self, "tr_vars", None) or {}).items():
+            mp["tr"][str(var)] = key
+        for src in ("party", "box"):
+            form = self._save_form_of(src)
+            for key, var in (getattr(form, "vars", None) or {}).items():
+                mp[src][str(var)] = key
+        return mp
+
+    def _save_entry_index(self):
+        """字段来源 → {字段名（归一化）: 输入框列表} —— 校验标红的目标。"""
+        vmaps = self._save_var_field_map()
+        index = {"tr": {}, "party": {}, "box": {}}
+        for page_key, left in list(self._save_left.items()):
+            src = self._SAVE_PAGE_SOURCE.get(page_key)
+            if not src:
+                continue
+            try:
+                if not left.winfo_exists():
+                    continue
+            except Exception:
+                continue
+            vmap = vmaps.get(src) or {}
+            for w in self._iter_widgets(left):
+                if not isinstance(w, ttk.Entry):
+                    continue
+                try:
+                    tcl = str(w.cget("textvariable"))
+                except Exception:
+                    continue
+                fname = vmap.get(tcl)
+                if not fname:
+                    continue
+                index[src].setdefault(_save_norm_field(fname), []).append(w)
+        return index
+
+    def _save_source_hint(self, where):
+        """从「位置」文案猜这条问题属于哪一块（tr / party / box）；猜不出返回空串。"""
+        text = str(where or "")
+        for word, src in self._SAVE_SOURCE_WORDS:
+            if word in text:
+                return src
+        return ""
+
+    def _clear_save_highlights(self):
+        """把标红的输入框恢复原样（改回原来的 style）。"""
+        for w, style in self._save_highlights:
+            try:
+                if w.winfo_exists():
+                    w.configure(style=style)
+            except Exception:
+                pass
+        self._save_highlights = []
+
+    def _highlight_save_issues(self, issues):
+        """
+        把「错误」级的字段输入框底色标红；认不出的字段安静跳过。
+
+        ★ 命中范围要按「位置」限定来源：party_form 与 box_form 都有 level
+          键，不限来源的话箱子里的等级坏了会把队伍页的等级框一起标红。
+        """
+        self._clear_save_highlights()
+        bad = [it for it in (issues or [])
+               if isinstance(it, dict) and str(it.get("等级")) == "错误"]
+        if not bad:
+            return 0
+        index = self._save_entry_index()
+        if not any(index.values()):
+            return 0
+        hit = 0
+        for it in bad:
+            want = _save_norm_field(it.get("字段"))
+            where = _save_norm_field(it.get("位置"))
+            # 位置能定位到哪一块就只标那一块；定位不到才退化成全表匹配
+            src = self._save_source_hint(it.get("位置"))
+            scopes = [src] if src else [s for s in ("tr", "party", "box")]
+            # ★ 内核给了「字段键」（稳定英文键：money / level / iv0 / box_name…）
+            #   就直接用它精确匹配，一次到位；只有旧版内核没有这个键时，才退回
+            #   中文别名表（SAVE_FIELD_ALIASES 只兜旧版内核，别指望它覆盖新项）
+            fkey = _save_norm_field(it.get("字段键"))
+            # ★ 旧版内核给的是中文名（金钱 / 等级 / 个体值），表单变量是英文键，
+            #   先过一遍别名表；位置里也可能写成 "存档.player.@money" 这种
+            keys = set() if fkey else _save_highlight_keys(
+                it.get("字段"), it.get("位置"))
+            for scope in scopes:
+                for fname, widgets in (index.get(scope) or {}).items():
+                    if not fname:
+                        continue
+                    if fkey:
+                        matched = (fname == fkey)
+                    else:
+                        # ★ 字段可能是 "@party[0]/@exp" 这种路径：字段名或位置里
+                        #   出现表单字段名就认为命中，命不中就当没这回事
+                        matched = (fname in keys or fname == want
+                                   or fname in want or fname in where)
+                    if not matched:
+                        continue
+                    for w in widgets:
+                        if any(w is h[0] for h in self._save_highlights):
+                            continue
+                        try:
+                            old = w.cget("style")
+                        except Exception:
+                            continue
+                        try:
+                            w.configure(style="SaveErr.TEntry")
+                        except Exception:
+                            continue
+                        self._save_highlights.append((w, old))
+                        hit += 1
+        return hit
+
+    # ---------------- 页面顶部常驻状态文字 ----------------
+    _SAVE_TOOL_ATTR = {"save_trainer": "tr_tool", "save_party": "party_tool",
+                       "save_bag": "bag_tool", "save_box": "box_tool",
+                       "save_switch": "sw_tool"}
+
+    def _set_save_status(self, key, text, level="info"):
+        """在编辑页顶部那行常驻状态文字里写一句话（成功绿 / 失败红 / 普通灰）。"""
+        if key is None:
+            key = self.current
+        attr = self._SAVE_TOOL_ATTR.get(key)
+        lbl = getattr(self, attr, None) if attr else None
+        if lbl is None:
+            try:
+                if self.status_var is not None:
+                    self.status_var.set(text)
+            except Exception:
+                pass
+            return
+        color = {"ok": OK_COLOR, "err": ERR_COLOR}.get(level, C_HINT)
+        try:
+            lbl.config(text=text, fg=color)
+        except Exception:
+            pass
+
+    # ---------------- 快捷键（只在该页面可见时生效） ----------------
+    def _bind_save_hotkeys(self):
+        """
+        Ctrl+S 保存到存档 / F5 重新载入当前页 / Ctrl+F 聚焦搜索框。
+
+        ★ 绑定挂在 root 上、靠 self.current 判断当前页 —— 不要 bind_all，
+          也不要无条件响应：否则在别的菜单页也会抢键（Ctrl+S 本来该无操作）。
+        """
+        def _bind(seq, fn):
+            try:
+                self.root.bind(seq, fn, add="+")
+            except Exception:
+                pass
+        for seq in ("<Control-s>", "<Control-S>"):
+            _bind(seq, self._hotkey_save)
+        _bind("<F5>", self._hotkey_reload)
+        for seq in ("<Control-f>", "<Control-F>"):
+            _bind(seq, self._hotkey_search)
+
+    def _hotkey_save(self, _e=None):
+        if self.current in SAVE_SUBMENUS_KEYS or self.current == "saveedit":
+            self.write_save()
+            return "break"
+        return None
+
+    def _hotkey_reload(self, _e=None):
+        if self.current in SAVE_SUBMENUS_KEYS:
+            self._refresh_save_page(self.current)
+            self._set_save_status(self.current, "已重新载入当前页。", "info")
+            return "break"
+        if self.current == "saveedit":
+            self._refresh_save_overview()
+            return "break"
+        return None
+
+    def _hotkey_search(self, _e=None):
+        ent = self._save_search.get(self.current)
+        if ent is None:
+            return None
+        try:
+            if not ent[1].winfo_exists():
+                return None
+            ent[1].focus_set()
+            ent[1].select_range(0, "end")
+        except Exception:
+            return None
+        return "break"
+
     def current_save(self):
         return self.save_obj
 
@@ -12515,6 +13325,7 @@ class App:
         self.save_path = path
         self.save_obj = sv
         self.save_dirty = False
+        self._clear_save_highlights()   # ★ 换存档就清掉上一份的标红
         for p in list(self.save_panels):
             try:
                 if p.winfo_exists():
@@ -12522,6 +13333,7 @@ class App:
                     p.set_info(sv, self.save_dirty)
             except Exception:
                 pass
+        self._refresh_save_bars()       # 读取提示条跟着换
         self._reload_save_views()
         try:
             self.status_var.set(
@@ -12538,30 +13350,85 @@ class App:
             except Exception:
                 pass
 
-    def write_save(self):
+    def write_save(self, skip_check=False):
+        """
+        保存到存档：先做字段级校验 + 差异预览，再走确认。
+
+        ★ 顺序不能反：校验（validate）发现「错误」级问题时优先拦下来，让
+          用户回对应页面改；差异预览里的 roundtrip 结论则在写之前就摆出来。
+        ★ 内核那几个方法可能还没落地（getattr 判空），拿不到就退回原来的
+          纯 messagebox 确认流程，行为不变。
+        """
         sv = self.save_obj
         if sv is None:
             messagebox.showinfo("还没有选择存档", "先在右侧选一份游戏存档。")
+            self._set_save_status(None, "还没有选择存档。", "err")
             return
-        bak = sv.path + ".bak"
-        tip = "" if os.path.exists(bak) else \
-            f"\n\n（第一次保存会先生成备份 {os.path.basename(bak)}）"
-        if not messagebox.askyesno(
-                "保存到存档",
-                f"写入这个文件：\n{sv.path}{tip}\n\n要在游戏里看到效果，"
-                "需要回游戏重新「读档」（继续游戏不会重读）。确定写入吗？"):
-            return
+        if not skip_check:
+            issues = self._save_issues_of(sv) or []
+            errs = [it for it in issues
+                    if isinstance(it, dict) and str(it.get("等级")) == "错误"]
+            # 标红只针对「错误」级（函数内部自己筛），警告级不动输入框
+            hit = self._highlight_save_issues(issues) if errs else 0
+            if errs:
+                # ★ 只有「错误」级才拦下来问用户：真实存档的 validate() 里
+                #   通常只有「警告」（没选游戏根目录之类），那些留在顶部
+                #   常驻提示条就够，每存一次都弹窗纯属添堵。
+                note = _save_encoding_note(self._save_encoding_report(sv))
+                dlg = SaveIssuesDialog(
+                    self, "写入前校验发现问题", issues,
+                    allow_write=True, encoding_note=note)
+                # ★ App 不是控件（self.root 才是窗口），等弹窗得走 root
+                self.root.wait_window(dlg)
+                if dlg.result != "write":
+                    # 返回修改：标红留着，等用户改完再点保存
+                    self._set_save_status(
+                        None,
+                        (f"校验未通过：{len(errs)} 条错误、"
+                         f"{len(issues) - len(errs)} 条警告，已取消写入。"),
+                        "err")
+                    return
+                if hit:
+                    self._set_save_status(
+                        None, f"仍有 {len(errs)} 条错误，按用户选择继续写入。",
+                        "err")
+            else:
+                self._clear_save_highlights()
+        changes = self._save_diff_of(sv)
+        roundtrip = self._save_roundtrip(sv)
+        if changes is not None or roundtrip is not None:
+            dlg = SaveWriteDialog(self, sv, changes or [], roundtrip)
+            self.root.wait_window(dlg)
+            if not dlg.result:
+                self._set_save_status(None, "已取消写入。", "info")
+                return
+        else:
+            # 降级：内核没有 diff/roundtrip，沿用原来的确认框
+            bak = sv.path + ".bak"
+            tip = "" if os.path.exists(bak) else \
+                f"\n\n（第一次保存会先生成备份 {os.path.basename(bak)}）"
+            if not messagebox.askyesno(
+                    "保存到存档",
+                    f"写入这个文件：\n{sv.path}{tip}\n\n要在游戏里看到效果，"
+                    "需要回游戏重新「读档」（继续游戏不会重读）。确定写入吗？"):
+                return
         try:
             sv.write()
         except Exception as e:
             messagebox.showerror("写入失败", f"{e}")
+            self._set_save_status(None, f"写入失败：{e}", "err")
             return
         self.save_dirty = False
+        self._clear_save_highlights()
         for p in list(self.save_panels):
             try:
                 p.set_info(sv, False)
             except Exception:
                 pass
+        self._refresh_save_bars()
+        self._set_save_status(
+            None, f"已写入 {os.path.basename(sv.path)}（回游戏重新读档才生效）。",
+            "ok")
         messagebox.showinfo("已保存", f"已写入 {os.path.basename(sv.path)}。")
 
     def _reload_save_views(self):
@@ -12609,10 +13476,15 @@ class App:
         panel = SavePanel(card.body, bg=CARD, app=self)
         panel.pack(fill="both", expand=True)
         self.save_panels.append(panel)
+        # 记住左半区：字段级校验标红时要在里面按字段名找回输入框
+        self._save_left[key] = left
         return left, panel
 
     def _save_toolbar(self, parent, key):
-        """编辑页顶部：重新载入 / 保存 + 状态文字。"""
+        """编辑页顶部：读取提示条 / 重新载入 / 保存 + 常驻状态文字。"""
+        # ★ 提示条先 pack，才会落在工具条上方；没内容时它自己保持 0 高，
+        #   不会把下面的内容顶下去（避免切换存档时布局跳动）
+        self._make_save_bar(parent, key)
         row = tk.Frame(parent, bg=BG_BASE)
         row.pack(fill="x", pady=(0, 8))
         GlassButton(row, "重新载入", width=104, height=38, bg=BG_BASE,
@@ -12639,6 +13511,10 @@ class App:
         stretch_all=True：所有列都参与伸缩。左侧卡片宽度是固定的，
         只让一列 stretch 的话，卡片一窄下来这一列会被压到只剩几个像素
         （踩过：队伍树「昵称」列被压成 20px、HP 列整列消失）。
+
+        ★ 斑马纹 / 数字列右对齐 / 列宽自适应都在 _tree_reload 里按**实际
+          数据**决定（建表时还没有数据，量不出来），这里只把初始宽度记下来
+          当「最小宽度地板」，避免自适应把列压得比设计值还窄。
         """
         holder = tk.Frame(parent, bg=CARD)
         tree = ttk.Treeview(holder, columns=[c[0] for c in columns],
@@ -12647,6 +13523,13 @@ class App:
             tree.heading(ck, text=title)
             tree.column(ck, width=(widths[i] if widths else 90), anchor="w",
                         stretch=True if stretch_all else (i == 1))
+        # ★ 斑马纹：用 tag 上色，交替行底色区分；选中行由 ttk 的 map 覆盖
+        try:
+            tree.tag_configure("row_odd", background="#FFFFFF")
+            tree.tag_configure("row_even", background=CARD_ALT)
+        except Exception:
+            pass
+        tree._col_floors = list(widths) if widths else None
         sb = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="both", expand=True)
@@ -12659,17 +13542,82 @@ class App:
         return holder, tree
 
     @staticmethod
+    def _tree_fit_columns(tree, values_rows):
+        """数字列右对齐 + 列宽按内容撑开（不超过地板值 2.4 倍）。"""
+        cols = list(tree["columns"])
+        if not cols:
+            return
+        floors = getattr(tree, "_col_floors", None) or [90] * len(cols)
+        kinds = _save_tree_col_kinds(values_rows, len(cols))
+        try:
+            import tkinter.font as tkfont
+            fnt = tkfont.Font(font=tree.cget("font") or FONT)
+            measure = fnt.measure
+        except Exception:                                        # noqa: BLE001
+            measure = lambda s: len(str(s)) * 9                  # noqa: E731
+        for i, ck in enumerate(cols):
+            anchor = "e" if kinds[i] else "w"
+            try:
+                tree.heading(ck, anchor=anchor)
+                tree.column(ck, anchor=anchor)
+            except Exception:
+                pass
+            widest = 0
+            for row in values_rows:
+                if i < len(row):
+                    widest = max(widest, measure(str(row[i])))
+            floor = floors[i] if i < len(floors) else 90
+            want = max(floor, min(int(widest) + 22, int(floor * 2.4)))
+            try:
+                tree.column(ck, width=want, minwidth=min(floor, 90))
+            except Exception:
+                pass
+
+    # ================================================================
+    # 搜索过滤（队伍 / 箱子 / 背包）
+    # ================================================================
+    def _save_search_row(self, parent, key, on_change):
+        """
+        搜索过滤输入框（按名字 / ID / 位置实时过滤，清空恢复）。
+
+        ★ 变量记进 self._save_search：Ctrl+F 靠它找到当前页的搜索框。
+        """
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x", pady=(0, 6))
+        tk.Label(row, text="搜索", bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 anchor="w").pack(side="left")
+        var = tk.StringVar(value="")
+        ent = ttk.Entry(row, textvariable=var, width=12, font=FONT_SMALL)
+        ent.pack(side="left", fill="x", expand=True, padx=(6, 6))
+        var.trace_add("write", lambda *_a: on_change())
+        self._save_search[key] = (var, ent)
+        GlassButton(row, "清空", width=64, height=28, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda v=var: v.set("")).pack(side="left")
+        return var
+
+    def _save_filter_keyword(self, key):
+        ent = self._save_search.get(key)
+        return ent[0].get() if ent else ""
+
+    @staticmethod
     def _tree_reload(tree, rows):
         """
         重填表格并**保住原来的选中行**。
 
         rows = [(iid, values), ...]；重填会清掉选中状态，不保的话
         「改一次值就要重新点一遍」。
+
+        ★ 顺带做两件「按数据决定」的排版：奇偶行斑马纹、纯数字列右对齐，
+          再按内容把列宽顶到够用（不超过地板值的 2.4 倍，长昵称不会把
+          旁边的列挤没）。
         """
+        rows = list(rows or [])
         wanted = list(tree.selection())
         tree.delete(*tree.get_children())
-        for iid, values in rows:
-            tree.insert("", "end", iid=str(iid), values=values)
+        for i, (iid, values) in enumerate(rows):
+            tree.insert("", "end", iid=str(iid), values=values,
+                        tags=("row_even" if i % 2 else "row_odd",))
         have = set(tree.get_children())
         keep = [i for i in wanted if i in have]
         if keep:
@@ -12678,12 +13626,17 @@ class App:
                 tree.see(keep[0])
             except Exception:
                 pass
+        App._tree_fit_columns(tree, [v for _i, v in rows])
 
     # ================================================================
     # 入口页：中间列编辑选项，右侧选存档
     # ================================================================
     def _page_saveedit(self):
         left, panel = self._save_page_shell("saveedit")
+
+        # ★ 入口页也要有读取提示条：用户是在这一页选存档的，读取出问题时
+        #   第一个看到的就是这里（子页面各有自己的条，靠页面键分开记）
+        self._make_save_bar(left, "saveedit")
 
         outer, inner = make_scroll_area(left, bg=BG_BASE)
         outer.pack(fill="both", expand=True)
@@ -12773,11 +13726,38 @@ class App:
             f"开关 {len(sv.switch_peek())} 个    变量 {len(sv.variable_peek())} 个    "
             f"图鉴已捕获 {sum(1 for x in sv.dex_flags('owned') if x)} / "
             f"已见 {sum(1 for x in sv.dex_flags('seen') if x)}",
+            self._save_format_line(sv),
         ]
         for ln in lines:
             tk.Label(body, text=ln, bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
                      anchor="w").pack(anchor="w")
         self._fit_overview_card()
+
+    def _save_format_line(self, sv):
+        """
+        概览里那行「格式 / 外层封装 / 编码标记健康度」摘要。
+
+        ★ 读不到的东西一律降级成「—」：encoding_report 现在还只是契约里
+          的名字，内核没落地时这行也要能正常显示。
+        """
+        fmts = {"hash": "hash（单流）", "legacy": "legacy（多流 / 15 流）"}
+        try:
+            raw_fmt = getattr(sv, "fmt", None)
+            fmt = fmts.get(str(raw_fmt), str(raw_fmt or "未知"))
+        except Exception:                                        # noqa: BLE001
+            fmt = "未知"
+        try:
+            # ★ encoding_label 是 @property，取属性而不是调用；没有封装时是
+            #   空串，这里补一句「无（明文）」免得概览上留个空档
+            enc = sv.encoding_label or "无（明文）"
+        except Exception:                                        # noqa: BLE001
+            enc = "—"
+        health = ""
+        rep = self._save_encoding_report(sv)
+        if rep:
+            health = _save_encoding_health(rep)
+        return (f"格式：{fmt}    外层封装：{enc}"
+                + (f"    编码标记健康度：{health}" if health else ""))
 
     def _fit_overview_card(self):
         """概览卡高度兜底。
@@ -12996,9 +13976,15 @@ class App:
                 "以下字段填写有误，已跳过（其他字段照常改好）：\n\n"
                 + "\n".join(f"· {p}" for p in problems),
                 parent=self)
+            self._set_save_status(
+                "save_trainer",
+                f"有 {len(problems)} 个字段填错了，已跳过（其余已改好）。", "err")
         else:
             messagebox.showinfo("已应用",
                                 "主角字段已改好（记得点「保存到存档」写入文件）。")
+            self._set_save_status(
+                "save_trainer", "主角字段已改好（记得点「保存到存档」写入文件）。",
+                "ok")
 
     def _refresh_save_trainer(self):
         sv = self.save_obj
@@ -13059,6 +14045,8 @@ class App:
         lcard.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         tk.Label(lcard.body, text="同行队伍（最多 6 只）", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w", pady=(0, 6))
+        self._save_search_row(lcard.body, "save_party",
+                              lambda: self._refresh_save_party())
         holder, self.party_tree = self._make_tree(
             lcard.body,
             [("pos", "位置"), ("nick", "昵称"), ("sp", "种族"),
@@ -13107,16 +14095,19 @@ class App:
                                                    r.get("species_raw")),
                              r["level"],
                              f"{r.get('hp')}/{r.get('totalhp')}")))
-        self._tree_reload(self.party_tree, rows)
-        if not self.party_tree.selection() and rows:
-            self.party_tree.selection_set(str(rows[0][0]))
+        # ★ 过滤只影响显示：行 iid 仍是队伍下标，选中行照样对得上
+        shown = _save_filter_rows(rows, self._save_filter_keyword("save_party"))
+        self._tree_reload(self.party_tree, shown)
+        if not self.party_tree.selection() and shown:
+            self.party_tree.selection_set(str(shown[0][0]))
         if self.party_tree.selection():
             self._on_party_select()       # 表单跟着新值重读
         else:
             self.party_form.clear()
         self.party_tool.config(
-            text=f"共 {len(rows)} 只    "
-                 f"存档：{os.path.basename(sv.path)}")
+            text=f"共 {len(rows)} 只"
+                 + (f"（筛出 {len(shown)} 只）" if len(shown) != len(rows) else "")
+                 + f"   存档：{os.path.basename(sv.path)}")
 
     def _party_index(self):
         sel = self.party_tree.selection()
@@ -13133,9 +14124,12 @@ class App:
             return
         if not sv.add_to_party(pm):
             messagebox.showwarning("队伍满了", "同行队伍最多 6 只，先移走一只。")
+            self._set_save_status("save_party", "队伍已满（6 只），没能复制。",
+                                  "err")
             return
         self.mark_dirty()
         self._refresh_save_party()
+        self._set_save_status("save_party", "已复制一只到队伍末尾。", "ok")
 
     def _party_to_box(self):
         sv = self.save_obj
@@ -13148,10 +14142,12 @@ class App:
             return
         if sv.add_to_box(pm, 0)[0] < 0:
             messagebox.showwarning("箱子满了", "所有箱子都满了，先腾一格。")
+            self._set_save_status("save_party", "箱子都满了，没移动。", "err")
             return
         sv.remove_from_party(i)
         self.mark_dirty()
         self._refresh_save_party()
+        self._set_save_status("save_party", "已把这一只放进箱子。", "ok")
 
     def _party_remove(self):
         sv = self.save_obj
@@ -13164,6 +14160,7 @@ class App:
         sv.remove_from_party(i)
         self.mark_dirty()
         self._refresh_save_party()
+        self._set_save_status("save_party", "已把这一只移出队伍。", "ok")
 
     # ================================================================
     # 子页面 3：背包编辑
@@ -13193,6 +14190,9 @@ class App:
                     command=self._bag_set_registered).pack(side="left", padx=8)
         self.bag_reg_lbl = _hint(top, "")
         self.bag_reg_lbl.pack(side="left")
+
+        self.bag_search_var = self._save_search_row(
+            body, "save_bag", lambda: self._load_bag_items())
 
         holder, self.bag_tree = self._make_tree(
             body, [("name", "道具"), ("trans", "译文"), ("id", "#"),
@@ -13289,8 +14289,14 @@ class App:
                 name = "（无）"
             trans = f"译文：{sv.data.item(iid)}" if iid else ""
             rows.append((i, (name, trans, iid, cnt)))
-        self._tree_reload(self.bag_tree, rows)
+        # ★ 过滤只影响显示：行 iid 仍是口袋内下标，改数量/删除都还按它定位
+        shown = _save_filter_rows(rows, self._save_filter_keyword("save_bag"))
+        self._tree_reload(self.bag_tree, shown)
         self.bag_count_var.set("")
+        if len(shown) != len(rows):
+            self.bag_tool.config(
+                text=f"本口袋 {len(rows)} 种，筛出 {len(shown)} 种    "
+                     f"存档：{os.path.basename(sv.path)}")
 
     def _bag_selected(self):
         sel = self.bag_tree.selection()
@@ -13324,6 +14330,7 @@ class App:
         sv.set_pocket_count_by_index(idx, i, n)
         self.mark_dirty()
         self._load_bag_items()
+        self._set_save_status("save_bag", f"数量已改成 {n} 个。", "ok")
 
     def _bag_delete(self):
         sv = self.save_obj
@@ -13334,6 +14341,7 @@ class App:
         sv.remove_bag_index(idx, i)
         self.mark_dirty()
         self._load_bag_items()
+        self._set_save_status("save_bag", "已从口袋里删掉这一种道具。", "ok")
 
     def _bag_add(self):
         sv = self.save_obj
@@ -13360,6 +14368,7 @@ class App:
             return
         self.mark_dirty()
         self._load_bag_items()
+        self._set_save_status("save_bag", f"已加入 {n} 个。", "ok")
 
     def _bag_bulk(self, n):
         sv = self.save_obj
@@ -13377,6 +14386,8 @@ class App:
         sv.fill_pocket(idx, n)
         self.mark_dirty()
         self._load_bag_items()
+        self._set_save_status("save_bag", f"整个口袋的道具都改成了 {n} 个。",
+                              "ok")
 
     def _bag_set_registered(self):
         sv = self.save_obj
@@ -13393,6 +14404,7 @@ class App:
         self.mark_dirty()
         self.bag_reg_lbl.config(text=f"当前登记：{sv.data.item(v)}"
                                      if isinstance(v, int) else f"当前登记：{v}")
+        self._set_save_status("save_bag", "登记道具已更新。", "ok")
 
     # ================================================================
     # 子页面 4：PC 盒子编辑
@@ -13428,6 +14440,8 @@ class App:
         GlassButton(top2, "改名", width=72, height=30, bg=CARD,
                     font=FONT_SMALL,
                     command=self._box_rename).pack(side="left", padx=(6, 0))
+        self._save_search_row(lcard.body, "save_box",
+                              lambda: self._load_box_slots())
 
         holder, self.box_tree = self._make_tree(
             lcard.body,
@@ -13484,12 +14498,17 @@ class App:
                              sv.data.species_label(r["species"],
                                                    r.get("species_raw")),
                              r["level"])))
-        self._tree_reload(self.box_tree, rows)
+        shown = _save_filter_rows(rows, self._save_filter_keyword("save_box"))
+        self._tree_reload(self.box_tree, shown)
         boxes = sv.boxes()
         if 0 <= bi < len(boxes):
             self.box_name_var.set(str(boxes[bi].ivars.get("@name") or ""))
         # 表单跟着选中格重读（没选中就清空）
         self._on_box_select()
+        if len(shown) != len(rows):
+            self.box_tool.config(
+                text=f"本箱 {len(rows)} 格，筛出 {len(shown)} 格    "
+                     f"存档：{os.path.basename(sv.path)}")
 
     def _box_selected(self):
         sel = self.box_tree.selection()
@@ -13519,6 +14538,7 @@ class App:
         sv.rename_box(bi, self.box_name_var.get())
         self.mark_dirty()
         self._refresh_save_box()
+        self._set_save_status("save_box", f"第 {bi + 1} 箱已改名。", "ok")
 
     def _box_to_party(self):
         sv = self.save_obj
@@ -13527,9 +14547,12 @@ class App:
             return
         if not sv.move_box_to_party(bi, i):
             messagebox.showwarning("放不进去", "同行队伍满了，或者这一格是空的。")
+            self._set_save_status("save_box", "没放进去：队伍满了或这一格是空的。",
+                                  "err")
             return
         self.mark_dirty()
         self._load_box_slots()
+        self._set_save_status("save_box", "已把这一格放进同行队伍。", "ok")
 
     def _box_duplicate(self):
         sv = self.save_obj
@@ -13550,6 +14573,8 @@ class App:
         self.mark_dirty()
         self._load_box_slots()
         messagebox.showinfo("已复制", f"复制到了第 {b2 + 1} 箱第 {s2 + 1} 格。")
+        self._set_save_status(
+            "save_box", f"已复制到第 {b2 + 1} 箱第 {s2 + 1} 格。", "ok")
 
     def _box_clear(self):
         sv = self.save_obj
@@ -13562,6 +14587,7 @@ class App:
         self.mark_dirty()
         self._load_box_slots()
         self.box_form.clear()
+        self._set_save_status("save_box", "这一格已清空。", "ok")
 
     # ================================================================
     # 子页面 5：开关与变量
@@ -13731,9 +14757,12 @@ class App:
             sv.set_switch(idx, on)
         except Exception as e:                                  # noqa: BLE001
             messagebox.showwarning("写入失败", str(e), parent=self)
+            self._set_save_status("save_switch", f"开关写入失败：{e}", "err")
             return
         self.mark_dirty()
         self._refresh_save_switch()
+        self._set_save_status("save_switch",
+                              f"开关 {idx} 已设为「{'开' if on else '关'}」。", "ok")
 
     def _switch_all_off(self):
         sv = self.save_obj
@@ -13752,6 +14781,7 @@ class App:
             sv.set_switch(i, False)
         self.mark_dirty()
         self._refresh_save_switch()
+        self._set_save_status("save_switch", f"已关掉 {len(on)} 个开关。", "ok")
 
     def _variable_apply(self):
         sv = self.save_obj
@@ -13784,9 +14814,11 @@ class App:
             sv.set_variable(idx, val)
         except Exception as e:                                  # noqa: BLE001
             messagebox.showwarning("写入失败", str(e), parent=self)
+            self._set_save_status("save_switch", f"变量写入失败：{e}", "err")
             return
         self.mark_dirty()
         self._refresh_save_switch()
+        self._set_save_status("save_switch", f"变量 {idx} 已设为 {val}。", "ok")
 
 
 # ================================================================

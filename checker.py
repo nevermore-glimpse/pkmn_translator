@@ -23,7 +23,7 @@ from processor import (
     CTRL_RE, TAG_RE, BRACE_RE,
     ANGLE_CMD_RE, HTML_TAG_RE,
     _HTML_ENTITY_PAT, script_of, detect_unknown_ctrl,
-    _NL_RE,
+    _NL_RE, is_path_like,
 )
 
 log = get_logger("checker")
@@ -433,6 +433,10 @@ def check(out_lines, entries, special, report_path, extra_hits=None):
 
         # ★① 疑似未翻译：剥离控制码后仍含英文；书写系统不同时再看
         #   译文与原文的相似度（模型原样回显 / 只改只言片语）
+        # ★ 资源路径行（Audio/Data/Fonts/Graphics/PBS/Plugins 开头）原样
+        #   写回属正常行为，整行跳过所有检查，不进报告
+        if is_path_like(src_strip) and src_strip == dst:
+            continue
         dst_clean = _strip_all_ctrl(dst)
         english_words = [
             w for w in _ENGLISH_RE.findall(dst_clean)

@@ -424,6 +424,11 @@ class RStr(str):
         I " hello : E F     # :E = false → Encoding::BINARY
 
       只有少量字符串带这个标记，但写回时漏掉就字节不一致。
+
+    ★ 改字符串时**一律走 RStr.smart()**，不要直接 RStr("新名字")：
+      玩家名 / 昵称 / 箱子名这些字段原本往往带着 :E true，直接造新的会把
+      标记丢掉；Ruby 3.x 移植版读回来按 ASCII-8BIT，跟 UTF-8 常量做
+      gsub! 就抛 Encoding::CompatibilityError（游戏里表现为存档时崩溃）。
     """
 
     enc = None          # True=UTF-8 / False=BINARY / None=无标记
@@ -432,6 +437,30 @@ class RStr(str):
         obj = super().__new__(cls, value)
         obj.enc = enc
         return obj
+
+    @classmethod
+    def smart(cls, value: str, old: Any = None) -> "RStr":
+        """
+        按「智能标记」造一个字符串 —— 改字段时的新建字符串都从这里走。
+
+        规则（★ 目的：既让 Ruby 读得懂，又让字节差异最小）：
+          1) old 是 RStr 且有标记 → 沿用它的标记（True 也好 False 也好都不改）；
+          2) old 没标记 / 不是字符串 / 根本没有旧值：
+             新值含非 ASCII → 打 enc=True（否则 Ruby 按 ASCII-8BIT 读会崩）；
+             新值纯 ASCII → 保持 enc=None（不打标记，字节差异最小）；
+          3) 空字符串照上面的规则走（有旧标记就沿用，没有就不打）；
+          4) 新值本身就是 RStr → 把它的 enc 也当成「旧标记」看待：调用方
+             已经显式决定过标记了，不要再猜一遍。
+        """
+        old_enc = old.enc if isinstance(old, RStr) else None
+        text = str(value)
+        if old_enc is None and isinstance(value, RStr):
+            old_enc = value.enc
+        if old_enc is not None:
+            return cls(text, old_enc)
+        if text and not text.isascii():
+            return cls(text, True)
+        return cls(text, None)
 
 
 class RUserDefined:

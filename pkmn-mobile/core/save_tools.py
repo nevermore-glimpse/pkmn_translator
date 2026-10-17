@@ -1571,6 +1571,146 @@ def to_plain(obj: Any, _seen: Optional[dict] = None, _path: str = "$") -> Any:
             _seen.pop(id(obj), None)
 
 
+class _Missing:
+    """diff 用的哨兵：这一侧根本没有这个字段（区别于「值是 nil」）。"""
+
+    def __repr__(self) -> str:
+        return "（无此字段）"
+
+
+_MISSING = _Missing()
+
+
+def _diff_value(v: Any) -> str:
+    """
+    把 diff 里的值转成能直接 str() 打印的样子。
+
+    长列表只留前 3 项 + 总数，对象只给类名摘要 —— diff 结果是要铺进界面的，
+    整棵子树塞进去既看不清也慢。
+    """
+    if v is _MISSING or isinstance(v, _Missing):
+        return "（无此字段）"
+    if v is None:
+        return "nil"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, rmarshal.RStr):
+        tag = {True: " :E T", False: " :E F", None: ""}.get(
+            getattr(v, "enc", None), "")
+        return f"{str(v)!r}{tag}"
+    if isinstance(v, str):
+        return repr(str(v))
+    if isinstance(v, rmarshal.RSymbol):
+        return f":{v.name}"
+    if isinstance(v, rmarshal.RClass):
+        return f"（类 {v.name}）"
+    if isinstance(v, rmarshal.RObject):
+        return f"<{v.ruby_class} 共{len(v.ivars)}个字段>"
+    if isinstance(v, rmarshal.RHash):
+        return f"<Hash {len(v.pairs)}对>"
+    if isinstance(v, rmarshal.RIVar):
+        return f"<ivar {type(v.base).__name__} 共{len(v.ivars)}个字段>"
+    if isinstance(v, rmarshal.RStruct):
+        return f"<struct {v.ruby_class} 共{len(v.members)}项>"
+    if isinstance(v, (list, tuple)):
+        head = "、".join(_diff_value(x) for x in list(v)[:3])
+        more = f" …共{len(v)}项" if len(v) > 3 else ""
+        return f"[{head}{more}]"
+    if isinstance(v, dict):
+        return f"<dict 共{len(v)}项>"
+    if isinstance(v, float):
+        return repr(float(v))
+    return str(v)
+
+
+# 全局变量名 → 界面上看得懂的短名（diff 的「位置」根节点用）
+_SHORT_LABELS = {
+    "$Trainer": "主角",
+    "$PokemonBag": "背包",
+    "$PokemonStorage": "电脑",
+    "$game_switches": "开关",
+    "$game_variables": "变量",
+    "$game_self_switches": "独立开关",
+    "$game_system": "系统设置",
+    "$PokemonSystem": "游戏选项",
+    "$game_screen": "画面",
+    "$game_map.map_id": "地图ID",
+    "$game_map.metadata": "地图事件",
+    "$MapFactory": "地图链",
+    "$game_player": "主角位置",
+    "$PokemonGlobal": "全局数据",
+    "Graphics.frame_count": "总帧数",
+}
+
+
+def _stream_cls(label: str) -> str:
+    """STREAM_LABELS 里某个全局变量标称的 Ruby 类名（没有就返回空串）。"""
+    for lab, cls, _desc in STREAM_LABELS:
+        if lab == label:
+            return cls
+    return ""
+
+
+def _safe_text(s: Any, limit: int = 0) -> str:
+    """
+    把「给人看」的文案里残留的孤立代理字符转成可见的 \\uXXXX 转义。
+
+    ★ 0xD800..0xDFFF 是 Python 的 surrogateescape 残留区：读取时没解码成功的
+      Ruby 字符串会带着 \\udcd6 这类字符进来，直接塞进 Tk 表格就是方块乱码，
+      某些平台还会 TclError。这里只改文案，不动任何数据本体。
+    ★ limit > 0 时才截断（前 limit 字符 + '…'）；整句告警文案传默认 0 不截断
+      —— 把一句完整的话砍成 40 字就再没人看得懂它想说什么了。
+    """
+    text = "" if s is None else str(s)
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        text = "".join("\\u%04x" % ord(ch) if 0xD800 <= ord(ch) <= 0xDFFF
+                       else ch for ch in text)
+    if limit > 0 and len(text) > limit:
+        text = text[:limit] + "…"
+    return text
+
+
+# 校验项的中文「字段」→ GUI 表单变量键（稳定英文键，界面靠它精确标红）
+_FIELD_KEYS = {
+    "名字": "name",
+    "训练家名": "name",
+    "金钱": "money",
+    "徽章": "badges",
+    "箱子名": "box_name",
+    "等级": "level",
+    "经验": "exp",
+    "HP": "hp",
+    "招式": "moves",
+    "PP": "pp",
+    "种族": "species",
+    "携带道具": "item",
+    "昵称": "nick",
+    "初训家": "ot",
+    "性别": "gender",
+    "性格": "nature",
+    "特性": "ability",
+    "亲密度": "happy",
+    "孵化步数": "eggsteps",
+    "pid": "pid",
+}
+
+
+def _field_key(field: Any) -> str:
+    """
+    字段名 → 「字段键」。认不出对应单个输入框的整体性条目一律给空串。
+
+    ★ 空串是刻意的：GUI 拿到空串会退化成按位置匹配，不会把整个表单标红；
+      反过来乱给一个键（比如把「全存档」映射成 money）就会误标。
+    ★ 字段本身就是 ivar 名（"@level"）时，去掉 @ 转小写即可。
+    """
+    name = "" if field is None else str(field).strip()
+    if name.startswith("@"):
+        return name[1:].strip().lower()
+    if name.startswith("$"):
+        return ""
+    return _FIELD_KEYS.get(name, "")
+
+
 def _sym(v: Any) -> str:
     return v.name if isinstance(v, rmarshal.RSymbol) else str(v)
 
@@ -1717,6 +1857,14 @@ class SaveFile:
                 f"本工具只支持宝可梦同人游戏的存档。")
         self._data: Optional[GameData] = None
         self._game_root = game_root or self._guess_root()
+        # ★ 读档体检结果：结构不对/字段错位都不抛异常（能加载就加载），
+        #   但必须让上层看得见 —— 否则静默按位置猜出来的字段会改坏存档。
+        self.warnings: List[dict] = []
+        self._warned: set = set()
+        try:
+            self._collect_load_warnings()
+        except Exception:
+            pass
 
     def _decode_streams(self) -> None:
         """
@@ -1873,9 +2021,16 @@ class SaveFile:
                 if isinstance(o, rmarshal.RObject) and o.ruby_class in want:
                     return o
         # 类名也对不上：保持老行为，按位置给（个别游戏改过类名）
+        # ★ 这是「字段与数据错位」的来源：位置上的对象未必就是它，必须留痕。
         for i, (label, _, _) in enumerate(STREAM_LABELS):
             if label == key and i < len(self.objects):
-                return self.objects[i]
+                got = self.objects[i]
+                actual = (got.ruby_class if isinstance(got, rmarshal.RObject)
+                          else type(got).__name__)
+                self._warn("警告", f"第{i}条流", label,
+                           f"标称类名 {_stream_cls(key)}，实际 {actual}："
+                           "类名认不出来，按位置猜测")
+                return got
         for o in self.objects:
             if isinstance(o, rmarshal.RObject) and o.ruby_class == key:
                 return o
@@ -1946,6 +2101,591 @@ class SaveFile:
     def roundtrip_ok(self) -> bool:
         """没改过东西时，写出来的完整文件应当和原文件**逐字节相同**。"""
         return self.file_bytes() == self.raw
+
+    # =====================================================================
+    # 读取体检 / 写回前校验
+    # =====================================================================
+    # ★ 为什么用 warnings 而不是直接抛异常：同人游戏的存档千奇百怪（流数量
+    #   不对、类名改过、字段挪位），能加载就照样加载 —— 但上层必须看得见，
+    #   否则「按位置硬给」的字段错位会静默改坏别人的存档。
+    def _warn(self, level: str, where: str, field: str, reason: str) -> None:
+        """
+        往 self.warnings 里记一条（同样的内容不重复记）。
+
+        ★ 落库前一律过 _safe_text：这条文案最终要铺进 GUI 表格，里面一旦夹着
+          surrogateescape 残留（\\udcd6 之类）就是满屏方块，某些平台直接
+          TclError。这里只安全化文案，不动任何数据本体。
+        """
+        where = _safe_text(where)
+        field = _safe_text(field)
+        reason = _safe_text(reason)
+        key = (level, where, field, reason)
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        self.warnings.append({"等级": level, "位置": where,
+                              "字段": field, "原因": reason})
+
+    def _enc_risk_note(self) -> str:
+        """
+        编码缺失到底有多大风险 —— 要看是哪种存档。
+
+        ★ legacy（v16~v18 / RGSS，Ruby 1.8）**根本没有编码概念**，存档里
+          一个 :E 标记都不会有，那几百条是正常的，不是雷；真正会崩的是
+          hash（v19+，Ruby 3.x 移植版）。
+        """
+        if self.fmt == "legacy":
+            return ("这是 legacy（RGSS/Ruby 1.8）存档，本来就没有编码标记，"
+                    "数量大属正常；只有 v19+ 存档才需要担心")
+        return "Ruby 3.x 会按 ASCII-8BIT 读，游戏存档时可能崩溃"
+
+    def _collect_load_warnings(self) -> None:
+        """打开存档后跑一遍「读得对不对」的体检，结果塞进 self.warnings。"""
+        if self.fmt == "hash":
+            self._warn_hash_keys()
+        else:
+            self._warn_streams()
+        try:
+            rep = self.encoding_report()
+        except Exception:
+            return
+        bad = rep["nonascii_unmarked"]
+        if bad:
+            self._warn(
+                "警告", "全存档", "字符串编码标记",
+                f"{bad} 个字符串含非 ASCII 却没有 :E 标记；{self._enc_risk_note()}")
+
+    def _warn_hash_keys(self) -> None:
+        """v19+：顶层 Hash 缺必需键（游戏读档直接崩的那种）。"""
+        got = set()
+        for k, _v in self.root.pairs:
+            if isinstance(k, rmarshal.RSymbol):
+                got.add(k.name)
+        for key in ("player", "bag", "storage_system"):
+            if key not in got:
+                self._warn("错误", f"顶层 :{key}", "必需键",
+                           f"v19+ 存档顶层缺少 :{key}，游戏读档会失败")
+
+    def _warn_streams(self) -> None:
+        """legacy：流数量 / 位置标称类名 / 认不出来的流，逐条留痕。"""
+        n = len(self.objects)
+        std = len(STREAM_LABELS)
+        if n != std:
+            if n < std:
+                miss = "、".join(lab for lab, _c, _d in STREAM_LABELS[n:])
+                reason = f"实际 {n} 条流（标准 {std} 条），缺少：{miss}"
+            else:
+                names = [o.ruby_class if isinstance(o, rmarshal.RObject)
+                         else type(o).__name__ for o in self.objects[std:]]
+                reason = (f"实际 {n} 条流（标准 {std} 条），多出 "
+                          f"{n - std} 条：" + "、".join(names))
+            self._warn("错误", "存档流", "流数量", reason)
+        cls_count: Dict[str, int] = {}
+        for _lab, c, _d in STREAM_LABELS:
+            cls_count[c] = cls_count.get(c, 0) + 1
+        known = set(cls_count)
+        for i, o in enumerate(self.objects):
+            if not isinstance(o, rmarshal.RObject):
+                continue
+            actual = o.ruby_class
+            if i < std:
+                label, cls, _desc = STREAM_LABELS[i]
+                if not cls or actual == cls:
+                    continue
+                if cls_count.get(actual, 0) == 1:
+                    newlab = next((lab for lab, c, _d in STREAM_LABELS
+                                   if c == actual), actual)
+                    self._warn("警告", f"第{i}条流", label,
+                               f"标称类名 {cls}，实际 {actual}，"
+                               f"已按类名改认成 {newlab}")
+                elif actual in known:
+                    self._warn("警告", f"第{i}条流", label,
+                               f"标称类名 {cls}，实际 {actual}"
+                               "（这个类名对应多个全局变量，只能按位置给）")
+                else:
+                    self._warn("警告", f"第{i}条流", label,
+                               f"标称类名 {cls}，实际 {actual}："
+                               "类名认不出来，按位置猜测")
+            elif actual not in known:
+                self._warn("警告", f"第{i}条流", f"?({actual})",
+                           "超出标准的 15 条流，类名也认不出来，按位置猜测")
+
+    # -- 编码标记统计 ------------------------------------------------------
+    def _iter_strings(self):
+        """
+        遍历存档里的所有 Ruby 字符串，产出 (位置, 字符串)。
+
+        ★ 必须按 id() 去重：存档是**图**不是树（有 '@' 对象链接和自引用），
+          每个对象只下潜一次，否则会跑到超时 —— 这是踩过的坑。
+        """
+        stack: List[Tuple[str, Any]] = [
+            (f"流#{i}", o) for i, o in reversed(list(enumerate(self.objects)))]
+        seen = set()
+        while stack:
+            where, o = stack.pop()
+            if isinstance(o, rmarshal.RStr):
+                # 字符串也是对象（可能被 '@' 链接多次），按 id 只数一次
+                if id(o) in seen:
+                    continue
+                seen.add(id(o))
+                yield where, o
+                continue
+            if isinstance(o, str):
+                yield where, o
+                continue
+            if o is None or isinstance(o, (bool, int, float)):
+                continue
+            key = id(o)
+            if key in seen:
+                continue
+            seen.add(key)
+            if isinstance(o, rmarshal.RObject):
+                for k, v in o.ivars.items():
+                    stack.append((f"{where}.{k}", v))
+            elif isinstance(o, rmarshal.RIVar):
+                stack.append((f"{where}.base", o.base))
+                for k, v in o.ivars.items():
+                    stack.append((f"{where}.{k}", v))
+            elif isinstance(o, rmarshal.RStruct):
+                for i, (k, v) in enumerate(o.members):
+                    stack.append((f"{where}.{_sym(k)}", v))
+            elif isinstance(o, rmarshal.RHash):
+                for k, v in o.pairs:
+                    stack.append((f"{where}[键]", k))
+                    stack.append((f"{where}[值]", v))
+                if o.default is not None:
+                    stack.append((f"{where}[默认值]", o.default))
+            elif isinstance(o, list):
+                for i, v in enumerate(o):
+                    stack.append((f"{where}[{i}]", v))
+            elif isinstance(o, dict):
+                for k, v in o.items():
+                    stack.append((f"{where}.{k}", v))
+
+    def encoding_report(self) -> dict:
+        """
+        统计整份存档里字符串的 enc 标记分布。
+
+        ★ suspicious = 含非 ASCII 却没有 :E 标记的字符串 —— 这些就是会让
+          Ruby 3.x 移植版在 gsub! 处抛 Encoding::CompatibilityError 的雷。
+        """
+        rep = {"ascii_marked": 0, "ascii_unmarked": 0, "ascii_binary": 0,
+               "nonascii_marked": 0, "nonascii_unmarked": 0,
+               "nonascii_binary": 0, "suspicious": []}
+        # ★ suspicious 最多 20 条：先收「真文字」的（真正会撞上 gsub! 的那类），
+        #   纯二进制字节串（surrogateescape 解出来的 \\udcXX）排在后面 —— 否则
+        #   一屏都是 submicro 之类的乱码，玩家名那条反而被挤掉了。
+        text_hits: List[Tuple[str, str]] = []
+        byte_hits: List[Tuple[str, str]] = []
+        for where, s in self._iter_strings():
+            marked = getattr(s, "enc", None)
+            text = str(s)
+            ascii_ = text.isascii()
+            if marked is True:
+                rep["ascii_marked" if ascii_ else "nonascii_marked"] += 1
+            elif marked is False:
+                rep["ascii_binary" if ascii_ else "nonascii_binary"] += 1
+            else:
+                rep["ascii_unmarked" if ascii_ else "nonascii_unmarked"] += 1
+                if not ascii_:
+                    # 全是 surrogateescape 还原出来的原始字节 → 不是「文字」
+                    raw_bytes = all(0xdc80 <= ord(c) <= 0xdcff for c in text)
+                    (byte_hits if raw_bytes else text_hits).append((where, text))
+        # ★ suspicious 里的文本保持**原始值**不动：GUI 与回归脚本要按原值比对
+        #   （例如拿它去存档里重新定位那个字段），安全化过的字符串就找不到了。
+        #   要铺进界面的那一份另放 suspicious_safe，两者下标一一对应。
+        rep["suspicious"] = (text_hits + byte_hits)[:20]
+        rep["suspicious_safe"] = [(_safe_text(w, 80), _safe_text(t, 40))
+                                  for w, t in rep["suspicious"]]
+        return rep
+
+    # -- 写回前字段级校验 ---------------------------------------------------
+    def validate(self) -> List[dict]:
+        """
+        写回前的字段级体检（GUI 直接调用，返回值可直接铺进表格）。
+
+        每条 {"等级": "错误"|"警告", "位置": str, "字段": str, "原因": str,
+              "字段键": str}。
+        ★ 读不到游戏数据（.dat / PBS）时，物种名 / 招式 / 道具那几项一律
+          降级成「警告」—— 没数据不等于存档有问题，不能误报。
+        ★ "字段键" 是给 GUI 标红用的稳定英文键（money / level / iv0…），
+          对不上单个输入框的整体性条目给空串，界面见到空串就退化成按位置
+          匹配，不会误标；新增校验项时务必把键填上，否则界面标不动。
+        """
+        out: List[dict] = []
+        try:
+            self._validate_into(out)
+        except Exception as e:      # ★ 体检本身绝不能把界面搞崩
+            out.append({"等级": "警告", "位置": "全存档", "字段": "体检",
+                        "原因": _safe_text(f"体检中途出错：{type(e).__name__}: {e}"),
+                        "字段键": ""})
+        return out
+
+    def _validate_into(self, out: List[dict]) -> None:
+        def add(level: str, where: str, field: str, reason: str,
+                key: Optional[str] = None) -> None:
+            # ★ 每条都必须带 "字段键"（GUI 靠它精确标红表单）：不给就在这里
+            #   按中文「字段」查表兜底，查不到给空串 —— 空串是安全的，
+            #   GUI 见到空串只会退化成按位置匹配，不会误标任何输入框。
+            out.append({"等级": level, "位置": _safe_text(where),
+                        "字段": _safe_text(field),
+                        "原因": _safe_text(reason),
+                        "字段键": _field_key(field) if key is None else key})
+
+        try:
+            d: Optional[GameData] = self.data
+        except Exception:
+            d = None
+        has_data = d is not None and bool(getattr(d, "_species", None))
+
+        try:
+            tr = self.g("$Trainer")
+        except Exception:
+            add("错误", "主角", "$Trainer", "取不到主角对象，存档结构不对")
+            tr = None
+        # ★ 读不到游戏数据时，物种/招式/道具这些「要查表才知道对不对」的项目
+        #   一律攒起来，最后只报一条概览 —— 否则一份存档几十只宝可梦会把
+        #   体检表刷成全屏同样的警告，真正的问题反而看不见。
+        no_data: List[str] = []
+        if isinstance(tr, rmarshal.RObject):
+            self._validate_trainer(tr, add)
+            for i, pm in enumerate(tr.ivars.get("@party") or []):
+                if self.empty_slot(pm):
+                    continue
+                self._validate_pokemon(pm, f"队伍 第{i + 1}只", add, d,
+                                       has_data, no_data)
+
+        try:
+            boxes = self.boxes()
+        except Exception:
+            boxes = []
+        for bi, box in enumerate(boxes):
+            if not isinstance(box, rmarshal.RObject):
+                continue
+            where = f"电脑 箱子{bi + 1}"
+            bn = box.ivars.get("@name")
+            bns = "" if bn is None else str(bn)
+            if not bns.strip():
+                add("警告", where, "箱子名", "箱子名是空的")
+            elif len(bns) > 16:
+                add("警告", where, "箱子名",
+                    f"箱子名 {len(bns)} 个字符，超过 16（界面会被截断）")
+            for si, pm in enumerate(box.ivars.get("@pokemon") or []):
+                if self.empty_slot(pm):
+                    continue
+                self._validate_pokemon(pm, f"{where} 第{si + 1}格", add, d,
+                                       has_data, no_data)
+        if no_data:
+            add("警告", "全存档", "种族/招式/携带道具",
+                f"{len(no_data)} 只宝可梦的这些字段无法核对：没选游戏根目录，"
+                f"读不到 PBS/.dat（不是存档的问题；例如 {no_data[0]}）")
+
+        try:
+            rep = self.encoding_report()
+        except Exception:
+            rep = {}
+        if rep.get("suspicious"):
+            # ★ 取安全化那份铺界面（原始值里可能夹着 surrogateescape 残留）
+            first_where, first_text = rep.get("suspicious_safe", [("", "")])[0]
+            add("警告", "全存档", "字符串编码标记",
+                f"{rep['nonascii_unmarked']} 个字符串含非 ASCII 却没有 :E 标记"
+                f"（例如 {first_where}：{first_text!r}）；{self._enc_risk_note()}")
+
+    def _validate_trainer(self, tr: Any, add) -> None:
+        iv = tr.ivars
+        name = iv.get("@name")
+        nm = "" if name is None else str(name)
+        if not nm.strip():
+            add("警告", "主角", "名字", "名字是空的，游戏里显示不出训练家名")
+        elif len(nm) > 12:
+            add("警告", "主角", "名字",
+                f"名字 {len(nm)} 个字符，超过 12（队伍/对战界面会溢出）")
+        money = iv.get("@money")
+        mi = _as_int(money, -1)
+        if mi < 0:
+            add("错误", "主角", "金钱", f"金钱是 {money!r}，不是合法数值")
+        elif mi > 999999:
+            add("错误", "主角", "金钱",
+                f"金钱 {mi} 超过 999999，游戏内会回绕成别的数")
+        badges = iv.get("@badges")
+        if badges is not None and not isinstance(badges, list):
+            add("错误", "主角", "徽章",
+                f"徽章不是数组（是 {type(badges).__name__}）")
+        elif isinstance(badges, list):
+            if not badges:
+                add("警告", "主角", "徽章", "徽章列表是空的")
+            elif len(badges) > 32:
+                add("警告", "主角", "徽章",
+                    f"徽章列表有 {len(badges)} 项，明显多于常见值")
+            bad = [i for i, b in enumerate(badges)
+                   if not isinstance(b, (bool, int)) or isinstance(b, float)]
+            if bad:
+                shown = "、".join(str(i + 1) for i in bad[:5])
+                add("警告", "主角", "徽章",
+                    f"第 {shown} 项不是 true/false", "badges")
+
+    def _validate_pokemon(self, pm: Any, where: str, add,
+                          d: Optional[GameData], has_data: bool,
+                          no_data: List[str]) -> None:
+        """
+        一只宝可梦的字段体检。「位置」形如「队伍 第2只 喷火龙」。
+
+        ★ no_data 收集「因为读不到游戏数据而没法核对」的位置，由调用方汇总成
+          一条警告；不这样做的话一份存档会刷出几十条一模一样的提示。
+        """
+        if not isinstance(pm, rmarshal.RObject):
+            add("错误", where, "宝可梦",
+                f"这一格不是宝可梦对象（是 {type(pm).__name__}）")
+            return
+        try:
+            r = self._read_pokemon(pm)
+        except Exception as e:
+            add("错误", where, "宝可梦",
+                f"读不出来：{type(e).__name__}: {e}")
+            return
+        sid = r.get("species")
+        raw = r.get("species_raw")
+        if d is not None:
+            label = d.species_label(sid, raw)
+        else:
+            label = raw or (f"#{sid}" if sid is not None else "")
+        full = f"{where} {label}".strip()
+        iv = pm.ivars
+        # 种族
+        if sid is None and not raw:
+            add("错误", full, "种族",
+                f"种族字段认不出来（@species = {iv.get('@species')!r}）")
+        elif not has_data:
+            no_data.append(full)
+        elif not d._species.get(sid):
+            add("警告", full, "种族",
+                f"种族 {raw or ('#' + str(sid))} 不在游戏数据里")
+        # 等级
+        # ★ 要看存档里真正写着的那一个 @level：_read_pokemon 在 @level < 1 时
+        #   会用经验换算出一个显示用等级（既有行为，不能改），照那个判就永远
+        #   发现不了「存档里 @level 被写坏」—— 而写坏的正是会被存回去的值。
+        lv_raw = iv.get("@level")
+        if isinstance(lv_raw, int) and not isinstance(lv_raw, bool):
+            if lv_raw < 1 or lv_raw > 100:
+                add("错误", full, "等级",
+                    f"@level 是 {lv_raw}，合法范围是 1~100")
+        else:
+            lv = r.get("level")
+            if not isinstance(lv, int) or lv < 1 or lv > 100:
+                add("错误", full, "等级", f"等级是 {lv!r}，合法范围是 1~100")
+        # 个体值 / 努力值
+        ivs = r.get("ivs") or []
+        bad = [i for i, v in enumerate(ivs[:6])
+               if not isinstance(v, int) or v < 0 or v > 31]
+        for i in bad:
+            # ★ 一件一条：GUI 要按 iv0..iv5 精确标红对应的那个输入框，
+            #   合并成一条「HP、攻击 超出 0~31」就只标得动第一个。
+            add("错误", full, "个体值", f"{STAT_KEYS[i]} 超出 0~31",
+                f"iv{i}")
+        evs = r.get("evs") or []
+        bad = [i for i, v in enumerate(evs[:6])
+               if not isinstance(v, int) or v < 0 or v > 255]
+        for i in bad:
+            add("错误", full, "努力值", f"{STAT_KEYS[i]} 超出 0~255",
+                f"ev{i}")
+        # HP
+        hp, thp = r.get("hp"), r.get("totalhp")
+        if isinstance(hp, int) and isinstance(thp, int) and thp > 0 and hp > thp:
+            # ★ 只给 "hp"：表单里没有 totalhp 输入框，给 "totalhp" 会报空键
+            add("错误", full, "HP", f"当前 HP {hp} 大于总 HP {thp}", "hp")
+        # 招式 / 道具（读不到游戏数据时只给警告）
+        for mi, (mid, _pp, _up) in enumerate(r.get("moves") or []):
+            if not mid or not has_data:
+                continue
+            if not d._moves.get(mid):
+                # 招式选择器是组合框（不是 Entry），GUI 暂时匹配不到这两个键，
+                # 会退化成按位置匹配；键照 move0..move3 / pp0..pp3 给好，
+                # 控件换成可标红的形态时无需再改内核。
+                n = min(mi, 3)
+                add("警告", full, "招式",
+                    f"招式{n + 1} #{mid} 不在游戏数据里", f"move{n}")
+        iid = r.get("item") or 0
+        if iid and has_data and not d._items.get(iid):
+            add("警告", full, "携带道具", f"道具 #{iid} 不在游戏数据里")
+
+    # -- 与磁盘上的存档逐结构对比 -------------------------------------------
+    def diff_against_disk(self) -> List[dict]:
+        """
+        把内存对象和「从原始字节 self.raw 重新加载的一份」逐结构对比。
+
+        返回 [{"位置", "字段", "原值", "新值"}]，只列真正变化的地方；
+        没改过任何字段时返回 []; ★ 按 id() 去重防环（存档是图，有自引用）。
+
+        「原值」来自磁盘（原始字节），「新值」来自当前内存对象。
+        """
+        out: List[dict] = []
+        try:
+            fresh = self._reload_from_raw()
+            if fresh is not None:
+                n = max(len(fresh.objects), len(self.objects))
+                for i in range(n):
+                    da = fresh.objects[i] if i < len(fresh.objects) else _MISSING
+                    ma = self.objects[i] if i < len(self.objects) else _MISSING
+                    self._diff_walk(da, ma, self._stream_loc(i, da), "", out,
+                                    set())
+        except Exception as e:
+            out.append({"位置": "全存档", "字段": "对比", "原值": "",
+                        "新值": f"对比中途出错：{type(e).__name__}: {e}"})
+        return out
+
+    def _stream_loc(self, i: int, obj: Any) -> str:
+        """第 i 条流在界面上叫什么（diff 的「位置」根节点）。"""
+        if self.fmt == "hash":
+            return "存档"
+        if i < len(STREAM_LABELS):
+            return _SHORT_LABELS.get(STREAM_LABELS[i][0]) or f"第{i}条流"
+        actual = obj.ruby_class if isinstance(obj, rmarshal.RObject) else \
+            type(obj).__name__
+        return f"第{i}条流({actual})"
+
+    def _reload_from_raw(self) -> Optional["SaveFile"]:
+        """只用 self.raw 重新解析一份（不读盘、不碰缓存），给 diff 当基准。"""
+        try:
+            enc, marshal_bytes = unwrap_save(self.raw)
+            objs = rmarshal.loads_all(marshal_bytes)
+        except Exception:
+            return None
+        sv = SaveFile.__new__(SaveFile)
+        sv.path = self.path
+        sv.raw = self.raw
+        sv.encoding = enc
+        sv.marshal = marshal_bytes
+        sv.objects = objs
+        sv.stream_codec = {}
+        sv.stream_inner = {}
+        sv.stream_raw_bytes = {}
+        sv._decode_streams()
+        sv.fmt = self.fmt
+        sv.root = sv.objects[0] if sv.objects else None
+        sv._data = None
+        sv._game_root = self._game_root
+        sv.warnings = []
+        sv._warned = set()
+        return sv
+
+    def _diff_walk(self, disk: Any, mem: Any, where: str, field: str,
+                   out: List[dict], seen: set) -> None:
+        """
+        递归对比「磁盘上的那一份」与「内存里的那一份」。
+
+        ★ disk 在前、mem 在后 —— 写反了「原值/新值」就整张表都对不上。
+        ★ seen 记的是 (id(disk), id(mem)) 这一对：同一条路径不会重复下潜，
+          自引用/对象链接也不会把进程跑死。
+        """
+        a, b = disk, mem
+        if a is b:
+            return
+
+        def note(loc: str = "", fld: str = "") -> None:
+            out.append({"位置": loc or where or field,
+                        "字段": fld or field,
+                        "原值": _diff_value(a), "新值": _diff_value(b)})
+
+        if isinstance(a, _Missing) or isinstance(b, _Missing):
+            note()
+            return
+        if isinstance(a, str) and isinstance(b, str):
+            if str(a) != str(b) or getattr(a, "enc", None) != \
+                    getattr(b, "enc", None):
+                note()
+            return
+        if isinstance(a, rmarshal.RSymbol) and isinstance(b, rmarshal.RSymbol):
+            if a.name != b.name or a.enc != b.enc:
+                note()
+            return
+        if isinstance(a, rmarshal.RObject) and isinstance(b, rmarshal.RObject):
+            if (id(a), id(b)) in seen:
+                return
+            seen.add((id(a), id(b)))
+            base = where or f"<{a.ruby_class}>"
+            if a.ruby_class != b.ruby_class:
+                note(base, "类名")
+                return
+            keys = list(a.ivars.keys())
+            keys += [k for k in b.ivars if k not in a.ivars]
+            for k in keys:
+                self._diff_walk(a.ivars.get(k, _MISSING),
+                                b.ivars.get(k, _MISSING),
+                                f"{base}.{k}", k, out, seen)
+            return
+        if isinstance(a, rmarshal.RHash) and isinstance(b, rmarshal.RHash):
+            if (id(a), id(b)) in seen:
+                return
+            seen.add((id(a), id(b)))
+            base = where or "<Hash>"
+            for i in range(max(len(a.pairs), len(b.pairs))):
+                ka, va = a.pairs[i] if i < len(a.pairs) else (_MISSING, _MISSING)
+                kb, vb = b.pairs[i] if i < len(b.pairs) else (_MISSING, _MISSING)
+                # 键是符号/字符串就拿来当位置名（"存档.player.@name"），
+                # 认不出才退回下标 —— 界面上看 [0] 完全不知道是哪一项
+                name = None
+                for k in (ka, kb):
+                    if isinstance(k, rmarshal.RSymbol):
+                        name = k.name
+                        break
+                    if isinstance(k, str):
+                        name = str(k)
+                        break
+                loc = f"{base}.{name}" if name else f"{base}[{i}]"
+                if name:
+                    self._diff_walk(va, vb, loc, "", out, seen)
+                else:
+                    self._diff_walk(ka, kb, f"{base}[{i}]", "键", out, seen)
+                    self._diff_walk(va, vb, f"{base}[{i}]", "值", out, seen)
+            self._diff_walk(a.default, b.default, base, "默认值", out, seen)
+            return
+        if isinstance(a, list) and isinstance(b, list):
+            if (id(a), id(b)) in seen:
+                return
+            seen.add((id(a), id(b)))
+            base = where or "<Array>"
+            for i in range(max(len(a), len(b))):
+                self._diff_walk(a[i] if i < len(a) else _MISSING,
+                                b[i] if i < len(b) else _MISSING,
+                                f"{base}[{i}]", f"[{i}]", out, seen)
+            return
+        if isinstance(a, rmarshal.RIVar) and isinstance(b, rmarshal.RIVar):
+            if (id(a), id(b)) in seen:
+                return
+            seen.add((id(a), id(b)))
+            base = where or "<ivar>"
+            self._diff_walk(a.base, b.base, base, "本体", out, seen)
+            self._diff_walk(a.uclass, b.uclass, base, "类名", out, seen)
+            keys = list(a.ivars.keys())
+            keys += [k for k in b.ivars if k not in a.ivars]
+            for k in keys:
+                self._diff_walk(a.ivars.get(k, _MISSING),
+                                b.ivars.get(k, _MISSING),
+                                f"{base}.{k}", k, out, seen)
+            return
+        if isinstance(a, rmarshal.RStruct) and isinstance(b, rmarshal.RStruct):
+            if (id(a), id(b)) in seen:
+                return
+            seen.add((id(a), id(b)))
+            base = where or f"<struct {a.ruby_class}>"
+            for i in range(max(len(a.members), len(b.members))):
+                ma = a.members[i] if i < len(a.members) else (_MISSING, _MISSING)
+                mb = b.members[i] if i < len(b.members) else (_MISSING, _MISSING)
+                self._diff_walk(ma[0], mb[0], f"{base}[{i}]", "成员名", out, seen)
+                self._diff_walk(ma[1], mb[1], f"{base}[{i}]", f"成员{i}",
+                                out, seen)
+            return
+        if isinstance(a, rmarshal.RUserMarshal) and \
+                isinstance(b, rmarshal.RUserMarshal):
+            if (id(a), id(b)) in seen:
+                return
+            seen.add((id(a), id(b)))
+            base = where or f"<{a.ruby_class}>"
+            self._diff_walk(a.data, b.data, base, "数据", out, seen)
+            return
+        if type(a) is not type(b) or _diff_value(a) != _diff_value(b):
+            note()
+
 
     # =====================================================================
     # 解码
@@ -2633,7 +3373,9 @@ class SaveFile:
                     flags = flags + [False] * (n - len(flags))
                 iv["@badges"] = flags
             elif k == "name":
-                iv["@name"] = rmarshal.RStr(str(v))
+                # ★ 走 RStr.smart：原名带 :E 标记就必须沿用，否则 Ruby 3.x
+                #   读回来按 ASCII-8BIT，改名后游戏内存档直接崩
+                iv["@name"] = rmarshal.RStr.smart(str(v), iv.get("@name"))
             elif k == "pokedex":
                 # v19+ 名字变成 @has_pokedex
                 iv["@has_pokedex" if modern else "@pokedex"] = bool(v)
@@ -2995,7 +3737,8 @@ class SaveFile:
         if self.fmt == "hash":
             ivs["@name"] = None
         else:
-            ivs["@name"] = rmarshal.RStr(self.data.species(new_sid))
+            ivs["@name"] = rmarshal.RStr.smart(
+                self.data.species(new_sid), ivs.get("@name"))
         return True
 
     def _fix_form_for_species(self, pm: Any, new_sid: Any) -> None:
@@ -3055,11 +3798,16 @@ class SaveFile:
             nm = str(value).strip()
             # v19 里 @name = nil 表示「显示种族名」；空名字/同名都存回 nil
             sp_name = d.species(self._species_id(ivs.get("@species")))
-            ivs["@name"] = None if nm in ("", sp_name) else rmarshal.RStr(nm)
+            # ★ 空名字 / 与种族同名 → nil（交给游戏显示种族名），这条不变；
+            #   其余走 RStr.smart 沿用原标记（见 rmarshal.RStr.smart 注释）
+            ivs["@name"] = (None if nm in ("", sp_name)
+                            else rmarshal.RStr.smart(nm, ivs.get("@name")))
         elif key == "初训家":
             owner = ivs.get("@owner")
             if isinstance(owner, rmarshal.RObject):
-                owner.ivars["@name"] = rmarshal.RStr(str(value))
+                # ★ 初训家名同样要沿用原来的 :E 标记
+                owner.ivars["@name"] = rmarshal.RStr.smart(
+                    str(value), owner.ivars.get("@name"))
         elif key == "种族":
             old_sid = self._species_id(ivs.get("@species"))
             v, err = self.coerce_ref(value, "species")
@@ -3201,10 +3949,11 @@ class SaveFile:
         need = False
         if key == "昵称":
             nm = str(value).strip()
-            ivs["@name"] = rmarshal.RStr(
-                nm or self.data.species(ivs.get("@species")))
+            ivs["@name"] = rmarshal.RStr.smart(
+                nm or self.data.species(ivs.get("@species")), ivs.get("@name"))
         elif key == "初训家":
-            ivs["@ot"] = rmarshal.RStr(str(value))
+            # ★ 沿用原来的 :E 标记（legacy 存档里 @ot 常带 true）
+            ivs["@ot"] = rmarshal.RStr.smart(str(value), ivs.get("@ot"))
         elif key == "等级":
             rate = self.data.growth_rate(ivs.get("@species"))
             ivs["@exp"] = growth_exp(max(1, min(100, int(value))), rate)
@@ -3401,7 +4150,9 @@ class SaveFile:
     def rename_box(self, box_index: int, name: str) -> None:
         boxes = self._ensure_boxes()
         if 0 <= box_index < len(boxes):
-            boxes[box_index].ivars["@name"] = rmarshal.RStr(str(name))
+            ivs = boxes[box_index].ivars
+            # ★ 箱子名同样沿用原标记，别造裸 RStr
+            ivs["@name"] = rmarshal.RStr.smart(str(name), ivs.get("@name"))
 
     # -- 背包 -------------------------------------------------------------
     def pocket(self, index: int) -> list:
