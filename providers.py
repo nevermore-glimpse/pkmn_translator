@@ -4,7 +4,8 @@
 
 统一管理 Ollama / llama.cpp / LM Studio / 自定义 OpenAI 兼容服务：
   · 协议差异：Ollama 走 /api/chat + /api/tags；其余走 OpenAI 兼容 /v1
-  · 一键切换：切换后自动改写 TRANSLATE_MODE、服务地址与推荐参数
+  · 一键切换：三个本地服务（Ollama / llama.cpp / LM Studio）共用同一套
+    「本地服务通用配置」，切换只改服务地址与各自的模型名
   · 模型目录：参数量 / 上下文 / 体积 / 量化 / 跨提供商模型名映射
   · 一键部署：调用各提供商自己的拉取命令，输出实时打进日志
   · 切换适配：列出「同一模型换提供商后要改什么」，能自动改的一键改掉
@@ -59,7 +60,7 @@ PROVIDERS = {
         "protocol":    "openai",
         "url_config":  "LLAMACPP_URL",
         "default_url": "http://127.0.0.1:8080/v1",
-        "model_config": "API_MODEL",
+        "model_config": "LLAMACPP_MODEL",
         "default_model": "qwen3.5-4b",
         "think":       False,
         "keep_alive":  False,
@@ -79,7 +80,7 @@ PROVIDERS = {
         "protocol":    "openai",
         "url_config":  "LMSTUDIO_URL",
         "default_url": "http://localhost:1234/v1",
-        "model_config": "API_MODEL",
+        "model_config": "LMSTUDIO_MODEL",
         "default_model": "qwen2.5-14b-instruct",
         "think":       False,
         "keep_alive":  False,
@@ -96,7 +97,7 @@ PROVIDERS = {
         "protocol":    "openai",
         "url_config":  "CUSTOM_OPENAI_URL",
         "default_url": "http://localhost:8080/v1",
-        "model_config": "API_MODEL",
+        "model_config": "CUSTOM_MODEL",
         "default_model": "",
         "think":       False,
         "keep_alive":  False,
@@ -113,43 +114,30 @@ PROVIDERS = {
 # 侧边栏 / 下拉框里的显示顺序
 ORDER = ["ollama", "llamacpp", "lmstudio", "custom"]
 
-# 每个提供商的推荐参数（与 settings.MODE_PRESETS 同思路，但按本地服务器特点细分）
+# 本地服务通用配置：Ollama / llama.cpp / LM Studio 三档共用。
+# NUM_CTX 不在此列，由 config.NUM_CTX 决定。
+LOCAL_COMMON = {
+    "TIMEOUT":             600,
+    "NUM_PREDICT":         4096,
+    "BATCH_SIZE":          200,
+    "CTX_LIMIT":           0,
+    "CTX_BUDGET_RATIO":    0.9,
+    "MAX_TERMS_IN_PROMPT": 1000,
+}
+
+# 各提供商的推荐参数（custom 不跟本地三档共用）
 PRESETS = {
-    "ollama": {
-        "TIMEOUT":             600,
-        "NUM_CTX":             8192,
-        "NUM_PREDICT":         4096,
-        "BATCH_SIZE":          12,
-        "MAX_BATCH_CHARS":     4096,
-        "MAX_TERMS_IN_PROMPT": 100,
-        "KEEP_ALIVE":          "30m",
-    },
-    "llamacpp": {
-        # llama-server 一次只服务一个模型、上下文固定，批次给小一点更稳
-        "TIMEOUT":             600,
-        "NUM_CTX":             8192,
-        "NUM_PREDICT":         4096,
-        "BATCH_SIZE":          12,
-        "MAX_BATCH_CHARS":     4096,
-        "MAX_TERMS_IN_PROMPT": 100,
-        "API_TIMEOUT":         600,
-    },
-    "lmstudio": {
-        "TIMEOUT":             600,
-        "NUM_CTX":             8192,
-        "NUM_PREDICT":         4096,
-        "BATCH_SIZE":          12,
-        "MAX_BATCH_CHARS":     4096,
-        "MAX_TERMS_IN_PROMPT": 100,
-        "API_TIMEOUT":         600,
-    },
+    "ollama":   dict(LOCAL_COMMON),
+    "llamacpp": dict(LOCAL_COMMON),
+    "lmstudio": dict(LOCAL_COMMON),
     "custom": {
         "TIMEOUT":             1800,
         "NUM_CTX":             65535,
         "NUM_PREDICT":         16383,
-        "BATCH_SIZE":          80,
-        "MAX_BATCH_CHARS":     16383,
-        "MAX_TERMS_IN_PROMPT": 400,
+        "BATCH_SIZE":          2000,
+        "CTX_LIMIT":           0,
+        "CTX_BUDGET_RATIO":    0.9,
+        "MAX_TERMS_IN_PROMPT": 1000,
         "API_TIMEOUT":         600,
     },
 }
@@ -160,7 +148,8 @@ PRESET_LABELS = {
     "NUM_CTX":             "上下文长度",
     "NUM_PREDICT":         "最大生成长度",
     "BATCH_SIZE":          "每批条数",
-    "MAX_BATCH_CHARS":     "单批字符上限",
+    "CTX_LIMIT":           "模型上下文窗口",
+    "CTX_BUDGET_RATIO":    "上下文预算比例",
     "MAX_TERMS_IN_PROMPT": "术语上限（条）",
     "KEEP_ALIVE":          "模型驻留时长",
     "TRANSLATE_MODE":      "翻译模式",
@@ -389,7 +378,8 @@ def normalize(key):
 
 
 def get(key=None):
-    return PROVIDERS[normalize(key)]
+    """取提供商的配置档；不传 key 时取当前提供商。"""
+    return PROVIDERS[normalize(key) if key else current()]
 
 
 def keys():
@@ -475,6 +465,58 @@ def set_url(url, key=None):
     p = get(key)
     ok, msg, _v = settings.set_value(p["url_config"], url)
     return ok, msg
+
+
+# ================================================================
+# 请求目标：走什么协议、连哪个地址、用哪个模型、超时多少
+# ================================================================
+def protocol_of(key=None):
+    """当前（或指定）提供商说哪种协议：ollama=原生 API，openai=OpenAI 兼容。"""
+    return get(key)["protocol"]
+
+
+def is_local(key=None):
+    """是否属于「本地服务」三档（Ollama / llama.cpp / LM Studio）。"""
+    return get(key)["key"] in ("ollama", "llamacpp", "lmstudio")
+
+
+def request_target(key=None):
+    """
+    一次请求的连接信息：protocol / base_url / model / timeout /
+    use_key / local / cloud / key。
+
+    本地三档只读自己的地址与模型名，云端键（API_*）只服务云端服务。
+    """
+    p = get(key)
+    local = p["key"] in ("ollama", "llamacpp", "lmstudio")
+    cloud = (not local
+             and str(getattr(config, "TRANSLATE_MODE", "ollama")).lower()
+             == "api")
+
+    if cloud:
+        base = str(getattr(config, "API_BASE_URL", "") or "")
+        model = str(getattr(config, "API_MODEL", "") or "")
+        timeout = getattr(config, "API_TIMEOUT", 600) \
+            or getattr(config, "TIMEOUT", 600)
+        use_key = True
+    else:
+        base = _cfg_url(p["key"])
+        model = current_model(p["key"])
+        timeout = (getattr(config, "TIMEOUT", 600) if local else
+                   getattr(config, "API_TIMEOUT", 600)
+                   or getattr(config, "TIMEOUT", 600))
+        use_key = not local
+
+    return {
+        "protocol": p["protocol"],
+        "base_url": base,
+        "model": model,
+        "timeout": timeout,
+        "use_key": use_key,
+        "local": local,
+        "cloud": cloud,
+        "key": p["key"],
+    }
 
 
 # ================================================================
@@ -1232,7 +1274,11 @@ def _set(key, value, changes=None, label=None):
 
 def apply_provider(key, model=None, map_model=True):
     """
-    切换到某个提供商：改协议、改地址、套用推荐参数，并按需要映射模型名。
+    切换到某个提供商：补服务地址、套用推荐参数，并按需要映射模型名。
+
+    ★ 三个本地服务（Ollama / llama.cpp / LM Studio）共用同一套「本地服务
+      通用配置」，切换只补服务地址与各自的模型名；TRANSLATE_MODE 与
+      API_BASE_URL 一律不动 —— 走什么协议由 PROVIDER 决定（见 protocol_of）。
     返回 [(显示名, 旧值, 新值), ...]。
     """
     key = normalize(key)
@@ -1243,22 +1289,17 @@ def apply_provider(key, model=None, map_model=True):
     old_model = current_model(old_key)
     changes = []
 
-    # ---------- 协议 / 地址 ----------
-    if p["protocol"] == "ollama":
-        _set("TRANSLATE_MODE", "ollama", changes)
-        if not getattr(config, "OLLAMA_URL", ""):
-            _set("OLLAMA_URL", p["default_url"], changes)
-    else:
-        _set("TRANSLATE_MODE", "api", changes)
-        url = _cfg_url(key) or p["default_url"]
-        _set("API_BASE_URL", url, changes)
+    # ---------- 服务地址：只补空值，不覆盖用户已填的 ----------
+    if not getattr(config, p["url_config"], ""):
+        _set(p["url_config"], p["default_url"], changes)
 
     # ---------- 推荐参数 ----------
     for k, v in PRESETS.get(key, {}).items():
         _set(k, v, changes)
 
     # ---------- 模型名 ----------
-    target_model = model
+    # ★ 按提供商独立记忆：该服务上次用的模型优先，其次才从旧服务映射
+    target_model = model or current_model(key)
     if not target_model and map_model:
         target_model = map_model_name(old_model, old_key, key)
     if not target_model:
@@ -1268,6 +1309,8 @@ def apply_provider(key, model=None, map_model=True):
 
     # ---------- 提供商本身 ----------
     _set("PROVIDER", key, changes, label="服务提供商")
+    # 能选提供商，说明界面在「本地服务」一侧
+    set_ui_mode("local")
 
     try:
         from logger import get_logger
@@ -1282,21 +1325,56 @@ def apply_provider(key, model=None, map_model=True):
 
 def sync_with_mode(mode):
     """
-    「文本提取与编译」/「术语字典」上的「本地 Ollama ↔ API 服务」切换后同步
+    「文本提取与编译」/「术语字典」上的「本地服务 ↔ 云端服务」切换后同步
     PROVIDER，避免那里与「设置」里的状态打架。
-      · 切到 ollama → PROVIDER 归位成 ollama
-      · 切到 api    → 若原来在 ollama，PROVIDER 记为 custom（地址沿用现有设置）
+      · 切到 ollama → PROVIDER 归位成 ollama，设置页回到本地服务
+      · 切到 api    → 若原来在 ollama，PROVIDER 记为 custom（地址沿用现有设置），
+                      设置页切到云端服务
     """
     import settings
 
     mode = str(mode).strip().lower()
     cur = current()
     if mode == "ollama":
+        set_ui_mode("local")
         if cur != "ollama":
             apply_provider("ollama", map_model=True)
     else:
+        set_ui_mode("cloud")
         if cur == "ollama":
             settings.set_value("PROVIDER", "custom")
+
+
+# ================================================================
+# 设置页当前显示哪一侧（本地服务 / 云端服务）
+# ================================================================
+UI_MODES = ("local", "cloud")
+
+
+def ui_mode():
+    """设置页当前显示的一侧：local=本地服务，cloud=云端服务。"""
+    mode = str(getattr(config, "UI_MODE", "") or "").strip().lower()
+    if mode in UI_MODES:
+        return mode
+    # 老版本没有 UI_MODE：按翻译模式猜一个
+    return "cloud" if str(getattr(config, "TRANSLATE_MODE", "")).lower() == "api" \
+        else "local"
+
+
+def set_ui_mode(mode):
+    """只改设置页显示哪一侧，不动翻译模式与任何已保存的参数。"""
+    import settings
+
+    mode = str(mode or "").strip().lower()
+    if mode not in UI_MODES:
+        mode = "local"
+    if mode == ui_mode():
+        return False
+    try:
+        settings.set_internal("UI_MODE", mode)
+    except Exception:
+        return False
+    return True
 
 
 def set_prev_provider(key):
@@ -1328,7 +1406,7 @@ def adaptation(from_key, to_key):
             "title": "接口协议",
             "detail": (f"{fp['label']} 用 {_proto_desc(fp)}，"
                        f"{tp['label']} 用 {_proto_desc(tp)}；"
-                       "已改写 TRANSLATE_MODE 与服务地址。"),
+                       "协议随服务提供商自动切换，只改了服务地址。"),
         })
     else:
         auto.append({
@@ -1345,9 +1423,13 @@ def adaptation(from_key, to_key):
         f"{PRESET_LABELS.get(k, k)}={v}"
         for k, v in PRESETS.get(to_key, {}).items()
         if k not in ("API_TIMEOUT",))
+    local_pair = all(k in ("ollama", "llamacpp", "lmstudio")
+                     for k in (from_key, to_key))
     auto.append({
         "title": "推荐参数",
-        "detail": f"已套用 {tp['label']} 的推荐值：{preset_desc}。",
+        "detail": (f"两边都是本地服务，共用同一套本地通用配置（{preset_desc}），"
+                   "切换不改动这些值。" if local_pair else
+                   f"已套用 {tp['label']} 的推荐值：{preset_desc}。"),
     })
 
     # ---------- 需要人工处理的 ----------
@@ -1450,7 +1532,12 @@ def _load_hint(key):
 
 
 def _model_map_desc(from_key, to_key):
-    cur = current_model(to_key) or current_model(from_key)
+    # ★ 模型名按提供商独立记忆：目标服务已有自己的模型名就直接沿用
+    own = current_model(to_key)
+    if own:
+        return (f"「{own}」是 {get(to_key)['label']} 自己记着的模型名，"
+                "各服务独立记忆，未改动。")
+    cur = current_model(from_key)
     fam = family_by_id(cur, to_key) or family_by_id(cur)
     if not fam:
         return (f"当前模型名「{cur or '（空）'}」在两个提供商里标识一致，"

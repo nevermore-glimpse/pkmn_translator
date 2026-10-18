@@ -24,6 +24,7 @@ import processor as PR
 import replacement as REPL
 import restoration as RESTORE
 import settings
+import translator as T
 from cache import Cache, atomic_replace, load_edits
 from logger import get_logger
 from translator import (OllamaClient, estimate_tokens, polish_with_retry,
@@ -36,9 +37,6 @@ log = get_logger("commands")
 #   _TERM_MERGE_LOCK —— auto_terms 合并内联术语（读改写 term_dict.py）
 _PREFIX_LOCK = threading.Lock()
 _TERM_MERGE_LOCK = threading.Lock()
-
-# 「上文注入」只收以这些字符结尾的条目（半句话不当前文）
-_SENT_END_CHARS = tuple(".!?。！？…」』\"')]}»›")
 
 
 def emit(*args, **kwargs):
@@ -1137,42 +1135,119 @@ def _apply_lang_model(src_lang=None, tgt_lang=None, model=None):
     if tgt_lang:
         settings.set_value("TARGET_LANG", tgt_lang)
     if model:
-        key = ("API_MODEL"
-               if str(getattr(config, "TRANSLATE_MODE", "ollama")).lower() == "api"
-               else "MODEL")
+        # 模型名存到当前服务提供商自己的键
+        try:
+            import providers as PV
+            key = PV.model_config_key(PV.current())
+        except Exception:
+            key = ("API_MODEL"
+                   if str(getattr(config, "TRANSLATE_MODE", "ollama")).lower()
+                   == "api" else "MODEL")
         settings.set_value(key, model)
     return True
 
 
 # ================================================================
-# 分批策略：条数 + 总字符数 + 估算 token 三重限制
+# 分批策略：自适应（按上下文预算切批）
 # ================================================================
-def _make_batches(todo, batch_size=None, max_chars=None, max_tokens=None):
+def _make_batches(todo, batch_size=None, max_chars=None, max_tokens=None,
+                  budget=None, sys_tokens=0,
+                  terms_provider=None,
+                  ref_provider=None, body_provider=None):
     """
-    batch_size: 单批最多条数
-    max_chars : 单批原文总字符上限（防止超长句挤爆上下文）
-    max_tokens: 单批原文估算 token 上限（借鉴 LinguaGacha 的 token 感知
-                分批；0 = 关闭，只按条数/字符）
+    自适应分批：单批占用不超过上下文预算就继续加条，超了就切批。
+
+    占用 = system + 术语块 + 正文 + 参考原文块 + 预留输出
+    预算 = 上下文窗口 × CTX_BUDGET_RATIO
+
+    两阶段：① 用 system + 正文 + 预留输出粗切出候选批；
+            ② 补算术语块 / 参考原文块，超预算从尾部逐条剔除并重算。
+
+    sys_tokens    system 提示词的 token 数
+    terms_provider  callable(batch_texts) -> [(原文, 译文), ...]
+    ref_provider    callable(batch_texts) -> bool；参考原文块开关
+    body_provider   callable(txt) -> 进正文的字符串
+    max_chars / max_tokens 已废弃，仅为兼容旧签名保留，不参与切批
     """
     batch_size = batch_size or config.BATCH_SIZE
-    max_chars = max_chars or getattr(config, "MAX_BATCH_CHARS", 1400)
-    if max_tokens is None:
-        max_tokens = getattr(config, "MAX_BATCH_TOKENS", 0) or 0
+    if budget is None:
+        budget = T.resolve_ctx_budget()
+    terms_provider = terms_provider or (lambda b: None)
+    ref_provider = ref_provider or (lambda b: False)
+    body_provider = body_provider or (lambda t: t)
 
-    batches, cur, cur_chars, cur_tokens = [], [], 0, 0
-    for txt in todo:
-        cur.append(txt)
-        cur_chars += len(txt) + 8
-        if max_tokens:
-            cur_tokens += estimate_tokens(txt)
-        if (len(cur) >= batch_size or cur_chars >= max_chars
-                or (max_tokens and cur_tokens >= max_tokens)):
-            batches.append(cur)
-            cur, cur_chars, cur_tokens = [], 0, 0
-    if cur:
-        batches.append(cur)
+    # 每条先算一次正文 token 与预留输出 token，两阶段复用
+    per = [(txt, T.estimate_tokens(body_provider(txt))) for txt in todo]
+
+    batches = []
+    i = 0
+    n = len(per)
+    while i < n:
+        # ---------- ① 粗切：system + 正文 + 预留输出 ----------
+        j = i
+        cost = sys_tokens
+        while j < n and (j - i) < batch_size:
+            t = per[j][1] + T.estimate_output_tokens(per[j][1])
+            if cost + t > budget and j > i:
+                break
+            cost += t
+            j += 1
+        # 单条自身超预算：单独成批
+        if j == i:
+            log.warning("单条文本超出上下文预算（%d > %d token），单独成批，"
+                        "可能被截断：%s",
+                        per[i][1] + T.estimate_output_tokens(per[i][1])
+                        + sys_tokens, budget, (per[i][0] or "")[:60])
+            batches.append([per[i][0]])
+            log.info("[批 %d] %d 条  占用 %d/%d  (%.0f%%)  ← 超预算单条",
+                     len(batches), 1,
+                     per[i][1] + T.estimate_output_tokens(per[i][1])
+                     + sys_tokens, budget,
+                     100.0 * (per[i][1] + T.estimate_output_tokens(per[i][1])
+                              + sys_tokens) / budget)
+            i += 1
+            continue
+
+        cand = [t for t, _ in per[i:j]]
+
+        # ---------- ② 补算术语块与参考块，超预算从尾部剔除 ----------
+        base = sys_tokens
+
+        def _total(keep):
+            """保留前 keep 条时的全部占用。"""
+            sub = [t for t, _ in per[i:i + keep]]
+            body = sum(per[i + m][1] for m in range(keep))
+            out = sum(T.estimate_output_tokens(per[i + m][1])
+                      for m in range(keep))
+            # 参考原文块也占输入 token
+            ref = sum(T.estimate_tokens(t) for t in sub) if ref_provider(sub) \
+                else 0
+            pairs = terms_provider(sub)
+            term = _tokens_of(
+                T.build_terms_block_string(pairs) if pairs else "")
+            return base + body + ref + out + term
+
+        keep = len(cand)
+        total = _total(keep)
+        while keep > 1 and total > budget:
+            keep -= 1                  # 减一条重算，直到低于预算
+            total = _total(keep)
+        if total > budget:
+            # 单条也超预算：照发并点名
+            log.warning("第 %d 条连同术语块就撑满预算（%d > %d），"
+                        "单独成批", i + 1, total, budget)
+
+        batches.append([t for t, _ in per[i:i + keep]])
+        log.info("[批 %d] %d 条  占用 %d/%d  (%.0f%%)",
+                 len(batches), keep, total, budget,
+                 100.0 * total / budget)
+        i += keep
     return batches
 
+
+def _tokens_of(text):
+    """估算 token 数；空串返回 0。"""
+    return T.estimate_tokens(text) if text else 0
 
 # ================================================================
 # 内部：翻译一批
@@ -1180,12 +1255,11 @@ def _make_batches(todo, batch_size=None, max_chars=None, max_tokens=None):
 def _translate_batch(client, batch_texts, cache,
                      unknown_ctrl_hits, failed, extra_hits,
                      mode_of_entry=None, bi=1, conflict_records=None,
-                     context_lines=None, term_stats=None, section=None,
+                     term_stats=None, section=None,
                      batch_term_hook=None):
     """
     翻译一批文本，写入缓存。返回成功条数。
 
-    context_lines: 可选 [上文原文, ...]（前几条已译句子的原文，仅供语境）
     term_stats: 可选 list —— 本批的 {术语: 命中句数} 会 append 进去
               （list.append 原子，可在多批并发时安全汇总）
     section: 可选，当前文件的 section 名（cat_prompts.section_for 判定）——
@@ -1283,12 +1357,11 @@ def _translate_batch(client, batch_texts, cache,
     t_req = time.time()
     result = translate_with_retry(client, batch,
                                   term_pairs=term_pairs_list,
-                                  context_lines=context_lines,
                                   section=section)
     log.info("[批 %d] 模型返回 %d 条，耗时 %.1fs",
              bi, len(result), time.time() - t_req)
 
-    # 缺失 / 回显原文 → 单条重试
+    # 缺失 / 回显：不重试，保留原文并进检查报告
     echo_check = getattr(config, "TREAT_ECHO_AS_FAIL", True)
     missing = []
     for k, safe in batch:
@@ -1299,31 +1372,19 @@ def _translate_batch(client, batch_texts, cache,
             # 模型原样回显，多半没翻
             missing.append((k, safe))
     if missing:
-        log.warning("[批 %d] 缺失/回显 %d 条，单条重试", bi, len(missing))
-
+        log.warning("[批 %d] 缺失/回显 %d 条，保留原文（不重试）",
+                    bi, len(missing))
     for k, safe in missing:
-        for attempt in range(config.SINGLE_RETRIES):
-            try:
-                r = translate_with_retry(client, [(k, safe)],
-                                         term_pairs=term_pairs_list,
-                                         context_lines=context_lines,
-                                         section=section)
-                v = r.get(k)
-                if v and v.strip() and v.strip() != safe.strip():
-                    result[k] = v
-                    break
-            except Exception as e:
-                log.debug("[批 %d][%d] 单条重试 %d 失败：%s",
-                          bi, k, attempt + 1, e)
-                time.sleep(1.5)
+        result.pop(k, None)
 
     # ---------- 写入缓存 ----------
     ok = 0
     for k, src in enumerate(batch_texts):
         raw = result.get(k)
         if not raw:
-            log.warning("[批 %d][%d] 无返回", bi, k)
+            log.warning("[批 %d][%d] 无返回：保留原文", bi, k)
             failed.append({'src': src, 'reason': '模型无返回'})
+            cache.put(src, src)
             continue
 
         prefix = prefix_list.get(k, "")
@@ -1570,46 +1631,36 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
     term_stat_batches = []      # 每批一条 {术语: 命中句数}，跑完汇总落盘
 
     if todo:
-        # ★ 按原文顺序翻译（不按长度排序）——上文的指代与语气依赖原顺序，
-        #   缓存键与原文顺序也一致，重跑补翻时输出文件行序稳定。
+        # 按原文顺序翻译
 
         client = OllamaClient()
-        batches = _make_batches(todo)
         done = 0
         t0 = time.time()
         total = len(todo)
 
-        # ★ 上文注入：批与批之间的「上文」按**原文件顺序**取——取每批
-        #   第一条之前最近的若干条待翻句子（只收以句末标点结尾的，防止
-        #   把半句话当前文）。todo 本来就按原文件顺序排列，这里靠
-        #   ctx_pos 映射回原文件顺序；游戏对白最吃指代和语气，
-        #   有上文比换大模型更提升质量。
-        n_ctx = int(getattr(config, "CONTEXT_LINES", 0) or 0)
-        ctx_source, ctx_pos = None, {}
-        if n_ctx > 0:
-            todo_set = set(todo)
-            ctx_source, _ctx_seen = [], set()
-            for _, txt in entries:
-                if txt in _ctx_seen or txt not in todo_set:
-                    continue
-                _ctx_seen.add(txt)
-                ctx_source.append(txt)
-            ctx_pos = {t: i for i, t in enumerate(ctx_source)}
+        # ---------- 自适应分批 ----------
+        # 切批时要算术语块，这里复现送模型前的处理口径
+        def _terms_for(batch_texts):
+            pairs = {}
+            for txt in batch_texts:
+                prefix, body = (PR.split_prefix(txt)
+                                if getattr(config, "PREFIX_DICT_ENABLE", True)
+                                else ("", txt))
+                body, _n = REPL.apply_pre(body)
+                for src, dst in PR.find_terms(PR.strip_newlines(body)):
+                    pairs.setdefault(src, dst)
+            return [(s, PR.render_term_dst(s, section=sec))
+                    for s in pairs]
 
-        def _context_for(batch_texts):
-            if not ctx_source:
-                return None
-            first = min((ctx_pos.get(t, 0) for t in batch_texts),
-                        default=0)
-            ctx = []
-            # 往前多扫几倍，挑出「以句末标点结尾」的最近几条
-            for t in reversed(ctx_source[max(0, first - n_ctx * 4):first]):
-                s = (t or "").rstrip()
-                if s and s[-1] in _SENT_END_CHARS:
-                    ctx.insert(0, t)
-                    if len(ctx) >= n_ctx:
-                        break
-            return ctx or None
+        sys_tokens = _tokens_of(client._system_prompt(sec))
+        budget = T.resolve_ctx_budget()
+        ctx_limit = T.resolve_ctx_limit()
+        emit(f"[分批] 自适应：预算 {budget}/{ctx_limit} token"
+             f"（窗口×{getattr(config, 'CTX_BUDGET_RATIO', 0.9)}）")
+        batches = _make_batches(
+            todo, budget=budget, sys_tokens=sys_tokens,
+            terms_provider=_terms_for)
+        emit(f"[分批] 共 {len(batches)} 批（{total} 条）")
 
         # ★ 并发批翻译：resolve_concurrency() > 1 且批数 > 1 时开线程池。
         #   调度（并发槽 / Key 轮换 / 429 降档）由 translator.ApiScheduler
@@ -1633,7 +1684,6 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
                     unknown_ctrl_hits, failed, extra_hits,
                     mode_of_entry=mode_of_entry, bi=bi,
                     conflict_records=conflict_records,
-                    context_lines=_context_for(batch_texts),
                     term_stats=term_stat_batches, section=sec,
                     batch_term_hook=batch_term_hook)
 
@@ -1674,7 +1724,6 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
                                       mode_of_entry=mode_of_entry,
                                       bi=bi,
                                       conflict_records=conflict_records,
-                                      context_lines=_context_for(batch_texts),
                                       term_stats=term_stat_batches,
                                       section=sec,
                                       batch_term_hook=batch_term_hook)
@@ -1687,6 +1736,12 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
                 log.info("[批 %d] 成功 %d/%d  累计 %d/%d  %.2f条/秒  ETA %.1f分",
                          bi, ok, len(batch_texts), done, total, rate, eta)
                 bridge.progress(done, total, f"{done}/{total} 条")
+
+        # 用量小结
+        line = client.usage_line()
+        if line:
+            log.info(line)
+            emit(line)
 
         # ★ 跑完把 HTTP 连接池关掉：长跑翻译时别让长连接一直堆着
         client.close()
@@ -2628,19 +2683,23 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
         old = cache.get(t)
         records.append({"kind": "未变", "src": t, "old": old, "new": old})
 
-    for bi, batch_texts in enumerate(_make_batches(todo, batch_size,
-                                                   getattr(config,
-                                                           "MAX_BATCH_CHARS",
-                                                           1400)), 1):
+    # 润色同样按上下文预算分批：正文取译文，原文进参考块
+    polish_sys_tokens = _tokens_of(
+        T.load_template("system_polish.txt", T.POLISH_SYSTEM_PROMPT)
+        .replace("{tgt}", config.TARGET_LANG))
+    polish_batches = _make_batches(
+        todo, batch_size, budget=T.resolve_ctx_budget(),
+        sys_tokens=polish_sys_tokens,
+        ref_provider=lambda b: True,
+        body_provider=lambda t: cache.get(t) or "")
+
+    for bi, batch_texts in enumerate(polish_batches, 1):
         if bridge.cancelled():
             emit("\n[中断] 用户取消")
             break
 
         items, orig_dict, src_safe_dict = [], {}, {}
         for k, txt in enumerate(batch_texts):
-            # ★ 不再做占位符脱敏：译文里的控制码原样交给模型（prompt
-            #   里已要求保留），润色完按「控制码检测」比对，不一致就
-            #   保留原译文（润色绝不冒险）。
             cur = cache.get(txt) or ""
             items.append((k, cur, txt))
             orig_dict[k] = cur
@@ -2648,20 +2707,7 @@ def _polish_core(path, lines=None, newline=None, show_header=True,
 
         result = polish_with_retry(client, items, section=sec)
 
-        # 单条补全
-        for k, safe, _src in items:
-            if result.get(k, "").strip():
-                continue
-            for attempt in range(getattr(config, "SINGLE_RETRIES", 3)):
-                try:
-                    r = polish_with_retry(client, [(k, safe, src_safe_dict[k])],
-                                          section=sec)
-                    if r.get(k, "").strip():
-                        result[k] = r[k]
-                        break
-                except Exception:
-                    time.sleep(1.0)
-
+        # 拿不到译文就保留原译文
         for k, txt in enumerate(batch_texts):
             raw = result.get(k)
             if not raw or not raw.strip():

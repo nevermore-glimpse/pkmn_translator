@@ -2240,7 +2240,7 @@ def _save_encoding_note(report):
     txt += "。"
     if bad:
         txt += ("★ 写回后若游戏仍报 ASCII-8BIT / UTF-8 不兼容，"
-                "说明这款游戏用的是别的编码方案（不是本工具写得不对）。")
+                "说明这款游戏用的是别的编码方案。")
     return txt
 
 
@@ -2648,9 +2648,10 @@ class SavePanel(tk.Frame):
         self._hint = tk.Label(
             self.list_inner,
             text="点「选择存档文件」挑一个 .rxdata\n"
-                 "（可以一次选多个；列表里点一下切换）\n\n"
+                 "（可以一次选多个；列表里点一下切换）\n"
                  "存档一般在游戏目录里，或在\n"
-                 "%APPDATA%\\Roaming\\<游戏名>\\ 这类位置。",
+                 "C:\\Users\\<用户名>\\Saved Game或\n"
+                 "%APPDATA%\\Roaming(或local)\\<游戏名>\\ 这类位置。",
             bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
             wraplength=max(120, width - 62))
         self._hint.pack(anchor="w", padx=6, pady=10)
@@ -3865,6 +3866,8 @@ class App:
         self.prefix_edits = {}
         self.sheet_vars = {}       # Excel sheet → BooleanVar
         self.setting_widgets = {}  # key → (widget, typ)
+        self.setting_fields = []   # 设置页当前显示的配置项 key
+        self.setting_top = None    # 设置页顶部
 
         # 「术语字典」视图（与 Excel 转换视图共用一个页面）
         self.excel_view = None      # Excel 转换视图
@@ -4263,7 +4266,7 @@ class App:
 
     # ---------- 翻译模式 ----------
     def _mode_row(self, parent, label="模式"):
-        """本地 Ollama / 云端 API 切换。"""
+        """本地服务 / 云端服务切换。"""
         row = tk.Frame(parent, bg=CARD)
         row.pack(fill="x", pady=4)
         tk.Label(row, text=label, bg=CARD, fg=TEXT_DIM,
@@ -4272,7 +4275,7 @@ class App:
         holder = tk.Frame(row, bg=CARD_BORDER)
         holder.pack(side="left", padx=8)
         group = {}
-        for mode, text in (("ollama", "本地 Ollama"), ("api", "云端 API")):
+        for mode, text in (("ollama", "本地服务"), ("api", "云端服务")):
             btn = tk.Label(holder, text=text, font=FONT_SMALL,
                            padx=16, pady=7, cursor="hand2")
             btn.pack(side="left", padx=(1, 1), pady=1)
@@ -4284,16 +4287,10 @@ class App:
         return row
 
     def _mode_text(self, mode):
-        """模式按钮的显示名：本地 OpenAI 兼容服务时显示它自己的名字。"""
+        """模式按钮的显示名。"""
         if mode == "ollama":
-            return "本地 Ollama"
-        try:
-            key = PV.current()
-            if key in ("llamacpp", "lmstudio"):
-                return PV.label_of(key)
-        except Exception:
-            pass
-        return "云端 API"
+            return "本地服务"
+        return "云端服务"
 
     def _paint_mode_row(self):
         cur = settings.current_mode()
@@ -4315,10 +4312,10 @@ class App:
         changes = settings.set_mode(mode)
         PV.sync_with_mode(mode)
         self._paint_mode_row()
+        self._load_settings()
         self.src_var.set(config.SOURCE_LANG)
         self.tgt_var.set(config.TARGET_LANG)
-        self.model_var.set(config.API_MODEL if mode == "api"
-                           else config.MODEL)
+        self.model_var.set(PV.current_model() or "")
         self._detect_models_async()
 
         if changes:
@@ -4340,16 +4337,16 @@ class App:
 
     def _apply_models(self, models):
         self.models = models or []
-        cur = config.API_MODEL if settings.current_mode() == "api" else config.MODEL
+        cur = PV.current_model() or ""
         vals = self.models or [cur]
         for cb in self.model_combos:
             if cb.winfo_exists():
                 cb.configure(values=vals)
-        if (settings.current_mode() == "ollama" and self.models
+        if (not PV.request_target().get("cloud") and self.models
                 and self.model_var.get() not in self.models):
             self.model_var.set(self.models[0])
         # ★ 云端检测失败时把原因写进运行日志，避免「只显示一个模型」却不知为何
-        if settings.current_mode() == "api" and not self.models:
+        if PV.request_target().get("cloud") and not self.models:
             reason = settings.api_models_error() or "未知原因"
             self._append_log(
                 f"[模型检测] 未能获取云端模型列表：{reason}"
@@ -9544,19 +9541,90 @@ class App:
 
         # 翻译模式切换（切换后会自动同步参数并弹窗提示）
         self._mode_row(card.body)
-        tk.Label(card.body,
-                 text="云端模式请在下方填写 API 服务地址 / 密钥 / 模型名"
-                      "（OpenAI 兼容接口）",
-                 bg=CARD, fg=C_WARN, font=FONT_SMALL).pack(anchor="w",
-                                                           pady=(4, 8))
+        # 服务提供商下拉 + 提示文字
+        self.setting_top = tk.Frame(card.body, bg=CARD)
+        self.setting_top.pack(fill="x")
 
         outer, inner = make_scroll_area(card.body, bg=CARD)
         outer.pack(fill="both", expand=True, pady=(8, 0))
         self.setting_inner = inner
         self._load_settings()
 
+    def _build_setting_top(self, ui_mode, provider):
+        """设置页顶部：本地服务给出「服务提供商」下拉，云端服务给出提示。"""
+        top = getattr(self, "setting_top", None)
+        if top is None or not top.winfo_exists():
+            return
+        for w in top.winfo_children():
+            w.destroy()
+        # 清掉失效的模型下拉框
+        self.model_combos = [c for c in getattr(self, "model_combos", [])
+                             if c.winfo_exists()]
+
+        if ui_mode != "local":
+            tk.Label(top,
+                     text="云端服务：填写 API 服务地址 / 密钥 / 模型名",
+                     bg=CARD, fg=C_WARN, font=FONT_SMALL).pack(
+                anchor="w", pady=(4, 8))
+            return
+
+        keys = ["ollama", "llamacpp", "lmstudio"]
+        labels = [PV.label_of(k) for k in keys]
+
+        row = tk.Frame(top, bg=CARD)
+        row.pack(fill="x", pady=(6, 2))
+        tk.Label(row, text="服务提供商", bg=CARD, fg=TEXT, font=FONT_SMALL,
+                 width=18, anchor="w").pack(side="left")
+        var = tk.StringVar(value=PV.label_of(provider))
+        cb = ttk.Combobox(row, textvariable=var, values=labels,
+                          state="readonly", width=24, font=FONT_SMALL)
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>",
+                lambda _e: self._pick_provider(var.get(), keys, labels))
+        tk.Label(row, text="只切换下方显示项", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL).pack(side="left", padx=12)
+
+        tip = tk.Frame(top, bg=CARD)
+        tip.pack(fill="x", pady=(2, 8))
+        tk.Label(tip, text="本地服务通用配置，三者共用",
+                 bg=CARD, fg=TEXT_DIM, font=FONT_SMALL).pack(side="left")
+        GlassButton(tip, "套用该服务推荐参数", width=170, height=34,
+                    bg=CARD, font=FONT_SMALL,
+                    command=self._apply_provider_from_settings).pack(
+            side="left", padx=10)
+
+    def _pick_provider(self, label, keys, labels):
+        """设置页里换服务提供商：只换显示的参数，不套用推荐值。"""
+        if label not in labels:
+            return
+        key = keys[labels.index(label)]
+        if key == PV.current():
+            return
+        ok, msg, _ = settings.set_value("PROVIDER", key)
+        if not ok:
+            messagebox.showwarning("切换服务提供商", msg)
+            return
+        self._load_settings()
+
+    def _apply_provider_from_settings(self):
+        """把当前提供商的推荐参数整套写进配置。"""
+        key = PV.current()
+        changes = PV.apply_provider(key)
+        self._paint_mode_row()
+        self._load_settings()
+        if changes:
+            lines = [f"· {name}：{old}  →  {new}" for name, old, new in changes]
+            messagebox.showinfo("已套用推荐参数",
+                                f"服务：{PV.label_of(key)}\n\n" + "\n".join(lines))
+        else:
+            messagebox.showinfo("已套用推荐参数", f"服务：{PV.label_of(key)}")
+
     def _load_settings(self):
-        for w in self.setting_inner.winfo_children():
+        # 设置页尚未建好时直接返回
+        inner = getattr(self, "setting_inner", None)
+        if inner is None or not inner.winfo_exists():
+            return
+        for w in inner.winfo_children():
             w.destroy()
         self.setting_widgets = {}
 
@@ -9565,17 +9633,31 @@ class App:
         except Exception:
             current = {}
 
-        for key, name, typ, desc in settings.EDITABLE:
+        try:
+            ui_mode = PV.ui_mode()
+        except Exception:
+            ui_mode = "local"
+        provider = PV.current()
+        self._build_setting_top(ui_mode, provider)
+
+        try:
+            fields = settings.editable_for(ui_mode, provider)
+        except Exception:
+            fields = settings.EDITABLE
+        self.setting_fields = [f[0] for f in fields]
+
+        for key, name, typ, desc in fields:
             if key == "TRANSLATE_MODE":
                 continue        # 由页面顶部的模式切换按钮负责
 
-            row = tk.Frame(self.setting_inner, bg=CARD)
+            row = tk.Frame(inner, bg=CARD)
             row.pack(fill="x", pady=5)
             tk.Label(row, text=name, bg=CARD, fg=TEXT, font=FONT_SMALL,
                      width=18, anchor="w").pack(side="left")
 
             val = current.get(key, "")
-            if key == "MODEL":
+            # 模型名键做成下拉可选
+            if key in settings.LOCAL_MODEL_KEYS or key == "API_MODEL":
                 var = tk.StringVar(value=val)
                 cb = ttk.Combobox(row, textvariable=var,
                                   values=self.models or [val],
@@ -9605,7 +9687,7 @@ class App:
 
             tk.Label(row, text=desc or "", bg=CARD, fg=TEXT_DIM,
                      font=FONT_SMALL).pack(side="left", padx=12)
-            # ★ 右键可复制该项的当前值（Ctrl+C 保持 Entry 原生行为）
+            # 右键可复制当前值
             if typ != "bool":
                 attach_copy(widget, [
                     ("复制该设置的当前值",
@@ -9689,9 +9771,7 @@ class App:
         # 同步到界面上的语言/模型选择
         self.src_var.set(config.SOURCE_LANG)
         self.tgt_var.set(config.TARGET_LANG)
-        self.model_var.set(config.API_MODEL
-                           if settings.current_mode() == "api"
-                           else config.MODEL)
+        self.model_var.set(PV.current_model() or "")
         self._paint_mode_row()
         self._load_settings()
 
@@ -9861,7 +9941,6 @@ class App:
 
         # 分批 / 重试 / 超时（本地小模型最容易卡在这几个值上）
         self._pv_param_row(c3.body, [
-            ("单批字符", "MAX_BATCH_CHARS", 7),
             ("术语上限", "MAX_TERMS_IN_PROMPT", 6),
             ("整批重试", "BATCH_RETRIES", 5),
             ("超时(秒)", "TIMEOUT", 7),
@@ -10073,8 +10152,9 @@ class App:
             return
         settings.set_value("LLAMACPP_MODEL_PATH", m["path"])
         # llama.cpp 用 -a 指定的别名做模型名，这里同步成同名
+        # 写 llama.cpp 自己的模型键
         alias = os.path.splitext(m["name"])[0][:40]
-        settings.set_value("API_MODEL", alias)
+        settings.set_value("LLAMACPP_MODEL", alias)
         self.pv_model_var.set(alias)
         self.pv_gguf_lbl.configure(text=m["size_text"] or "")
         self._pv_refresh_cmd()
@@ -10394,9 +10474,7 @@ class App:
         if not ok:
             messagebox.showwarning("保存失败", msg)
             return
-        # 非 Ollama 走 OpenAI 兼容，地址要同步给 API_BASE_URL
-        if PV.get(key)["protocol"] != "ollama":
-            settings.set_value("API_BASE_URL", PV.base_url(key))
+        # 本地服务的地址只存自己那一份
         self.status_var.set(f"服务地址已更新：{url}")
         self._pv_refresh()     # 内含重新探测
 
@@ -10862,79 +10940,43 @@ class App:
     _DEBUG_MODE_DESC = {
         "main": "方式①（通用）：在 Main 的 mainFunction 里写 $DEBUG=true，"
                 "启动即调试模式（标题界面会变，F9 开调试菜单）。"
-                "★ 这是**唯一**会开 $DEBUG 的方式；方式②–⑦ 都不会写"
+                "★ 这是启动时开 $DEBUG 的方式；方式②–⑦ 都不会写"
                 "（还会把以前留下的清掉）—— 需要 $DEBUG 时用本方式。",
         "keys": "方式②：删掉各处「需要 $DEBUG 才生效」的条件，让它们无条件可用。"
-                "穿墙（Game_Player）、F9 调试菜单（Scene_Map）、"
-                "队伍/暂停/背包里的 Debug 项（PScreen_Party / UI_Party / "
-                "UI_PauseMenu / UI_Bag / UI_PokemonStorage）。"
-                "**自动认版本**：v16/v17 的 `if $DEBUG and Input.press?(…)`、"
-                "v18 起的 `return true if $DEBUG and|&& Input.press?(…)`、"
-                "`… if $DEBUG`、`\"condition\" => proc { … $DEBUG }` 全都认，"
-                "混着写也能正确处理，且只删修饰词、不会产生语法错误。\n"
-                "★ 如果一个都认不出来（作者把这段改没了 / 结构完全不同），"
+                "会**自动认版本**：★ 如果一个都认不出来，"
                 "会弹窗问你要不要**按游戏版本的官方基准**，在对应位置补上"
                 "「去掉 debug 条件」的代码。",
         "special": "方式③：照着 F9 的样子，在 Scene_Map#update 里加一个 "
                    "**F6 键**分支 —— 按下 F6 **直接** `$DEBUG = true` 并弹窗提示"
-                   "（不再判断 `!$DEBUG`，按下去就提示）。"
                    "v16/v17 加独立 if 块，v18 起加 elsif 分支，各版本都认。",
         "special_menu": "方式④：位置同方式③（Scene_Map#update 里的 F6 键），"
                         "但**直接打开调试菜单**"
-                        "（`pbFadeOutIn { pbDebugMenu }`，"
-                        "即方式⑥ 的 F6 版）—— 按 F6 不再只是设 $DEBUG，"
+                        "—— 按 F6 不再只是设 $DEBUG，"
                         "而是立刻把调试菜单弹出来。"
                         "v16/v17 独立 if 块，v18 起 elsif 分支。",
         "repel": "方式⑤：除虫喷雾 `pbRepel` 开头注入 —— $DEBUG 不为真就设为真"
                  "并提示（用一次除虫喷雾即开调试）。",
         "repel_menu": "方式⑥：同方式⑤的位置（除虫喷雾的 `pbRepel` 开头，"
                       "v16–v18 在 PItem_ItemEffects、v19+ 在 Item_Effects），"
-                      "但**直接打开调试菜单**（`pbFadeOutIn { pbDebugMenu }`，"
-                      "即 Scene_Map#call_debug 的等效写法），不再等 F9。",
-        "rewrite": "方式⑦（改名调试函数 · 规避反调试）：给那些**把调试功能做掉**的"
-                   "同人作准备 —— 作者的汉化/防改脚本会重定义 `pbDebugMenu` 为 "
-                   "`exit`、清空 `MenuHandlers` 的 `:debug_menu` 注册项、"
-                   "屏蔽含 debug 的注册、并把 `Scene_Map#update` 改成 "
-                   "`exit if $DEBUG`，还屏蔽 F4–F12。本方式**整套改名**：\n"
+                      "但**直接打开调试菜单**，不再等 F9。",
+        "rewrite": "方式⑦（改名调试函数 · 规避反调试）："
                    "  · 从**官方基准**（Essentials 16–21.1 原版）里抠出每个版本的 "
-                   "debug 菜单函数，**函数名全部改掉**（`pbDebugMenu`→`pbAideWindow`、"
-                   "`pbPokemonDebug`→`pbAidePokemon`、`pbDebugMenuCommands`→"
-                   "`pbAideWindowCommands` … `call_debug`→`call_aide`），"
+                   "debug 菜单函数，**函数名全部改掉**"
                    "**函数体逐字保留官方实现**（菜单项齐全），直接顶掉游戏里的原函数；\n"
-                   "  · 把游戏脚本里所有**旧函数调用点**（含 `alias`、注册表 key "
-                   "`:debug_menu`/`:pokemon_debug_menu`/`:debug` → "
-                   "`:aide_menu`/`:aide_pokemon_menu`/`:aide`）全部改道到新名字；\n"
-                   "    ★ 符号改名带**词边界**：`:debug_calling` 这种「只是以 "
-                   "`:debug` 开头」的符号不会被误改（`attr_accessor "
-                   ":debug_calling` 被改掉的话，游戏一跑图就 "
-                   "`NoMethodError: undefined method 'debug_calling'`）；"
-                   "第 ⓪ 步还会**自动修回**早期版本误改的符号。\n"
+                   "  · 把游戏脚本里所有**旧函数调用点**全部改道到新名字；\n"
                    "  · UI 里显示的 `\"Debug\"` 选项名统一改成 `\"助手\"`；\n"
-                   "  · ★ **保留原函数名**：改名只发生在定义点，但别的插件/脚本可能"
-                   "还在按旧名调用（`pbDebugMenu`、`pbPokemonDebug`…），旧名消失就是 "
-                   "`NameError`。所以每个改名后的函数**同一作用域**里都补一个同名"
-                   "转发壳（`def pbDebugMenu(*args, &blk) → pbAideWindow(...)`），"
-                   "连 `PokemonDebugMixin.instance_method(:pbPokemonDebug)` 这类"
-                   "反射访问也照旧可用；`call_debug` 同样保留；\n"
-                   "  · **按版本正式注册 T 键**：v16–18 改 `PSystem_Controls.rb`"
-                   "（加 `T = 24` 常量 + `buttonToKey` 里 `when Input::T` → "
-                   "Win32 虚拟键码 `0x54`），v19+ 改 `004_Input.rb`"
-                   "（加 `T = :T`，走 mkxp-z 的 `triggerex?(:T)`）；"
-                   "另在插件里挂 T 键开菜单（T 不在被屏蔽的 F4–F12 里）。\n"
+                   "  · **按版本正式注册 T 键**："
+                   "在插件里挂 T 键开菜单（T 不在被屏蔽的 F4–F12 里）。\n"
                    "★ 全程**不设 $DEBUG** —— 反调试有 `exit if $DEBUG`，一设就退游戏。\n"
                    "★ 重新定义的函数**名字不含 d-e-b-u-g**，不在反调试检测范围内。\n"
                    "★ 改动**多处都写**：① 独立插件 `Plugins/zzz_pkmn_aide/`；"
                    "② 游戏脚本 `Scene_Map` 末尾（双保险）；"
                    "③ **直接编进 `Data/PluginScripts.rxdata`**"
-                   "（v19+ 插件机制真正 eval 的就是它，不依赖目录）；"
                    "④ **关掉 `PluginManager.needCompiling?`**"
                    "（rxdata 固定，不再被 `Plugins/` 目录重编译覆盖）。\n"
                    "★ 顺带修两类「开 $DEBUG 才暴露」的插件坑："
                    "① 给**依赖别的插件**的调用加 `defined?` 保护"
-                   "（如 `MidbattleHandlers.add` 在 DBK 未加载时会 NameError）；"
-                   "② 把 rxdata 里的**加载顺序摆正**"
-                   "（使用方插件挪到提供方之后）。\n"
-                   "★ 适配 v16–v21.1 全部九版；不改存档、可还原。",
+                   "② 把 rxdata 里的**加载顺序摆正**\n",
         "launcher": "方式⑧（调试启动器）：生成 **宝可梦调试启动器.exe**（自带 "
                     "Python，玩家电脑**不用装 Python**）+ 一份 "
                     "`_pkmn_debug_launcher.json` 配置，双击 exe 即以调试模式"

@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Ollama 客户端 + 批量翻译 / 中文润色。
+翻译客户端 + 批量翻译 / 中文润色。
   · 翻译：输出固定 JSON，每行 {"id":N,"text":"译文"}
   · 术语提取（term_extract.py）**就是这条翻译流水线**：名字文件直接走
     正常翻译，翻完由 term_extract 把「原文→译文」并进术语表
   · 整批失败 → 重试 → 拆分两半 → 递归
   · 无推理模式（think=False），旧版 Ollama 自动降级
   · 提示词模板外置到 prompts/ 目录（按目标语言覆盖），文件缺失用内置默认
-  · 云端 API：多 Key 轮换 + 冷却阶梯 + 并发自适应（429 减半 / 成功 +1）
+  · 云端服务：多 Key 轮换 + 冷却阶梯 + 并发自适应（429 减半 / 成功 +1）
 """
 import os
 import re
@@ -92,7 +92,7 @@ JSON 字符串里的双引号必须转义成 \"；换行必须转义成 \n。
 正文里若出现 <数字> 字样的游戏内容，那是台词本身，原样保留在译文里。
 """
 
-_USER_TEMPLATE_JSONLINE = r"""{context_block}把下面每条翻译成{tgt}，每行输出一条 JSON，格式：
+_USER_TEMPLATE_JSONLINE = r"""把下面每条翻译成{tgt}，每行输出一条 JSON，格式：
 {"id":<编号>,"text":"<译文>"}
 {terms_block}输入：
 {body}
@@ -305,10 +305,16 @@ def _parse_terms_line(content):
     return result
 
 
-def _format_terms_block(term_pairs, limit=None):
+def build_terms_block_string(term_pairs, limit=None):
     """
+    ★ 术语块的「唯一组装函数」——组装与算 token 在这里解耦。
+
     term_pairs: [(原文, 译文), ...]
-    返回格式化好的术语表块，或空串。
+    limit     : None 时取 config.MAX_TERMS_IN_PROMPT（受它截断）
+
+    自适应分批要按「真实组装出来的字符串」算术语块 token，所以切批侧
+    （commands）与请求侧（translate_batch）都调这一个函数，避免两处各拼
+    一遍导致格式漂移、token 算错。
     """
     if not term_pairs:
         return ""
@@ -328,6 +334,76 @@ def _format_terms_block(term_pairs, limit=None):
     lines.append("以下词条必须原样出现在译文里，不得改写、不得近义替换、不得音译。")
     lines.append("")     # 尾空行，与下面 {body} 隔开
     return "\n".join(lines) + "\n"
+
+
+def _format_terms_block(term_pairs, limit=None):
+    """
+    term_pairs: [(原文, 译文), ...]
+    返回术语表块，或空串。兼容旧名的薄壳，本体见 build_terms_block_string。
+    """
+    return build_terms_block_string(term_pairs, limit)
+
+
+# ================================================================
+# 自适应分批：上下文预算
+# ================================================================
+def _preset_ctx_limit():
+    """当前服务提供商预设里的 NUM_CTX；取不到返回 0。"""
+    try:
+        import providers as PV
+        cur = PV.current()
+        presets = getattr(PV, "PRESETS", {}) or {}
+        return int((presets.get(cur) or {}).get("NUM_CTX", 0) or 0)
+    except Exception:
+        return 0
+
+
+def resolve_ctx_limit():
+    """模型上下文窗口（token）：CTX_LIMIT > 0 用它，否则预设 NUM_CTX → NUM_CTX → 8192。"""
+    try:
+        n = int(getattr(config, "CTX_LIMIT", 0) or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n > 0:
+        return n
+    n = _preset_ctx_limit()
+    if n > 0:
+        return n
+    try:
+        n = int(getattr(config, "NUM_CTX", 8192) or 8192)
+    except (TypeError, ValueError):
+        n = 8192
+    return n if n > 0 else 8192
+
+
+def resolve_ctx_budget(ctx_limit=None):
+    """每批 token 预算 = 上下文窗口 × CTX_BUDGET_RATIO（钳在 (0, 1]）。"""
+    if ctx_limit is None:
+        ctx_limit = resolve_ctx_limit()
+    try:
+        ratio = float(getattr(config, "CTX_BUDGET_RATIO", 0.9) or 0)
+    except (TypeError, ValueError):
+        ratio = 0.9
+    if ratio <= 0:
+        ratio = 0.9
+    if ratio > 1:
+        ratio = 1.0
+    return max(1, int(ctx_limit * ratio))
+
+
+def estimate_output_tokens(src_tokens):
+    """预留输出 token = 原文 token × CTX_OUTPUT_RATIO + 每条固定开销。"""
+    try:
+        ratio = float(getattr(config, "CTX_OUTPUT_RATIO", 1.5) or 0)
+    except (TypeError, ValueError):
+        ratio = 1.5
+    if ratio < 0:
+        ratio = 0.0
+    try:
+        overhead = int(getattr(config, "CTX_OUTPUT_OVERHEAD", 8) or 0)
+    except (TypeError, ValueError):
+        overhead = 8
+    return int(src_tokens * ratio) + overhead
 
 
 def _decode_by_line_count(raw, items):
@@ -361,9 +437,7 @@ def _decode_by_line_count(raw, items):
         text = "\n".join(chunk).strip()
         if not text:
             return {}
-        # ★ 结构化输出防线：模型既然吐了编号格式（JSON 行 / <N> tag 行），
-        #   说明它不是「纯逐行回译」，行数对齐切出来的必然是原始 JSON 串
-        #   而不是译文 —— 整体拒绝，交给上层重试。
+        # 模型吐了编号格式（JSON 行 / <N> tag 行）：整体拒绝，交给上层重试
         if text.startswith('{"id"') or re.match(r"<\s*\d+\s*>", text):
             return {}
         out[idx] = text
@@ -596,26 +670,45 @@ def estimate_tokens(text):
 # Ollama 客户端
 # ================================================================
 def _is_api_mode():
+    """TRANSLATE_MODE 是否为云端服务（"api"），与协议无关。"""
     return str(getattr(config, "TRANSLATE_MODE", "ollama")).lower() == "api"
 
 
+def _request_target():
+    """
+    当前请求目标：协议 / 地址 / 模型 / 超时 / 要不要带 Key。
+    取自 providers.request_target()。
+    """
+    try:
+        import providers as PV
+        return PV.request_target()
+    except Exception:
+        pass
+    # providers 不可用时的兜底
+    api = _is_api_mode()
+    return {
+        "protocol": "openai" if api else "ollama",
+        "base_url": str(getattr(config,
+                                "API_BASE_URL" if api else "OLLAMA_URL", "")
+                        or ""),
+        "model": config.API_MODEL if api else getattr(config, "MODEL", ""),
+        "timeout": (getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
+                    if api else getattr(config, "TIMEOUT", 600)),
+        "use_key": api,
+        "local": not api,
+        "cloud": api,
+        "key": "",
+    }
+
+
 def _is_anthropic_base(base):
-    """
-    是否 Anthropic Messages 协议的地址。
-    DeepSeek 等厂商提供两套兼容地址：
-      · OpenAI 兼容： https://api.deepseek.com        → /chat/completions
-      · Anthropic 兼容：https://api.deepseek.com/anthropic → /v1/messages
-    以 /anthropic 结尾的必须走 Anthropic 协议，否则会 404。
-    """
+    """是否 Anthropic Messages 协议地址（以 /anthropic 结尾）。"""
     return str(base or "").rstrip("/").lower().endswith("/anthropic")
 
 
 def _api_max_tokens(want):
-    """
-    max_tokens 保护：云端各家上限差异很大（DeepSeek chat 8K），
-    这里不让 NUM_PREDICT（本地可设几十万）直接透传过去，避免 400。
-    """
-    limit = int(getattr(config, "API_MAX_TOKENS", 8192) or 8192)
+    """把 max_tokens 钳到 API_MAX_TOKENS 以内，避免服务端 400。"""
+    limit = int(getattr(config, "API_MAX_TOKENS", 1048576) or 1048576)
     try:
         want = int(want or 0)
     except (TypeError, ValueError):
@@ -624,8 +717,7 @@ def _api_max_tokens(want):
 
 
 # ================================================================
-# 云端 API 调度器：多 Key 轮换 + 冷却 + 并发自适应
-#   （借鉴 LinguaGacha translation-request-scheduler / request-rate）
+# 云端服务调度器：多 Key 轮换 + 冷却 + 并发自适应
 # ================================================================
 def _split_api_keys():
     """
@@ -784,7 +876,7 @@ def _is_local_provider():
 def resolve_concurrency():
     """
     实际并发批数：TRANSLATE_CONCURRENCY > 0 就用它（按本地/云端钳到上限）；
-    = 0（默认）→ 本地服务（Ollama / llama.cpp / LM Studio）1，云端 API 4。
+    = 0（默认）→ 本地服务 1，云端服务 4。
     上限：云端 CONCURRENCY_MAX（300），本地 LOCAL_CONCURRENCY_MAX（16）。
     """
     n = int(getattr(config, "TRANSLATE_CONCURRENCY", 0) or 0)
@@ -801,37 +893,43 @@ def resolve_concurrency():
 
 
 class OllamaClient:
-    """翻译客户端：本地 Ollama 与云端 OpenAI 兼容 API 共用同一套接口。"""
+    """翻译客户端：本地服务与云端服务共用同一套接口。"""
 
     def __init__(self, model=None):
         self.session = requests.Session()
-        self.api_mode = _is_api_mode()
+        # 协议由服务提供商决定，不看翻译模式
+        self.target = _request_target()
+        self.api_mode = self.target["protocol"] != "ollama"
+        self.cloud_mode = bool(self.target.get("cloud"))
         if model:
             self.model = model
+        elif self.target["model"]:
+            self.model = self.target["model"]
         else:
-            self.model = (config.API_MODEL if self.api_mode
+            self.model = (config.API_MODEL if self.cloud_mode
                           else config.MODEL)
         self._think_supported = True
-        # 云端 API 调度器（多 Key 轮换 + 并发自适应）；本地 Ollama 不需要
-        self._sched = ApiScheduler() if self.api_mode else None
+        # token 用量累计（含前缀缓存命中）
+        self.usage = {"calls": 0, "hit": 0, "miss": 0, "out": 0}
+        # 调度器（多 Key 轮换 + 并发自适应）只给云端用
+        use_sched = self.api_mode and self.cloud_mode and self.target["use_key"]
+        self._sched = ApiScheduler() if use_sched else None
         proto = ""
         if self.api_mode:
-            base = str(getattr(config, "API_BASE_URL", "") or "")
+            base = self.target["base_url"]
             proto = ("，协议=Anthropic Messages"
                      if _is_anthropic_base(base) else "，协议=OpenAI 兼容")
-            n_keys = len(_split_api_keys())
-            proto += f"，Key×{n_keys}，并发{self._sched.concurrency}"
+            if self._sched is not None:
+                n_keys = len(_split_api_keys())
+                proto += f"，Key×{n_keys}，并发{self._sched.concurrency}"
+            else:
+                proto += f"，{base}"
         log.info("翻译客户端初始化  模式=%s%s  模型=%s",
-                 "云端API" if self.api_mode else "本地Ollama", proto, self.model)
+                 "云端服务" if self.cloud_mode else "本地服务", proto, self.model)
 
     # ---------- 底层 ----------
     def _lmstudio_ttl(self):
-        """
-        该不该在请求里带 ttl（LM Studio 专用，秒）；不带返回 0。
-
-        ★ 只给 LM Studio 带：这是它自己的字段（模型空闲多久自动卸载模型），
-          别的 OpenAI 兼容服务不认，带上去纯属添乱。
-        """
+        """LM Studio 的 ttl（秒）；其它服务或不启用时返回 0。"""
         try:
             n = int(getattr(config, "LMSTUDIO_TTL", 0) or 0)
         except (TypeError, ValueError):
@@ -844,8 +942,39 @@ class OllamaClient:
         except Exception:
             return 0
 
+    # ---------- token 用量 ----------
+    def _record_usage(self, data):
+        """把一次响应的 usage 累计到 self.usage。"""
+        if not isinstance(data, dict):
+            return
+        u = data.get("usage") or {}
+        self.usage["calls"] += 1
+
+        hit = u.get("prompt_cache_hit_tokens")
+        miss = u.get("prompt_cache_miss_tokens")
+        if hit is None and miss is None:
+            # 没有缓存字段按全文未命中计
+            miss = (u.get("prompt_tokens")
+                    or u.get("prompt_eval_count") or 0)
+            hit = 0
+        self.usage["hit"] += int(hit or 0)
+        self.usage["miss"] += int(miss or 0)
+        self.usage["out"] += int(u.get("completion_tokens")
+                                 or u.get("eval_count") or 0)
+
+    def usage_line(self):
+        """一行用量小结；没有用量数据时返回空串。"""
+        u = self.usage
+        prompt = u["hit"] + u["miss"]
+        if not prompt and not u["out"]:
+            return ""
+        rate = (100.0 * u["hit"] / prompt) if prompt else 0.0
+        return (f"[用量] 请求 {u['calls']} 次  输出 {u['out']} token  "
+                f"缓存命中 {u['hit']}/{prompt} ({rate:.1f}%)  "
+                f"未命中 {u['miss']}")
+
     def close(self):
-        """关掉 HTTP 连接池（一轮翻译跑完调用，别让长连接/套接字一直挂着）。"""
+        """关掉 HTTP 连接池。"""
         try:
             self.session.close()
         except Exception:
@@ -874,15 +1003,18 @@ class OllamaClient:
         if config.THINK is False and self._think_supported:
             payload["think"] = False
 
-        resp = self.session.post(config.OLLAMA_URL, json=payload,
-                                 timeout=config.TIMEOUT)
+        resp = self.session.post(self.target["base_url"] or config.OLLAMA_URL,
+                                 json=payload,
+                                 timeout=self.target["timeout"] or config.TIMEOUT)
         resp.raise_for_status()
         return resp.json()
 
     def _request_api(self, messages, temperature, num_predict):
-        base = str(getattr(config, "API_BASE_URL", "") or "").rstrip("/")
+        base = str(self.target["base_url"] or "").rstrip("/")
         if not base:
-            raise RuntimeError("未配置 API_BASE_URL，请先到「设置」里填写")
+            raise RuntimeError(
+                "未配置服务地址，请先到「设置」里填写（"
+                f"当前服务：{self.target['key'] or '未选择'}）")
 
         if _is_anthropic_base(base):
             return self._request_anthropic(base, messages, temperature,
@@ -891,12 +1023,15 @@ class OllamaClient:
         url = base + "/chat/completions"
 
         headers = {"Content-Type": "application/json"}
-        key = getattr(config, "API_KEY", "") or ""
+        # 只有云端 / 自定义服务才带 Key
+        key = (getattr(config, "API_KEY", "") or "") \
+            if self.target["use_key"] else ""
         if key:
             headers["Authorization"] = f"Bearer {key}"
 
         payload = {
-            "model": self.model or getattr(config, "API_MODEL", ""),
+            "model": (self.model or self.target["model"]
+                      or getattr(config, "API_MODEL", "")),
             "messages": messages,
             "stream": False,
             "temperature": (config.TEMPERATURE
@@ -905,19 +1040,14 @@ class OllamaClient:
             "max_tokens": _api_max_tokens(
                 config.NUM_PREDICT if num_predict is None else num_predict),
         }
-        # ★ 关掉推理（思考）模式。
-        #   实测 LM Studio：不关时 1200 个 token 全进 reasoning_content，
-        #   content 是空的（表现为"模型无返回"）；加上这个参数后 29 秒→0.8 秒。
+        # 关掉推理模式
         if getattr(config, "NO_REASONING", True):
             payload["reasoning_effort"] = "none"
-        # ★ LM Studio：带上 ttl，模型空闲到点自己从内存卸载。
-        #   LM Studio 的 JIT 加载默认 60 分钟才卸，模型和它的历史 prompt
-        #   缓存会一直占着内存；翻译跑完就还回去，才不会越跑越高。
-        #   （llama.cpp 那边靠启动参数 --cache-ram 0 解决，见 providers.py）
+        # LM Studio：带 ttl，空闲到点自动卸载模型
         ttl = self._lmstudio_ttl()
         if ttl:
             payload["ttl"] = ttl
-        timeout = getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
+        timeout = self.target["timeout"] or config.TIMEOUT
 
         if self._sched is None:
             resp = self.session.post(url, json=payload, headers=headers,
@@ -963,12 +1093,14 @@ class OllamaClient:
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01",
         }
-        key = getattr(config, "API_KEY", "") or ""
+        key = (getattr(config, "API_KEY", "") or "") \
+            if self.target["use_key"] else ""
         if key:
             headers["x-api-key"] = key
 
         payload = {
-            "model": self.model or getattr(config, "API_MODEL", ""),
+            "model": (self.model or self.target["model"]
+                      or getattr(config, "API_MODEL", "")),
             # ★ 与 OpenAI 那条路保持一致：没显式给 num_predict 时用 config 的
             #   （原来直接传 None → _api_max_tokens 当成 0 → 直接取上限，
             #    用户调小的 NUM_PREDICT 在 Anthropic 协议下被无视了）
@@ -984,7 +1116,7 @@ class OllamaClient:
         if getattr(config, "NO_REASONING", True):
             payload["thinking"] = {"type": "disabled"}
 
-        timeout = getattr(config, "API_TIMEOUT", 120) or config.TIMEOUT
+        timeout = self.target["timeout"] or config.TIMEOUT
 
         if self._sched is None:
             resp = self.session.post(url, json=payload, headers=headers,
@@ -1067,6 +1199,8 @@ class OllamaClient:
             else:
                 raise
 
+        self._record_usage(data)
+
         # 部分版本把思考内容单独放在 thinking 字段，正文已分离，这里只清洗正文
         content = self._content_of(data)
         # ★ 本地服务（KoboldCpp / LM Studio / 自定义）不认 think 参数，
@@ -1109,13 +1243,10 @@ class OllamaClient:
                 text = text.rstrip() + "\n\n" + block.rstrip()
         return text
 
-    def translate_batch(self, items, term_pairs=None, context_lines=None,
-                        section=None):
+    def translate_batch(self, items, term_pairs=None, section=None):
         """
         items:      [(idx, safe_text), ...]
         term_pairs: 可选 [(原文, 译文), ...]，作为 prompt 里的术语表
-        context_lines: 可选 [上文原文, ...]（前几条已译句子的原文），
-                       拼在术语表与正文之间，明确标注「只提供语境、不要翻译」
         section:    可选，当前文件的文本类别名（如 "SPECIES_NAMES"）——
                    有 prompts/categories/<SECTION>.txt 就追加到 system 末尾
         返回:       {idx: translation}
@@ -1124,12 +1255,6 @@ class OllamaClient:
             return {}
 
         terms_block = _format_terms_block(term_pairs)
-        context_block = ""
-        if context_lines:
-            ctx = "\n".join(context_lines)
-            context_block = (
-                "【上文】以下是紧接在本批之前的剧情原文，仅供理解语境，"
-                "不要翻译、不要输出、不要模仿其格式：\n" + ctx + "\n\n")
 
         # 输出固定 JSON：每行一条 {"id":N,"text":"..."}
         body = "\n".join(
@@ -1140,7 +1265,6 @@ class OllamaClient:
 
         user_msg = (template
                     .replace("{terms_block}", terms_block)
-                    .replace("{context_block}", context_block)
                     .replace("{tgt}", config.TARGET_LANG)
                     .replace("{body}", body))
 
@@ -1229,11 +1353,10 @@ class OllamaClient:
 # 带重试的封装
 # ================================================================
 def translate_with_retry(client, batch, depth=0,
-                         term_pairs=None, context_lines=None, section=None):
+                         term_pairs=None, section=None):
     """
     batch:      [(idx, safe_text), ...]
     term_pairs: 可选 [(原文, 译文), ...]，作为 prompt 里的术语表
-    context_lines: 可选 [上文原文, ...]（透传给模型）
     section:    可选，当前文件的文本类别名（透传给 translate_batch）
     返回:       {idx: translation}
 
@@ -1249,8 +1372,7 @@ def translate_with_retry(client, batch, depth=0,
     for attempt in range(config.BATCH_RETRIES + 1):
         try:
             return client.translate_batch(
-                batch, term_pairs=term_pairs,
-                context_lines=context_lines, section=section,
+                batch, term_pairs=term_pairs, section=section,
             )
         except Exception as e:
             last_err = e
@@ -1267,7 +1389,7 @@ def translate_with_retry(client, batch, depth=0,
         for i in range(0, len(batch), size):
             chunk = batch[i:i + size]
             r = translate_with_retry(client, chunk, depth + 1,
-                                     term_pairs, context_lines, section)
+                                     term_pairs, section)
             result.update(r)
         return result
 

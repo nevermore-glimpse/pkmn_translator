@@ -60,7 +60,7 @@ def resource_dir(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.7.9"
+VERSION     = "1.8.0"
 APP_NAME    = "宝可梦同人工具"
 APP_TITLE   = f"{APP_NAME} v{VERSION}"
 
@@ -262,22 +262,27 @@ INPUT_ENCODING  = "utf-8-sig"
 OUTPUT_ENCODING = "utf-8-sig"
 
 # ---------- 翻译模式 ----------
-TRANSLATE_MODE = "api"    # "ollama" = 本地 Ollama；"api" = 云端 API（OpenAI 兼容）
-API_BASE_URL   = "http://127.0.0.1:8080/v1"
+# "ollama" = 本地服务 / "api" = 云端服务（协议由 PROVIDER 决定）
+TRANSLATE_MODE = "ollama"
+API_BASE_URL   = "http://localhost:8080/v1"
 # ★ 不要把密钥写在这里（config.py 会提交到仓库）！
 #   请在「设置」里填写，它会写入 user_config.json（已在 .gitignore 中）。
 API_KEY        = ""
-API_MODEL      = "Qwen3.5-4B-Q4_K_M"
+API_MODEL      = "qwen3.5-4b"
 API_TIMEOUT    = 600.0
 
 # ---------- 本地服务提供商（菜单 10 用） ----------
 # ollama / llamacpp / lmstudio / custom
-#   ollama    → 走 OLLAMA_URL（/api/chat 原生协议）
-#   其余三个  → 走 OpenAI 兼容接口，地址分别取自下面的 *_URL
+# 三档本地服务共用一套本地通用配置，切换只换地址与各自的模型名
 PROVIDER         = "llamacpp"
+# 设置页显示哪一侧参数："local" = 本地服务 / "cloud" = 云端服务
+UI_MODE          = "local"
 LLAMACPP_URL     = "http://127.0.0.1:8080/v1"
+LLAMACPP_MODEL   = ""    # llama.cpp 上次用的模型名（llama-server 的 -a 别名）
 LMSTUDIO_URL     = "http://localhost:1234/v1"
+LMSTUDIO_MODEL   = ""    # LM Studio 上次用的模型名
 CUSTOM_OPENAI_URL = "http://localhost:8080/v1"
+CUSTOM_MODEL     = ""    # 自定义 OpenAI 兼容端上次用的模型名
 
 # ---------- llama.cpp（菜单 10 中层用） ----------
 # ★ 保持空值：由用户在界面里选自己的目录，不把个人路径写进仓库
@@ -315,38 +320,38 @@ LMSTUDIO_TTL = 600
 # ---------- 翻译策略 ----------
 SOURCE_LANG      = "西班牙文"
 TARGET_LANG      = "简体中文"
-BATCH_SIZE       = 12
+# 每批条数上限；实际批大小由下面的上下文预算决定
+BATCH_SIZE       = 200
 BATCH_RETRIES    = 2
-SINGLE_RETRIES   = 3
+SINGLE_RETRIES   = 0
 CACHE_SAVE_EVERY = 1
 
-# ★ 自适应分批：单批原文总字符超过该值就提前切批，避免超长句撑爆上下文
-MAX_BATCH_CHARS  = 4096
-# ★ token 感知分批（借鉴 LinguaGacha）：单批原文估算 token 超过该值就切批。
-#   估算规则：CJK 每字 1 token、其余每 4 字符 1 token（装了 tiktoken 则用
-#   o200k_base 精确计数）。行数上限 = max(8, 该值 // 16)，与 token 上限
-#   双重约束，小模型（上下文小）与云模型都适用。0 = 关闭，只按条数/字符。
-MAX_BATCH_TOKENS = 2048
-# ★ 上文注入：每批 prompt 里附带的前几条译文上下文（仅取以句末标点
-#   结尾的条目，防止把半句话当前文）。游戏对白最吃指代和语气，
-#   有上文比换大模型更提升质量。0 = 不带上文。
-CONTEXT_LINES    = 5
-# ★ 单批注入 prompt 的术语上限
-MAX_TERMS_IN_PROMPT = 100
-# ★ 模型原样回显原文时视为失败，触发重试
+# ---------- 自适应分批（按上下文预算切批）----------
+# 每批占用 = system + 术语块 + 正文 + 预留输出，按 token 估算求和
+# CTX_LIMIT：模型上下文窗口，0 = 自动（按服务提供商预设 → NUM_CTX）
+# CTX_BUDGET_RATIO：预算占窗口比例，0.9 = 占到 90% 就切批
+CTX_LIMIT        = 0
+CTX_BUDGET_RATIO = 0.9
+# 预留输出 = 原文 token × 倍数 + 每条固定开销
+CTX_OUTPUT_RATIO = 1.5
+CTX_OUTPUT_OVERHEAD = 8
+# 缺失 / 回显的单句是否记为失败（保留原文 + 进检查报告）
 TREAT_ECHO_AS_FAIL = True
+# 已废弃：自适应分批后不参与切批，仅保留读取
+MAX_BATCH_CHARS  = 4096
+MAX_BATCH_TOKENS = 2048
+# 单批注入 prompt 的术语上限
+MAX_TERMS_IN_PROMPT = 1000
 
 # ---------- 并发与多 API Key（借鉴 LinguaGacha 自适应调度） ----------
-# 翻译并发批数。0 = 自动（云端 API 用 4，本地 Ollama 用 1——本地推理
-#   大都单槽串行，并发发过去也只是排队，反而拖慢首字延迟）。
-TRANSLATE_CONCURRENCY = 0
+# 翻译并发批数。0 = 自动（云端服务 4，本地服务 1）
+TRANSLATE_CONCURRENCY = 1
 # 并发自适应：请求成功逐步 +1、遇到 429 减半（在 CONCURRENCY_MIN~MAX 之间）。
 AUTO_CONCURRENCY = True
 CONCURRENCY_MIN = 1
-# 云端 API 最高并发：自适应 +1 的上限；手动设置 TRANSLATE_CONCURRENCY 时也被钳到它。
+# 云端服务最高并发：自适应 +1 的上限，也钳制手动设置的值
 CONCURRENCY_MAX = 300
-# 本地服务（Ollama / llama.cpp / LM Studio）最高并发：手动设置 TRANSLATE_CONCURRENCY
-#   时的钳制上限；自动模式下本地仍默认串行（1），想并行请在设置里填 2~16。
+# 本地服务最高并发：钳制手动设置的值；自动模式下本地默认串行
 LOCAL_CONCURRENCY_MAX = 16
 # 多 API Key：每行一个，轮询使用；某个 Key 连续失败按阶梯冷却，
 # 冷却中的 Key 不占并发槽。留空则只用 API_KEY 单 key。
@@ -421,7 +426,7 @@ ASK_LANG_EACH_TIME = True
 # ★ 编译文本后，把「中文」放到 Settings::LANGUAGES 的**第一条**：
 #   游戏的语言就是列表下标（$PokemonSystem.language 默认 0），
 #   不排第一位的话进游戏看不到译文、得手动切语言。
-LANG_ENTRY_FIRST = True
+LANG_ENTRY_FIRST = False
 
 # ---------- 自动术语提取 ----------
 # ★ 翻译时**不再**由模型内联提取术语（v1.6.7 起）：改用「游戏汉化 → 术语提取」
@@ -432,14 +437,13 @@ LANG_ENTRY_FIRST = True
 AUTO_EXTRACT_MIN_LEN  = 3       # 术语最短长度（过滤单字母/双字母）
 TERM_EXTRACT_BATCH    = 40      # 术语提取页「预览」用的显示值（分批按 BATCH_SIZE）
 
-# ---------- 云端 API 保护 ----------
-# ★ 单次请求的 max_tokens 上限（防止把 NumPredict 直接透传给云端导致 400）
-#   多数 OpenAI 兼容服务上限 4K~8K；DeepSeek：chat 8K / reasoner 64K
-API_MAX_TOKENS = 8192
+# ---------- 云端服务保护 ----------
+# 单次请求的 max_tokens 上限（防止把 NumPredict 直接透传给云端导致 400）
+API_MAX_TOKENS = 1048576
 
 # ---------- 中文润色重翻 ----------
 POLISH_ENABLE      = True    # 启用「中文润色重翻」
-POLISH_BATCH_SIZE  = 8
+POLISH_BATCH_SIZE  = 200
 POLISH_TEMPERATURE = 0.8     # 比翻译略高，给润色一点自由度
 POLISH_MIN_LEN     = 4       # 短于该长度的译文不润色（多为控制码/拟声词）
 # ---------- Excel ----------

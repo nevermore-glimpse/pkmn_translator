@@ -30,16 +30,19 @@ USER_CONFIG_PATH = config.USER_CONFIG_FILE
 # 顺序对应菜单里显示的序号
 EDITABLE = [
     # ---------- 本地服务提供商（菜单 10 一键切换） ----------
-    ("PROVIDER",           "服务提供商",        "str",   "ollama / llamacpp / lmstudio / custom"),
+    ("PROVIDER",           "服务提供商",        "str",   "ollama / llamacpp / lmstudio"),
     ("LLAMACPP_URL",       "llama.cpp 地址",    "str",   "OpenAI 兼容，如 http://127.0.0.1:8080/v1"),
     ("LLAMACPP_DIR",       "llama.cpp 目录",    "str",   "llama-server.exe 所在文件夹"),
     ("LLAMACPP_MODEL_DIR", "GGUF 模型目录",     "str",   "自动扫描该目录下已安装的模型"),
     ("LLAMACPP_MODEL_PATH", "选中的模型文件",   "str",   "启动时 -m 加载这个 GGUF"),
+    ("LLAMACPP_MODEL",     "llama.cpp 模型名",  "str",   "llama-server 的 -a 别名"),
     ("LMSTUDIO_URL",       "LM Studio 地址",    "str",   "OpenAI 兼容，如 http://localhost:1234/v1"),
+    ("LMSTUDIO_MODEL",     "LM Studio 模型名",  "str",   ""),
     ("CUSTOM_OPENAI_URL",  "自定义服务地址",    "str",   "任意 OpenAI 兼容服务，/v1 结尾"),
+    ("CUSTOM_MODEL",       "自定义服务模型名",  "str",   ""),
 
     # ---------- 翻译模式 ----------
-    ("TRANSLATE_MODE",     "翻译模式",          "str",   "ollama=本地  /  api=云端"),
+    ("TRANSLATE_MODE",     "翻译模式",          "str",   "ollama=本地服务 / api=云端服务"),
     ("API_BASE_URL",       "API 服务地址",      "str",   "OpenAI 兼容，如 .../v1"),
     ("API_KEY",            "API 密钥",          "str",   "Bearer sk-...，留空则不带"),
     ("API_MODEL",          "API 模型名",        "str",   "如 deepseek-chat"),
@@ -60,11 +63,13 @@ EDITABLE = [
 
     # ---------- 翻译策略 ----------
     ("MAX_INPUT_LINES",    "读取行数上限",      "int",   "只处理前 N 行；0 或负数=不限"),
-    ("BATCH_SIZE",         "每批条数",          "int",   "建议 10-30"),
-    ("MAX_BATCH_CHARS",    "单批字符上限",      "int",   "自适应分批：超过就提前切批"),
+    ("BATCH_SIZE",         "每批条数上限",      "int",   "实际批大小由上下文预算决定"),
+    ("CTX_LIMIT",          "模型上下文窗口",    "int",   "0=自动（预设 NUM_CTX → NUM_CTX）"),
+    ("CTX_BUDGET_RATIO",   "上下文预算比例",    "float", "每批占用占窗口的比例，0.9=90% 切批"),
+    ("CTX_OUTPUT_RATIO",   "输出预留倍数",      "float", "预留输出 = 原文 token × 该倍数 + 每条 8"),
     ("MAX_TERMS_IN_PROMPT","prompt 术语上限",   "int",   "单批发给模型的术语条数"),
     ("BATCH_RETRIES",      "整批重试次数",      "int",   "失败时重试"),
-    ("SINGLE_RETRIES",     "单条重试次数",      "int",   "失败时重试"),
+    ("SINGLE_RETRIES",     "单条重试次数",      "int",   "0=不重试、保留原文"),
     ("CACHE_SAVE_EVERY",   "缓存保存间隔",      "int",   "每 N 批保存一次"),
     ("SOURCE_LANG",        "源语言",            "str",   "如 英语 / 西班牙文"),
     ("TARGET_LANG",        "目标语言",          "str",   "如 简体中文"),
@@ -75,10 +80,6 @@ EDITABLE = [
     ("SKIP_PURE_CONTROL", "跳过纯控制符", "bool", "剥离后无内容的句子不翻译"),
     ("PURE_CONTROL_MIN_LEN", "纯控制符阈值", "int", "剥离后最少保留几个字"),
     ("SKIP_PATH_LINES", "跳过资源路径", "bool", "形如 A/B/C 的行不翻译"),
-    ("MAX_BATCH_TOKENS", "单批 token 上限", "int",
-     "原文估算 token 超限就提前切批；0=只按条数/字符"),
-    ("CONTEXT_LINES",    "上文注入条数",   "int",
-     "每批 prompt 附带前几条已翻译文；0=不带上文"),
 
     # ---------- 并发与多 API Key ----------
     ("TRANSLATE_CONCURRENCY", "翻译并发批数", "int",
@@ -129,20 +130,114 @@ EDITABLE = [
 
     # ---------- 中文润色 ----------
     ("POLISH_ENABLE",      "启用中文润色",     "bool",  "菜单 6 是否可用"),
-    ("POLISH_BATCH_SIZE",  "润色每批条数",     "int",   "建议 6-12"),
+    ("POLISH_BATCH_SIZE",  "润色每批条数上限", "int",   "同 BATCH_SIZE：由上下文预算决定"),
     ("POLISH_TEMPERATURE", "润色采样温度",     "float", "略高于翻译，给润色自由度"),
     ("POLISH_MIN_LEN",     "润色最短长度",     "int",   "短于该长度不润色"),
 ]
 
-# ★ 密钥类配置永远不写进 config.py —— 那是会提交进仓库的源码文件。
-#   统一写 user_config.json（已在 .gitignore 中）；config.py 末尾会自动读取它
-#   并覆盖同名变量，所以两种模式的行为完全一致。
-#   API_KEYS 也是多行文本，写进 config.py 会破坏单行赋值格式，同样落 json。
+
+# ================================================================
+# 设置页按「本地服务 / 云端服务」筛选要显示的项
+# ================================================================
+# 不在设置页展示的项：值仍留在 EDITABLE 里（set_value / get_all / CLI 菜单靠它查元数据）
+HIDDEN_KEYS = {
+    "MAX_INPUT_LINES",         # 读取行数上限：0
+    "THINK",                   # 推理模式：关
+    "MAX_TERMS_IN_PROMPT",     # prompt 术语上限：1000
+    "SINGLE_RETRIES",          # 单条重试次数：0
+    "CACHE_SAVE_EVERY",        # 缓存保存间隔：1
+    "PREFIX_DICT_ENABLE",      # 启用前缀字典：开
+    "REPAIR_MISSING_CONTROLS",  # 控制码回退补回：关
+    "SKIP_PURE_CONTROL",       # 跳过纯控制符：开
+    "PURE_CONTROL_MIN_LEN",    # 纯控制符阈值：2
+    "SKIP_PATH_LINES",         # 跳过资源路径：开
+    "LANG_ENTRY_FIRST",        # 中文设为默认语言：关
+    "PRE_REPLACEMENT_PRESETS",  # 启用的译前预设：空
+    "POST_REPLACEMENT_PRESETS",  # 启用的译后预设：空
+    "TERM_STATS_ENABLE",       # 术语命中统计：关
+    "REWRAP_ENABLE",           # 启用换行重排：开
+    "APPLY_TERMS",             # 启用术语替换：开
+    "WHOLE_TERM_MATCH",        # 整句术语直译：开
+    "EXCEL_APPEND",            # Excel 追加式写入：开
+    "POLISH_ENABLE",           # 启用中文润色：开
+}
+
+# 只属于云端服务：本地服务下不出现
+CLOUD_ONLY = {
+    "API_BASE_URL", "API_KEY", "API_KEYS", "API_MAX_TOKENS",
+}
+
+# 只属于本地服务
+LOCAL_ONLY = {
+    "PROVIDER", "TIMEOUT", "NUM_CTX",
+    "MODEL", "OLLAMA_URL", "KEEP_ALIVE", "THINK",
+    "LLAMACPP_URL", "LLAMACPP_DIR", "LLAMACPP_MODEL_DIR",
+    "LLAMACPP_MODEL_PATH", "LLAMACPP_MODEL",
+    "LMSTUDIO_URL", "LMSTUDIO_MODEL",
+    "CUSTOM_OPENAI_URL", "CUSTOM_MODEL",
+}
+
+# 本地服务下只在选中该提供商时出现的项
+PROVIDER_KEYS = {
+    "MODEL":               ("ollama",),
+    "OLLAMA_URL":          ("ollama",),
+    "KEEP_ALIVE":          ("ollama",),
+    "THINK":               ("ollama",),
+    "LLAMACPP_URL":        ("llamacpp",),
+    "LLAMACPP_DIR":        ("llamacpp",),
+    "LLAMACPP_MODEL_DIR":  ("llamacpp",),
+    "LLAMACPP_MODEL_PATH": ("llamacpp",),
+    "LLAMACPP_MODEL":      ("llamacpp",),
+    "LMSTUDIO_URL":        ("lmstudio",),
+    "LMSTUDIO_MODEL":      ("lmstudio",),
+    "CUSTOM_OPENAI_URL":   ("custom",),
+    "CUSTOM_MODEL":        ("custom",),
+}
+
+# 本地模型名键：各提供商各自一份；API_MODEL 只归云端服务
+LOCAL_MODEL_KEYS = ("MODEL", "LLAMACPP_MODEL", "LMSTUDIO_MODEL", "CUSTOM_MODEL")
+
+
+def editable_for(ui_mode=None, provider=None):
+    """
+    设置页当前模式要显示的 [(key, name, typ, desc), ...]。
+    ui_mode 省略时取 providers.ui_mode()；provider 是本地服务下选中的提供商。
+    """
+    if ui_mode is None:
+        try:
+            import providers
+            ui_mode = providers.ui_mode()
+        except Exception:
+            ui_mode = "cloud" if current_mode() == "api" else "local"
+    ui_mode = ("local" if str(ui_mode).strip().lower() in ("local", "ollama")
+               else "cloud")
+    provider = str(provider or "").strip().lower()
+
+    out = []
+    for key, name, typ, desc in EDITABLE:
+        if key == "TRANSLATE_MODE":
+            continue        # 由设置页顶部的模式切换按钮负责
+        if key in HIDDEN_KEYS:
+            continue
+        if key in CLOUD_ONLY and ui_mode != "cloud":
+            continue
+        if key in LOCAL_ONLY and ui_mode != "local":
+            continue
+        if key in LOCAL_MODEL_KEYS and ui_mode != "local":
+            continue
+        if key == "API_MODEL" and ui_mode != "cloud":
+            continue
+        owners = PROVIDER_KEYS.get(key)
+        if owners and (ui_mode != "local" or provider not in owners):
+            continue
+        out.append((key, name, typ, desc))
+    return out
+
+# 密钥类配置不写进 config.py（会提交进仓库），统一落 user_config.json
 SECRET_KEYS = {"API_KEY", "API_KEYS"}
 
-# ★ 运行时标志（程序自己会改写的状态位）同样只写 user_config.json：
-#   它们不是用户的设置，源码模式下写回 config.py 只会把仓库弄脏。
-RUNTIME_KEYS = {"SNAPSHOT_INITIALIZED", "PROVIDER_PREV"}
+# 运行时标志（程序自己改写）同样只写 user_config.json
+RUNTIME_KEYS = {"SNAPSHOT_INITIALIZED", "PROVIDER_PREV", "UI_MODE"}
 
 
 def list_ollama_models():
@@ -226,14 +321,33 @@ def list_api_models():
 
 
 def list_models():
-    """按当前翻译模式返回可用模型名。"""
-    if str(getattr(config, "TRANSLATE_MODE", "ollama")).lower() == "api":
-        models = list_api_models()
+    """
+    按当前「服务提供商」返回可用模型名。
+
+    ★ 本地服务三档（Ollama / llama.cpp / LM Studio，以及自定义兼容端）各查
+      自己的地址；只有云端服务才查 API_BASE_URL 那一组。
+    """
+    global _last_api_error
+
+    try:
+        import providers as PV
+        target = PV.request_target()
+    except Exception:
+        PV, target = None, None
+
+    if target is not None and not target.get("cloud"):
+        _last_api_error = ""
+        models = PV.local_models(target["key"])
         if models:
             return models
-        cur = getattr(config, "API_MODEL", "")
+        cur = target.get("model", "")
         return [cur] if cur else []
-    return list_ollama_models()
+
+    models = list_api_models()
+    if models:
+        return models
+    cur = getattr(config, "API_MODEL", "")
+    return [cur] if cur else []
 
 
 # ================================================================
@@ -241,22 +355,24 @@ def list_models():
 # ================================================================
 MODE_PRESETS = {
     "ollama": {
-        "MAX_TERMS_IN_PROMPT": 80,
+        "MAX_TERMS_IN_PROMPT": 1000,
         "TIMEOUT":             600,
         "NUM_CTX":             8192,
         "NUM_PREDICT":         2048,
-        "BATCH_SIZE":          12,
-        "MAX_BATCH_CHARS":     2048,
+        "BATCH_SIZE":          200,
+        "CTX_LIMIT":           0,
+        "CTX_BUDGET_RATIO":    0.9,
     },
     "api": {
         # ★ 云端按「请求」计费，批次过大反而更容易被截断 / 超时
-        "MAX_TERMS_IN_PROMPT": 200,
+        "MAX_TERMS_IN_PROMPT": 1000,
         "TIMEOUT":             600,
         "NUM_CTX":             65536,
         # ★ 与 API_MAX_TOKENS 对齐：别把本地的大值透传给云端（会 400）
         "NUM_PREDICT":         8192,
-        "BATCH_SIZE":          40,
-        "MAX_BATCH_CHARS":     12000,
+        "BATCH_SIZE":          200,
+        "CTX_LIMIT":           0,
+        "CTX_BUDGET_RATIO":    0.9,
     },
 }
 
@@ -265,12 +381,13 @@ PRESET_LABELS = {
     "TIMEOUT":             "请求超时（秒）",
     "NUM_CTX":             "上下文长度",
     "NUM_PREDICT":         "最大生成长度",
-    "BATCH_SIZE":          "每批条数",
-    "MAX_BATCH_CHARS":     "单批字符上限",
+    "BATCH_SIZE":          "每批条数上限",
+    "CTX_LIMIT":           "模型上下文窗口",
+    "CTX_BUDGET_RATIO":    "上下文预算比例",
     "TRANSLATE_MODE":      "翻译模式",
 }
 
-MODE_LABELS = {"ollama": "本地 Ollama", "api": "云端 API"}
+MODE_LABELS = {"ollama": "本地服务", "api": "云端服务"}
 
 
 def normalize_mode(mode):
