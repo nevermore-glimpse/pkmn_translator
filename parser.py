@@ -31,6 +31,11 @@ BLOCK_MAP_RE = re.compile(r'^\s*\[map\d+\]\s*$', re.IGNORECASE)
 #   这条线若不单独处理就会被当成句子送去翻译、还会顶乱行数。
 SEP_LINE_RE = re.compile(r'^\s*#[-=]{3,}\s*$')
 
+# ★ 「一串 CR（后面可以再跟一个 LF）」→ 统一当成一个换行。
+#   正常文件里它等价于 replace("\r\n", "\n")；
+#   坏文件（\r\r\n 双 CR、或者整篇只有 \r\r 没有 \n）也能一并修好。
+CR_RUN_RE = re.compile(r'\r+\n?')
+
 
 def is_block(s):  return bool(BLOCK_RE.match(s))
 def is_number(s): return bool(NUM_RE.match(s))
@@ -52,29 +57,30 @@ def hash_header_end(lines, limit=None):
     一律当正常句子处理（翻译 + 检查 + 编译）。
 
     规则：
-      · 文件最前面的空行不算内容，不打断扫描（BOM 之后常有个空行）；
+      · 注释区一直延续到**第一个分段区块名**（形如 [10] / [map1]）之前；
+      · 区内的空行不算内容，也不打断扫描（译文文件里可能夹着空行，
+        例如 \r\r\n 被通用换行读成两行）；
       · 连续遇到 # 开头行即计入注释区，最多 limit 行（默认 HASH_HEADER_MAX=4）；
-      · 一旦遇到第一条既非空、也不以 # 开头的行，注释区立刻结束；
-      · 注释区中间出现空行也视为结束 —— 空行之后不再是「文件头」。
+      · 一旦遇到第一条既非空、也不以 # 开头的行，注释区立刻结束。
     """
     if limit is None:
         limit = HASH_HEADER_MAX
     n = len(lines)
     i = 0
-    while i < n and not lines[i].strip():
-        i += 1
-    end = i
     skipped = 0
-    while i < n and skipped < limit:
+    while i < n:
         s = lines[i].strip()
         if not s:
+            i += 1
+            continue
+        if is_block(s):
             break
-        if not s.startswith('#'):
-            break
-        skipped += 1
-        i += 1
-        end = i
-    return end
+        if s.startswith('#') and skipped < limit:
+            skipped += 1
+            i += 1
+            continue
+        break
+    return i
 
 
 def pair_similarity(a, b, floor=0.0):
@@ -153,9 +159,17 @@ def read_file(path, encoding="utf-8-sig", max_lines=None):
         raw = f.read()
     crlf = raw.count("\r\n")
     lf = raw.count("\n") - crlf          # 单独的 LF（不算 CRLF 里那个）
-    newline = "\r\n" if crlf >= lf else "\n"
+    lone_cr = raw.count("\r") - crlf     # 不在 CRLF 里的 CR
+    newline = "\r\n" if (crlf or lone_cr) >= lf else "\n"
     # 内部一律按 LF 切，返回的每一行都不带行尾符（与调用方约定一致）
-    lines = raw.replace("\r\n", "\n").split("\n")
+    # ★ 用 CR_RUN_RE 统一行尾，而不是 replace("\r\n", "\n")：
+    #   旧版本写译文时没有 newline=""，把 "\r\n" 写成了 "\r\r\n"；
+    #   更早的版本在某些系统上还会写成整篇只有 "\r\r"、一个 "\n" 都没有。
+    #   后者用 replace("\r\n","\n") 一刀切不动（根本没有 "\r\n" 子串），
+    #   整篇 193KB 会被当成 1 行，编译时解析出 0 条、静默丢光内容。
+    #   CR_RUN_RE 把「一串 CR（后面可跟一个 LF）」统一压成一个 "\n"，
+    #   三种坏法（\r\r\n / \r\r / 孤立 \r）都能救回来。
+    lines = CR_RUN_RE.sub("\n", raw).split("\n")
 
     try:
         max_lines = int(max_lines)
@@ -183,8 +197,10 @@ def detect_newline(path, default="\n"):
     """
     按**原始字节**判断文件用的是 CRLF 还是 LF。
 
-    ★ read_file 是用文本模式打开的，Python 的通用换行在读取时就把 "\\r\\n"
-      归一成 "\\n" 了，所以它返回的 newline 永远是 "\\n"。
+    ★ 不能用「文本模式读 → 看 raw 里有没有 \r\n」：那样通用换行会把
+      "\r\n" 归一成 "\n"，判断永远为假。这里直接读字节。
+    ★ 孤立 CR（\r\r 这种坏行尾）也算 CR 风格：这种文件是用 CR 当换行的，
+      写成 LF 会把它变成「一整行」；沿用 CRLF 才能正常分行。
       要「原样写回、不改动行尾」的场合（应用已编辑 / 换行重排）用这个函数。
     """
     try:
@@ -192,7 +208,10 @@ def detect_newline(path, default="\n"):
             chunk = f.read(65536)
     except OSError:
         return default
-    return "\r\n" if b"\r\n" in chunk else "\n"
+    crlf = chunk.count(b"\r\n")
+    lf = chunk.count(b"\n") - crlf
+    lone_cr = chunk.count(b"\r") - crlf
+    return "\r\n" if (crlf or lone_cr) >= lf else "\n"
 
 
 def extract_entries(lines):
@@ -310,7 +329,10 @@ def write_output(lines, entries, translations, out_path, newline="\n",
             out[line_idx] = indent + dst
             replaced += 1
 
-    with open(out_path, "w", encoding=encoding) as f:
+    # ★ newline="" 关掉 Python 的换行翻译：否则 newline="\r\n" 时
+    #   文本模式会把 "\n" 再翻成 "\r\n"，写出 "\r\r\n" 双 CR，
+    #   读回时通用换行把它当成「换行 + 空行」，行数翻倍、解析错位。
+    with open(out_path, "w", encoding=encoding, newline="") as f:
         f.write(newline.join(out))
 
     return replaced

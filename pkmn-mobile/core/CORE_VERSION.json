@@ -1,6 +1,6 @@
 {
   "source": "E:/pkmn_translator",
-  "synced_at": "2026-10-19 12:35:10",
+  "synced_at": "2026-10-19 13:40:00",
   "modules": [
     "rmarshal.py",
     "save_tools.py",
@@ -40,8 +40,8 @@
       "size": 5460
     },
     "intl_text.py": {
-      "sha256": "ca3b9c43fcfcb8dcf88eb94b530f8630a94a90d3887e5669da34ed5e0cfb74b4",
-      "size": 53751
+      "sha256": "a406b865a9f4b839cbe38c5feeb210441052e88a8022c8a64de1e8d90bf15879",
+      "size": 55081
     },
     "pbs_edit.py": {
       "sha256": "27a0a99277c40e19592bd58993f4099d41373168e2612c09119d0f348172384e",
