@@ -32,6 +32,9 @@ LANG_ALIASES = {
     "英文":   ["英文", "英语", "English", "EN", "Eng"],
     "日文":   ["日文", "日本语", "日语", "Japanese", "JP", "JPN"],
     "西班牙文": ["西班牙文", "西班牙语", "西班牙", "Spanish", "ES", "Español"],
+    # 欧洲西班牙文必须排在「西班牙文」之后，且匹配时优先精确命中
+    "欧洲西班牙文": ["欧洲西班牙文", "西班牙文（欧洲）", "西班牙文(欧洲)",
+                     "欧洲西班牙语", "欧西", "es-ES", "ES-ES", "Spain Spanish"],
     "德文":   ["德文", "德语", "German", "DE", "Deutsch"],
     "法文":   ["法文", "法语", "French", "FR", "Français"],
     "意大利文": ["意大利文", "意大利语", "Italian", "IT", "Italiano"],
@@ -59,28 +62,44 @@ def norm_header(v):
     return "" if v is None else str(v).strip()
 
 
-def match_lang(header, lang_key):
+def match_lang_score(header, lang_key):
+    """
+    2 = 精确命中别名，1 = 别名是其子串，0 = 不匹配。
+
+    分开打分是为了让「西班牙文」不会抢走「欧洲西班牙文」那一列：
+    两个别名互为子串时，只有精确命中的列才算数。
+    """
     h = norm_header(header)
     if not h:
-        return False
+        return 0
     aliases = LANG_ALIASES.get(lang_key, [lang_key])
     for a in aliases:
         if h == a:
-            return True
+            return 2
     for a in aliases:
         if len(a) >= 3 and a in h:
-            return True
-    return False
+            return 1
+    return 0
+
+
+def match_lang(header, lang_key):
+    return match_lang_score(header, lang_key) > 0
+
+
+def _best_col(row, lang_key):
+    """该行里最像 lang_key 的列：精确命中优先，其次子串命中。"""
+    best, best_score = None, 0
+    for ci, cell in enumerate(row):
+        sc = match_lang_score(cell, lang_key)
+        if sc > best_score:
+            best, best_score = ci, sc
+    return best
 
 
 def find_header_row(rows, source_lang, target_lang, max_scan=15):
     for ri, row in enumerate(rows[:max_scan]):
-        src_col = tgt_col = None
-        for ci, cell in enumerate(row):
-            if src_col is None and match_lang(cell, source_lang):
-                src_col = ci
-            if tgt_col is None and match_lang(cell, target_lang):
-                tgt_col = ci
+        src_col = _best_col(row, source_lang)
+        tgt_col = _best_col(row, target_lang)
         if src_col is not None and tgt_col is not None:
             return ri, src_col, tgt_col
     return None, None, None

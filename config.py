@@ -439,7 +439,7 @@ TERM_EXTRACT_BATCH    = 40      # 术语提取页「预览」用的显示值（�
 
 # ---------- 云端服务保护 ----------
 # 单次请求的 max_tokens 上限（防止把 NumPredict 直接透传给云端导致 400）
-API_MAX_TOKENS = 1048576
+API_MAX_TOKENS =393216
 
 # ---------- 中文润色重翻 ----------
 POLISH_ENABLE      = True    # 启用「中文润色重翻」

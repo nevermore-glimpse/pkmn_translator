@@ -2387,6 +2387,34 @@ class SaveIssuesDialog(tk.Toplevel):
         body = card.body
         card.configure(width=800, height=440)
 
+        # ★ 按钮先占底部（side="bottom"），再排上面的内容 —— 和
+        #   SaveWriteDialog 同一个道理：卡片把 body 钉成固定高度，窗口一矮，
+        #   最后 pack 的整行按钮会被压没。
+        if allow_write:
+            default_write = not errs
+            self._default = "write" if default_write else "back"
+        else:
+            self._default = "back"
+        btns = tk.Frame(body, bg=CARD)
+        btns.pack(side="bottom", fill="x", pady=(10, 0))
+        if allow_write:
+            GlassButton(btns, "返回修改", width=110, height=38, bg=CARD,
+                        font=FONT_SMALL, primary=not default_write,
+                        command=self._back).pack(side="right")
+            GlassButton(btns, "仍要写入", width=120, height=38,
+                        primary=default_write, bg=CARD, font=FONT_SMALL,
+                        command=self._write).pack(side="right", padx=8)
+        else:
+            GlassButton(btns, "关闭", width=110, height=38, primary=True,
+                        bg=CARD, font=FONT_SMALL,
+                        command=self._back).pack(side="right")
+
+        if encoding_note:
+            nl = tk.Label(body, text=encoding_note, bg=CARD, fg=C_HINT,
+                          font=FONT_SMALL, anchor="w", justify="left")
+            nl.pack(side="bottom", fill="x", pady=(6, 0))
+            bind_autowrap(nl, pad=4, minimum=200)
+
         tk.Label(body, text=title, bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
         if items:
@@ -2419,29 +2447,6 @@ class SaveIssuesDialog(tk.Toplevel):
             attach_tree_copy(tree, app=master)
         except Exception:
             pass
-
-        if encoding_note:
-            nl = tk.Label(body, text=encoding_note, bg=CARD, fg=C_HINT,
-                          font=FONT_SMALL, anchor="w", justify="left")
-            nl.pack(fill="x", pady=(6, 0))
-            bind_autowrap(nl, pad=4, minimum=200)
-
-        btns = tk.Frame(body, bg=CARD)
-        btns.pack(fill="x", pady=(10, 0))
-        if allow_write:
-            default_write = not errs
-            GlassButton(btns, "返回修改", width=110, height=38, bg=CARD,
-                        font=FONT_SMALL, primary=not default_write,
-                        command=self._back).pack(side="right")
-            GlassButton(btns, "仍要写入", width=120, height=38,
-                        primary=default_write, bg=CARD, font=FONT_SMALL,
-                        command=self._write).pack(side="right", padx=8)
-            self._default = "write" if default_write else "back"
-        else:
-            GlassButton(btns, "关闭", width=110, height=38, primary=True,
-                        bg=CARD, font=FONT_SMALL,
-                        command=self._back).pack(side="right")
-            self._default = "back"
 
         self.bind("<Return>", lambda _e: self._run_default())
         self.bind("<Escape>", lambda _e: self._back())
@@ -2498,6 +2503,43 @@ class SaveWriteDialog(tk.Toplevel):
         body = card.body
         card.configure(width=940, height=520)
 
+        # ★ 底部按钮先 pack(side="bottom") 再去排版上面的内容：卡片把 body
+        #   钉成固定高度（见 RoundCard._resize），窗口一矮，最后 pack 的控件
+        #   会被压成 0 高 —— 之前的「取消／写入存档」就是这样整行看不见。
+        #   自下而上依次占位：按钮 → 备份/读档提示 → 超量提示。
+        default_ok = level != "err"
+        btns = tk.Frame(body, bg=CARD)
+        btns.pack(side="bottom", fill="x", pady=(10, 0))
+        GlassButton(btns, "取消", width=96, height=38, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._cancel).pack(side="right")
+        GlassButton(btns, "仍要写入" if not default_ok else "写入存档",
+                    width=124, height=38, primary=default_ok, bg=CARD,
+                    font=FONT_B,
+                    command=self._ok).pack(side="right", padx=8)
+
+        bak = str(getattr(sv, "path", "") or "") + ".bak"
+        tip_txt = ""
+        if not os.path.exists(bak):
+            tip_txt += f"第一次保存会先生成备份 {os.path.basename(bak)}。\n"
+        tip_txt += ("要在游戏里看到效果，需要回游戏重新「读档」"
+                    "（继续游戏不会重读存档）。")
+        tl = tk.Label(body, text=tip_txt, bg=CARD, fg=C_WARN,
+                      font=FONT_SMALL, anchor="w", justify="left")
+        tl.pack(side="bottom", fill="x", pady=(8, 0))
+        bind_autowrap(tl, pad=4, minimum=200)
+
+        if not rows:
+            tk.Label(body, text="（没有任何字段被改动）", bg=CARD, fg=C_HINT,
+                     font=FONT_SMALL,
+                     anchor="w").pack(side="bottom", fill="x", pady=(4, 0))
+        elif cut:
+            tk.Label(body,
+                     text=f"★ 只列出前 {SAVE_DIFF_ROW_CAP} 条，"
+                          f"另有 {cut} 条改动没显示（照样会写入）。",
+                     bg=CARD, fg=C_WARN, font=FONT_SMALL,
+                     anchor="w").pack(side="bottom", fill="x", pady=(4, 0))
+
         tk.Label(body, text="保存到存档", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
         pl = tk.Label(body, text=f"写入这个文件：{sv.path}", bg=CARD,
@@ -2534,38 +2576,6 @@ class SaveWriteDialog(tk.Toplevel):
             attach_tree_copy(tree, app=master)
         except Exception:
             pass
-
-        if not rows:
-            tk.Label(body, text="（没有任何字段被改动）", bg=CARD, fg=C_HINT,
-                     font=FONT_SMALL, anchor="w").pack(anchor="w", pady=(4, 0))
-        elif cut:
-            tk.Label(body,
-                     text=f"★ 只列出前 {SAVE_DIFF_ROW_CAP} 条，"
-                          f"另有 {cut} 条改动没显示（照样会写入）。",
-                     bg=CARD, fg=C_WARN, font=FONT_SMALL,
-                     anchor="w").pack(anchor="w", pady=(4, 0))
-
-        bak = str(getattr(sv, "path", "") or "") + ".bak"
-        tip_txt = ""
-        if not os.path.exists(bak):
-            tip_txt += f"第一次保存会先生成备份 {os.path.basename(bak)}。\n"
-        tip_txt += ("要在游戏里看到效果，需要回游戏重新「读档」"
-                    "（继续游戏不会重读存档）。")
-        tl = tk.Label(body, text=tip_txt, bg=CARD, fg=C_WARN,
-                      font=FONT_SMALL, anchor="w", justify="left")
-        tl.pack(fill="x", pady=(8, 0))
-        bind_autowrap(tl, pad=4, minimum=200)
-
-        btns = tk.Frame(body, bg=CARD)
-        btns.pack(fill="x", pady=(10, 0))
-        default_ok = level != "err"
-        GlassButton(btns, "取消", width=96, height=38, bg=CARD,
-                    font=FONT_SMALL,
-                    command=self._cancel).pack(side="right")
-        GlassButton(btns, "仍要写入" if not default_ok else "写入存档",
-                    width=124, height=38, primary=default_ok, bg=CARD,
-                    font=FONT_B,
-                    command=self._ok).pack(side="right", padx=8)
 
         self.bind("<Return>", lambda _e: (self._ok() if default_ok
                                           else self._cancel()))

@@ -1,11 +1,11 @@
 {
   "counts": {
-    "cross_sheet": 87,
-    "groups": 137,
-    "same_sheet": 50,
-    "variants": 286
+    "cross_sheet": 95,
+    "groups": 148,
+    "same_sheet": 53,
+    "variants": 309
   },
-  "generated_at": "2026-10-15T23:52:33+08:00",
+  "generated_at": "2026-10-18T18:40:29+08:00",
   "sections": {
     "ABILITY_NAMES": {
       "alerta": "预知梦",
@@ -35,11 +35,14 @@
       "té": "茶"
     },
     "MOVE_NAMES": {
+      "arremetida": "突飞猛扑",
+      "ascuas": "火花",
       "atadura": "绑紧",
       "bite": "咬住",
       "blood moon": "血月",
       "burbuja": "泡沫",
       "cabezazo": "火箭头锤",
+      "chirrido": "刺耳声",
       "confusion": "念力",
       "confusión": "念力",
       "curse": "咒术",
@@ -59,10 +62,15 @@
       "meditate": "瑜伽姿势",
       "metronome": "挥指",
       "metrónomo": "挥指",
+      "mordisco": "咬住",
       "niebla": "黑雾",
       "overdrive": "破音",
+      "pirotecnia": "烈焰溅射",
       "poison gas": "毒瓦斯",
+      "profecía": "识破",
       "psychic": "精神强念",
+      "psíquico": "精神强念",
+      "rayo": "十万伏特",
       "retracción": "闭关",
       "salpicadura": "跃起",
       "screech": "刺耳声",
@@ -120,6 +128,7 @@
       "electric": "电",
       "eléctrico": "电",
       "psychic": "超能",
+      "psíquico": "超能",
       "siniestro": "恶"
     }
   },
@@ -205,6 +214,30 @@
       },
       {
         "dst": "虹色",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "arremetida": [
+      {
+        "dst": "突飞猛扑",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "突击",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "ascuas": [
+      {
+        "dst": "火花",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "火种",
         "section": null,
         "sheet": "分类名称"
       }
@@ -353,6 +386,18 @@
         "sheet": "分类名称"
       }
     ],
+    "carámbano": [
+      {
+        "dst": "冰柱坠击",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "冰锥",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      }
+    ],
     "cazabichos": [
       {
         "dst": "捕虫少年",
@@ -375,6 +420,18 @@
         "dst": "名流",
         "section": "TRAINER_TYPE_NAMES",
         "sheet": "训练家类型"
+      }
+    ],
+    "chirrido": [
+      {
+        "dst": "刺耳声",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "夜啼",
+        "section": null,
+        "sheet": "分类名称"
       }
     ],
     "commander": [
@@ -1165,6 +1222,18 @@
         "sheet": "招式名称"
       }
     ],
+    "mordisco": [
+      {
+        "dst": "咬住",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "紧咬",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
     "mysterious": [
       {
         "dst": "神秘圆盘",
@@ -1314,6 +1383,18 @@
         "sheet": "训练家类型"
       }
     ],
+    "pirotecnia": [
+      {
+        "dst": "烈焰溅射",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "烟火",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
     "poison gas": [
       {
         "dst": "毒瓦斯",
@@ -1338,6 +1419,18 @@
         "sheet": "地点名称"
       }
     ],
+    "profecía": [
+      {
+        "dst": "识破",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "被识破",
+        "section": null,
+        "sheet": "状态名称"
+      }
+    ],
     "psychic": [
       {
         "dst": "精神强念",
@@ -1346,6 +1439,18 @@
       },
       {
         "dst": "超能力",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名称"
+      }
+    ],
+    "psíquico": [
+      {
+        "dst": "精神强念",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "超能",
         "section": "TYPE_NAMES",
         "sheet": "属性名称"
       }
@@ -1360,6 +1465,30 @@
         "dst": "虹色",
         "section": null,
         "sheet": "分类名称"
+      }
+    ],
+    "rayo": [
+      {
+        "dst": "十万伏特",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "雷电",
+        "section": null,
+        "sheet": "分类名称"
+      }
+    ],
+    "remolino": [
+      {
+        "dst": "潮旋",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "吹飞",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
       }
     ],
     "retracción": [
@@ -1698,9 +1827,26 @@
         "sheet": "招式名称"
       },
       {
+        "dst": "潮旋",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
         "dst": "旋风",
         "section": null,
         "sheet": "分类名称"
+      }
+    ],
+    "tornado": [
+      {
+        "dst": "龙卷风",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
+      },
+      {
+        "dst": "起风",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名称"
       }
     ],
     "trueno": [

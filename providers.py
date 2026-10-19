@@ -119,10 +119,10 @@ ORDER = ["ollama", "llamacpp", "lmstudio", "custom"]
 LOCAL_COMMON = {
     "TIMEOUT":             600,
     "NUM_PREDICT":         4096,
-    "BATCH_SIZE":          200,
+    "BATCH_SIZE":          10000,
     "CTX_LIMIT":           0,
     "CTX_BUDGET_RATIO":    0.9,
-    "MAX_TERMS_IN_PROMPT": 1000,
+    "MAX_TERMS_IN_PROMPT": 10000,
 }
 
 # 各提供商的推荐参数（custom 不跟本地三档共用）
@@ -132,12 +132,12 @@ PRESETS = {
     "lmstudio": dict(LOCAL_COMMON),
     "custom": {
         "TIMEOUT":             1800,
-        "NUM_CTX":             65535,
-        "NUM_PREDICT":         16383,
-        "BATCH_SIZE":          2000,
+        "NUM_CTX":             393216,
+        "NUM_PREDICT":         393216,
+        "BATCH_SIZE":          10000,
         "CTX_LIMIT":           0,
         "CTX_BUDGET_RATIO":    0.9,
-        "MAX_TERMS_IN_PROMPT": 1000,
+        "MAX_TERMS_IN_PROMPT": 10000,
         "API_TIMEOUT":         600,
     },
 }
