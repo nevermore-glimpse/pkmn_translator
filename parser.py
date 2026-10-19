@@ -25,9 +25,56 @@ BLOCK_RE = re.compile(r'^\s*\[[^\]]*\]\s*$')
 NUM_RE   = re.compile(r'^\s*\d+\s*$')
 BLOCK_MAP_RE = re.compile(r'^\s*\[map\d+\]\s*$', re.IGNORECASE)
 
+# ★ 分段分隔线（`#-------------------------------`，见 intl_text._SEP）：
+#   它是导出时插入的排版线，不是正文，**任何位置**都要跳过。
+#   以前所有 # 行都跳所以不用单独判；现在只跳文件头，
+#   这条线若不单独处理就会被当成句子送去翻译、还会顶乱行数。
+SEP_LINE_RE = re.compile(r'^\s*#[-=]{3,}\s*$')
+
 
 def is_block(s):  return bool(BLOCK_RE.match(s))
 def is_number(s): return bool(NUM_RE.match(s))
+def is_sep_line(s): return bool(SEP_LINE_RE.match(s))
+
+
+# ★ 文件开头最多跳过几行 # 注释。
+#   导出文件的开头固定是 2 行 # 说明（见 intl_text._HEADER），这里留一点余量；
+#   **之后的 # 开头行是正常句子**（同人游戏真有以 # 开头的文本，是要翻译的）。
+#   ★ 改动这个值时必须同步 intl_text._HASH_HEADER_MAX（编译端要按同一规则解析）。
+HASH_HEADER_MAX = 4
+
+
+def hash_header_end(lines, limit=None):
+    """
+    返回「文件开头 # 注释区」的结束行号（不含）。
+
+    只有 [0, 返回值) 范围内的 # 开头行才算注释、跳过；其余位置的 # 开头行
+    一律当正常句子处理（翻译 + 检查 + 编译）。
+
+    规则：
+      · 文件最前面的空行不算内容，不打断扫描（BOM 之后常有个空行）；
+      · 连续遇到 # 开头行即计入注释区，最多 limit 行（默认 HASH_HEADER_MAX=4）；
+      · 一旦遇到第一条既非空、也不以 # 开头的行，注释区立刻结束；
+      · 注释区中间出现空行也视为结束 —— 空行之后不再是「文件头」。
+    """
+    if limit is None:
+        limit = HASH_HEADER_MAX
+    n = len(lines)
+    i = 0
+    while i < n and not lines[i].strip():
+        i += 1
+    end = i
+    skipped = 0
+    while i < n and skipped < limit:
+        s = lines[i].strip()
+        if not s:
+            break
+        if not s.startswith('#'):
+            break
+        skipped += 1
+        i += 1
+        end = i
+    return end
 
 
 def pair_similarity(a, b, floor=0.0):
@@ -154,18 +201,23 @@ def extract_entries(lines):
 
     entries       : [(目标行号, 原文), ...]      正常配对 → 翻译第二行
     special_cases : [ {line_no, next_line_no, text, next_text, reason}, ... ]
+
+    ★ # 开头的行只在**文件开头**算注释（见 hash_header_end，最多
+      HASH_HEADER_MAX=4 行）；后面的 # 开头行是正常句子，照样翻译
+      （同人游戏真有以 # 开头的文本，例如 #{count} 这类整句占位符）。
     """
     entries, special = [], []
     i, n = 0, len(lines)
+    header_end = hash_header_end(lines)
 
     while i < n:
         s = lines[i].strip()
-        if not s or is_block(s) or is_number(s):
+        if not s or is_block(s) or is_number(s) or is_sep_line(s):
             i += 1
             continue
 
-        # ★ # 开头的行视为注释 / 标记行：不翻译、不进入检查报告
-        if s.startswith('#'):
+        # ★ 只有文件头的 # 注释行跳过（翻译、检查、写回都不管它们）
+        if i < header_end and s.startswith('#'):
             i += 1
             continue
 
@@ -192,7 +244,8 @@ def extract_entries(lines):
 
         # 情况 3：下一行不同 → 先看「相同部分占比」够不够高（近似配对）
         sim = 0.0
-        pairable = bool(next_s) and not is_block(next_s) and not is_number(next_s)
+        pairable = (bool(next_s) and not is_block(next_s)
+                    and not is_number(next_s) and not is_sep_line(next_s))
         if pairable:
             # ★ 把阈值传进去：长度差太多的直接判 0，不用跑 difflib
             need = getattr(config, "PAIR_SIMILARITY_MIN", 0.8)
@@ -208,6 +261,8 @@ def extract_entries(lines):
             reason = '下一行为空行'
         elif is_block(next_s):
             reason = '下一行为区块符'
+        elif is_sep_line(next_s):
+            reason = '下一行为分隔线'
         elif is_number(next_s):
             reason = '下一行为纯数字'
         else:

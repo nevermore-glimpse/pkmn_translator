@@ -51,6 +51,46 @@ MESSAGES_CANDIDATES = ("messages.dat", "english.dat")
 _HEADER = ("# To localize this text for a particular language, please\r\n"
            "# translate every second line of this file.\r\n")
 
+# ★ 文件开头最多跳过几行 # 注释（与 parser.HASH_HEADER_MAX 保持一致）。
+#   导出文件开头固定是 _HEADER 那 2 行；**之后的 # 开头行是正文**——
+#   同人游戏真有以 # 开头的文本（如 #{count}），要照常编译进 .dat。
+_HASH_HEADER_MAX = 4
+
+# ★ 分段之间的分隔线（_SEP）也是 # 开头，但它不是正文，必须在任何位置都跳过，
+#   否则它会被当成一条译文行，把「行数不是 3 的倍数」的校验顶翻。
+_SEP_LINE_RE = re.compile(r'^\s*#[-=]{3,}\s*$')
+
+
+def _hash_header_end(lines, limit=None):
+    """
+    返回「文件开头 # 注释区」的结束行号（不含）。
+
+    只有 [0, 返回值) 范围内的 # 开头行才算注释；其余位置的 # 开头行一律
+    当正文处理（与 parser.hash_header_end 同一套规则，两端必须一致）。
+
+    lines 必须已经去掉 BOM / 行尾 CR —— 首行带 BOM 时 "# To localize…"
+    看起来不以 # 开头，注释区会被误判成 0 行。
+    """
+    if limit is None:
+        limit = _HASH_HEADER_MAX
+    n = len(lines)
+    i = 0
+    while i < n and not lines[i].strip():
+        i += 1
+    end = i
+    skipped = 0
+    while i < n and skipped < limit:
+        s = lines[i].strip()
+        if not s:
+            break
+        if not s.startswith("#"):
+            break
+        skipped += 1
+        i += 1
+        end = i
+    return end
+
+
 # ================================================================
 # 两种文本方案
 #   legacy（v19/v20 及更早）：一份 Data/messages.dat ↔ 一个 intl.txt
@@ -739,15 +779,27 @@ def parse_intl_text(text, name="intl.txt", allow_constants=False,
     """
     keep = (lambda s: s.rstrip()) if trim == "rstrip" else (lambda s: s.strip())
     lines = text.split("\n")
+    # ★ 先把 BOM / 行尾 CR 统一去掉，再算「文件头 # 注释区」：
+    #   首行带着 BOM 时 "# To localize…" 看起来并不以 # 开头，
+    #   注释区会被误判成 0 行，那两行说明就成了正文。
+    for idx in range(len(lines)):
+        line = lines[idx].rstrip("\r")
+        if idx == 0:
+            if line.startswith("\ufeff"):
+                line = line[1:]
+            if line[:3] == "\xef\xbb\xbf":
+                line = line[3:]
+        lines[idx] = line
+    header_end = _hash_header_end(lines)
     sections = []
     current = None
-    for idx, raw in enumerate(lines):
-        line = raw.rstrip("\r")
-        if idx == 0 and line.startswith("\ufeff"):
-            line = line[1:]
-        if idx == 0 and line[:3] == "\xef\xbb\xbf":
-            line = line[3:]
-        if line.startswith("#") or line.strip() == "":
+    for idx, line in enumerate(lines):
+        if line.strip() == "":
+            continue
+        # ★ # 开头：文件头注释 + 分段分隔线 → 跳过；
+        #   其余位置一律当正文（以 # 开头的文本是真实内容，要编译进 .dat）
+        if line.startswith("#") and (idx < header_end
+                                     or _SEP_LINE_RE.match(line)):
             continue
         m = _SECTION_LINE.match(line)
         if m:

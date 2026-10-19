@@ -807,6 +807,22 @@ def detect_unknown_ctrl(text):
 # ================================================================
 _PURE_TEXT_RE = re.compile(r'[\s\W\d_]+', re.UNICODE)
 
+# ★ 整句只有 #{...} 占位符：诸如 "#{count}"（多个也可以，如 "#{a}#{b}"）。
+#   这类句子是游戏自己填值的模板，翻了反而会坏，直接原文写缓存、不送模型。
+_HASH_BRACE_ONLY_RE = re.compile(r'^\s*(?:#\{[^{}]*\}\s*)+$')
+
+
+def is_hash_placeholder_only(text):
+    """
+    判断整句是否只由 #{...} 占位符组成（例如 "#{count}"）。
+
+    ★ 这类句子在导出文件里也是 # 开头，但它**不是注释**，是正文模板；
+      翻译时不送模型、原样写缓存，检查报告也不该报它「未翻译」。
+    """
+    if not text:
+        return False
+    return bool(_HASH_BRACE_ONLY_RE.match(text.strip()))
+
 
 def is_pure_control(text, min_text_len=None):
     """

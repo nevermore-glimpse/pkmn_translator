@@ -17,13 +17,14 @@ import os
 import re
 
 import config
+import parser as _P
 from logger import get_logger
 
 from processor import (
     CTRL_RE, TAG_RE, BRACE_RE,
     ANGLE_CMD_RE, HTML_TAG_RE,
     _HTML_ENTITY_PAT, script_of, detect_unknown_ctrl,
-    _NL_RE, is_path_like,
+    _NL_RE, is_path_like, is_hash_placeholder_only,
 )
 
 log = get_logger("checker")
@@ -417,6 +418,11 @@ def check(out_lines, entries, special, report_path, extra_hits=None):
     # ★ 相似度检查开关：源/目标书写系统不同时才启用（见 _similarity_enabled）
     sim_on = _similarity_enabled()
 
+    # ★ 文件头 # 注释区的结束行号：只有这之前（不含）的 # 行才算注释，
+    #   之后的 # 开头行是正文，要照常检查。行号基准与 entries 一致，
+    #   所以以 out_lines 为准重算（译文文件与原文逐行对应，长度相同）。
+    header_end = _P.hash_header_end(out_lines)
+
     # ---------- 遍历正常条目 ----------
     for line_no, src in entries:
         if line_no >= len(out_lines):
@@ -424,11 +430,18 @@ def check(out_lines, entries, special, report_path, extra_hits=None):
         dst = out_lines[line_no].strip()
         src_strip = src.strip()
 
-        # ★ # 开头的行是注释 / 标记行，不进入检查报告
-        if src_strip.startswith('#'):
+        # ★ # 开头的行：只有**文件头**那几行是注释（见 parser.hash_header_end），
+        #   后面的 # 开头行是正文，要照常检查（否则以 # 开头的句子译文错了
+        #   也不会进报告）。判定用 out_lines（译文文件与原文件行号一一对应）。
+        if src_strip.startswith('#') and line_no < header_end:
             continue
 
         if src_strip in failed_srcs:
+            continue
+
+        # ★ 整句只有 #{...} 占位符（如 #{count}）：原文即译文属正常行为，
+        #   不进报告（翻译时也是原样写缓存、不送模型）
+        if is_hash_placeholder_only(src_strip):
             continue
 
         # ★① 疑似未翻译：剥离控制码后仍含英文；书写系统不同时再看

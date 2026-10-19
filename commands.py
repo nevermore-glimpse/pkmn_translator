@@ -1554,12 +1554,21 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
     skipped_pure = 0
     skipped_path = 0
     skipped_prefilter = 0
+    skipped_hash_ph = 0        # ★ 整句只有 #{...}（如 #{count}）：原样写缓存
     whole_hits = []           # ★ 整句命中手工术语：直接写缓存，不送模型
     for _, txt in entries:
         if txt in seen:
             continue
         seen.add(txt)
         if txt in cache:
+            continue
+        # ★ 整句只由 #{...} 占位符组成（如 "#{count}"）：这是游戏填值的模板，
+        #   翻了反而破坏占位符 → 原文即译文，直接写缓存，不送模型。
+        #   ★ 放在「纯控制符」之前：这类句子剥掉 #{} 后没内容，会被当成
+        #     纯控制符，但用户明确要求按「#{...} 整句」这条规则处理。
+        if PR.is_hash_placeholder_only(txt):
+            cache.put(txt, txt)
+            skipped_hash_ph += 1
             continue
         # ★ 整句术语直译：整句就是一条手工维护的术语（只忽略首尾标点）→
         #   把术语译文当作这句的译文写进缓存，不再送模型。
@@ -1619,8 +1628,14 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
         emit(f"[过滤] 预过滤跳过 {skipped_prefilter} 条"
              f"（纯数字/纯符号/非源语言残留，原文即译文）")
 
+    if skipped_hash_ph:
+        cache.save()
+        log.info("整句 #{} 占位符 %d 条（已缓存原文，不翻译）", skipped_hash_ph)
+        emit(f"[过滤] 整句 #{{}} 占位符 {skipped_hash_ph} 条"
+             f"（如 #{{count}}，原文即译文，不送模型）")
+
     n_cache = (len(seen) - len(todo) - skipped_pure - skipped_path
-               - skipped_prefilter - len(whole_hits))
+               - skipped_prefilter - len(whole_hits) - skipped_hash_ph)
     emit(f"[待翻] 唯一 {len(seen)}  需翻 {len(todo)}  缓存命中 {n_cache}")
 
     # ---------- 批量翻译 ----------
