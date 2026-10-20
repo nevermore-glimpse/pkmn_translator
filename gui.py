@@ -4736,8 +4736,7 @@ class App:
                                   + (f"（备份 {os.path.basename(bak)}）"
                                      if bak else "")
                                   if n else
-                                  "· 没有需要更新的文件（改完 Plugins-p 里的 "
-                                  ".rb 再来点）"),
+                                  "✔ 已编译回容器（Plugins-p 无改动，容器内容未变）"),
                             fg=C_OK if n else C_KEY)
                     else:
                         errs = r.get("errors") or []
@@ -10940,8 +10939,8 @@ class App:
         tk.Label(body,
                  text="改完 Plugins-p 里的 .rb 后，点「编译回容器」才会生效"
                       "—— 游戏运行时读的是 Data/PluginScripts.rxdata，"
-                      "不会自己去读 Plugins-p。写回前会先把原容器备份成 "
-                      "PluginScripts.rxdata.<时间戳>.bak。",
+                      "不会自己去读 Plugins-p。无条件编译：每次点击都会把 Plugins-p 写回容器；"
+                      "首次点击会把原容器备份成 PluginScripts.rxdata.bak，之后不再重复备份。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=200).pack(anchor="w", padx=10,
                                                       pady=(6, 0))

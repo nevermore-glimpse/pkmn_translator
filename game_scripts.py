@@ -1744,7 +1744,7 @@ def unpack_plugin_scripts(game_dir, out_dir=None, emit=None):
 def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
                                 backup=True):
     """
-    把 Plugins-p 里改过的 .rb **就地写回** Data/PluginScripts.rxdata。
+    把 Plugins-p 里的 .rb **无条件写回** Data/PluginScripts.rxdata。
 
     ★ 不做「从 Plugins-p 整体重建容器」：那会丢掉每个插件的 meta(Hash)、
       原始文件名与顺序，也丢掉插件名（Plugins-p 的目录名经过 sanitize，
@@ -1752,10 +1752,13 @@ def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
       这里只把每个条目[文件下标][1] 换成新的 zlib 压缩源码，其余原样搬回。
     ★ 定位靠解包时写下的 `_pkmn_unpack_manifest.json`；清单缺失时退化为
       「用同一个 _plugin_safe_name 反推路径」并给出警告。
-    ★ 写容器前先备份成 `PluginScripts.rxdata.<时间戳>.bak`（与
-      plugin_tools.compile_plugins 的备份风格一致），再「写临时文件 +
-      os.replace」原子替换。只碰 Data/PluginScripts.rxdata 与它的 .bak，
-      不动松散 Plugins/ 与 Scripts/。
+    ★ 备份是**固定名** `PluginScripts.rxdata.bak`（后面加一个 .bak），
+      且只在备份还不存在时才备份一次 —— 已有备份就不再覆盖，
+      保住的永远是最初那份原版容器。备份失败 → 中止写入。
+    ★ **无条件编译**：哪怕 Plugins-p 里一个文件都没改，也照样重写容器
+      （幂等：内容不变写出来也一样），不再因为「没有改动」就空手而归。
+      写容器走「写临时文件 + os.replace」原子替换。只碰
+      Data/PluginScripts.rxdata 与它的 .bak，不动松散 Plugins/ 与 Scripts/。
     ★ 容器不存在 / 读不出来 / Plugins-p 不存在 → ok=False，**不抛异常**。
 
     参数：
@@ -1765,10 +1768,9 @@ def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
       backup    写回前是否备份（默认 True）
 
     返回：
-      {"ok": bool, "container": 容器路径, "updated": 已写回文件数,
+      {"ok": bool, "container": 容器路径, "updated": 实际写回的文件数,
        "skipped": 内容没变的文件数, "missing": 对应的松散文件不存在的条目数,
        "backup": 备份路径 | None, "errors": [错误文本, ...]}
-      ★ 一个文件都不需要更新时 → ok=True、updated=0（幂等重跑走这里）。
     """
     game_dir = str(game_dir or "")
     root = str(src_dir) if src_dir else os.path.join(game_dir, "Plugins-p")
@@ -1896,25 +1898,27 @@ def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
                 consider(pi, fi, [pname] + parts,
                          "插件 %s 第 %s 个文件" % (pname, fi))
 
-    if not plan:
-        res["ok"] = True
-        say("没有需要更新的文件（改了 %s 里的 .rb 再来点这个按钮）" % root)
-        return res
+    # 无条件编译：哪怕一个文件都没改，也照样重写容器（不再提前返回）。
 
     for pi, fi, data, src in plan:
         obj[pi][2][fi][1] = zlib.compress(data)
 
     bak = None
     if backup:
-        try:
-            bak = "%s.%s.bak" % (path, time.strftime("%Y%m%d-%H%M%S"))
-            shutil.copyfile(path, bak)
-            res["backup"] = bak
-            say("原容器已备份：%s" % os.path.basename(bak))
-        except OSError as e:
-            res["errors"].append("备份 %s 失败（已中止写入）：%s" % (path, e))
-            say("✘ 备份失败，已中止写入：%s" % e)
-            return res
+        bak = path + ".bak"
+        if os.path.isfile(bak):
+            # 固定名备份已存在 → 不再备份，保住最初那份原版容器。
+            bak = None
+            say("已有备份 %s.bak，跳过备份（不覆盖旧备份）" % os.path.basename(path))
+        else:
+            try:
+                shutil.copyfile(path, bak)
+                res["backup"] = bak
+                say("原容器已备份：%s" % os.path.basename(bak))
+            except OSError as e:
+                res["errors"].append("备份 %s 失败（已中止写入）：%s" % (path, e))
+                say("✘ 备份失败，已中止写入：%s" % e)
+                return res
 
     tmp = path + ".tmp"
     try:
@@ -1935,7 +1939,12 @@ def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
     res["ok"] = True
     for _pi, _fi, _data, src in plan:
         say("  ✔ %s" % os.path.relpath(src, root))
-    say("完成：更新 %s 个文件 → %s%s"
-        % (res["updated"], path,
-           "（备份 %s）" % os.path.basename(bak) if bak else ""))
+    if plan:
+        say("完成：更新 %s 个文件 → %s%s"
+            % (res["updated"], path,
+               "（已有备份，未重新备份）" if res["backup"] is None and backup
+               else ("（备份 %s）" % os.path.basename(res["backup"])
+                     if res["backup"] else "")))
+    else:
+        say("完成：Plugins-p 无改动，容器已原样重写 → %s" % path)
     return res
