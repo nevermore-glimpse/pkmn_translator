@@ -59,10 +59,10 @@ UA = f"{REPO_NAME}-translator/{getattr(config, 'VERSION', '0')}"
 # ★ 下载加速线路。空串 = 直连 GitHub（能通就用它，最快也最稳）。
 #   顺序即尝试顺序：先直连，失败再走代理；代理之间按实测延迟排。
 MIRRORS = (
-    "",
     "https://v6.gh-proxy.org/",
     "https://v4.gh-proxy.org/",
     "https://gh-proxy.org/",
+    "",
 )
 
 # 单个地址的超时（秒）。直连要短一点，免得卡在那儿等太久。
