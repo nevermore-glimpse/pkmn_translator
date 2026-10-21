@@ -9909,6 +9909,10 @@ class App:
         except Exception:
             skip_tag = ""
         if skip_tag == tag:
+            # ★ 用户点过「跳过此版本」：静默检查时不再打扰他
+            if silent:
+                self.status_var.set(f"已跳过版本 {tag}")
+                return
             skip_hint = "\n（已跳过：" + skip_tag + "）"
         else:
             skip_hint = ""
@@ -9920,7 +9924,11 @@ class App:
         exe_asset = info.get("exe_asset")
         res_asset = info.get("res_asset")
         
-        if not silent and exe_asset:
+        # ★ 关键修复：静默检查（启动 1.5s 后自动发起）发现新版时**照样弹窗**。
+        #   原来这里写的是 `if not silent and exe_asset:`，静默路径被整个排除在外——
+        #   启动后只有状态栏闪一下就没了，用户看到的现象就是「没触发更新检测」。
+        #   silent 只表示「不是用户主动点的」，不该决定「要不要告诉用户」。
+        if exe_asset or res_asset:
             # 自定义对话框：立即更新 / 跳过此版本 / 稍后
             dlg = tk.Toplevel(self.root)
             dlg.title("发现新版本")
@@ -9933,12 +9941,15 @@ class App:
             
             ttk.Label(frm, text=msg, wraplength=500, justify="left").pack(anchor="w", pady=(0, 15))
             
-            # ★ 默认只换 exe；资源包由用户主动勾选才更新
-            res_var = tk.BooleanVar(value=False)
-            res_chk = ttk.Checkbutton(
-                frm, text="同时更新资源（提示词 / 脚本 / 术语规则等）",
-                variable=res_var)
-            res_chk.pack(anchor="w", pady=(0, 10))
+            # ★ 默认只换 exe；资源包由用户主动勾选才更新。
+            #   只有资源包、没有程序包时（exe 单独发布的那种），
+            #   资源就是唯一能更新的东西，默认勾上。
+            res_var = tk.BooleanVar(value=not exe_asset)
+            if res_asset:
+                res_chk = ttk.Checkbutton(
+                    frm, text="同时更新资源（提示词 / 脚本 / 术语规则等）",
+                    variable=res_var)
+                res_chk.pack(anchor="w", pady=(0, 10))
             
             btn_frm = ttk.Frame(frm)
             btn_frm.pack(fill="x")
@@ -9946,7 +9957,8 @@ class App:
             def on_now():
                 do_res = bool(res_var.get()) and bool(res_asset)
                 dlg.destroy()
-                self._run_update(info, do_resource=do_res)
+                self._run_update(info, do_exe=bool(exe_asset),
+                                 do_resource=do_res)
             
             def on_skip():
                 import updater
@@ -9965,20 +9977,28 @@ class App:
             x = self.root.winfo_rootx() + (self.root.winfo_width() - dlg.winfo_width()) // 2
             y = self.root.winfo_rooty() + (self.root.winfo_height() - dlg.winfo_height()) // 2
             dlg.geometry(f"+{x}+{y}")
-            self.root.wait_window(dlg)
+            # ★ 不用 wait_window(dlg) 阻塞：
+            #   这个函数是在 _pump 的 after 回调里被调用的，wait_window 会开
+            #   嵌套事件循环，而 _pump 的 finally 又会再排一个 after(90, _pump)，
+            #   消息泵自我重入，队列消费顺序就乱了（后台任务的 done/err 可能重复处理）。
+            #   grab_set() 已经保证对话框是模态的，不阻塞也够用。
+            dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
         elif not silent:
             # 没有 exe 包（或静默），只提示打开页面
             if messagebox.askyesno("发现新版本", msg + "\n\n是否打开下载页面？"):
                 webbrowser.open(url)
+        else:
+            # 静默 + 认不出程序包：至少在状态栏留个提示，别让用户以为没这回事
+            self.status_var.set(f"发现新版本 {tag}（点击「检查更新」可下载）")
 
-    def _run_update(self, info, do_resource=False):
+    def _run_update(self, info, do_exe=True, do_resource=False):
         """在后台下载并应用更新，带进度条。"""
         def work():
             try:
                 import updater
                 ok, msg, needs_restart = updater.run_update(
                     info, progress=self._update_progress_cb,
-                    do_exe=True, do_resource=do_resource)
+                    do_exe=do_exe, do_resource=do_resource)
                 self.q.put(("update_done", (ok, msg, needs_restart)))
             except Exception:
                 import traceback

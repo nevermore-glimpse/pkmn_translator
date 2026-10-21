@@ -9,15 +9,23 @@
 
 ★ 两个包都按「内容」识别，不认文件名。
   v1.8.2 的包叫 pokemon.tools.v1.8.2.zip，v1.8.3 改叫 pkmn.tools.v1.8.3.zip，
-  资源包名字以后也可能变，写死名字早晚会断。识别方式是只读 zip 的中央目录
-  （HTTP Range），不必把 48MB 整个下下来就能知道里面有没有 exe。
+  v1.8.4 又改成 pokemon.tools.zip + resource.zip，资源包名字以后也可能变，
+  写死名字早晚会断。
+  识别分两段：
+    · 检查阶段 —— 只看文件名/扩展名（零延迟，classify_assets_fast）
+    · 下载之后 —— 本地打开 zip 看内容（inspect_zip_local）
+  早期版本是在检查阶段远程读 zip 中央目录（HTTP Range），
+  读 48MB 的包要发多次 Range 请求，直连 GitHub 常常一卡十几秒，
+  「检查更新」被拖到 30 秒起步，用户只看到「打开工具没触发更新检测」。
 
 ★ 更新是两件互不牵连的事：
   1) 资源更新 —— 解压资源包，但**只覆盖白名单里的程序资源**。
      缓存、术语表、配置、报告、日志属于用户数据，另有独立保护名单，双保险。
   2) 程序更新 —— 只换 exe 这一个文件，别的一概不动。
 
-★ 加速：大陆直连 github.com 基本超时，按 MIRRORS 顺序逐个试。
+★ 加速：大陆直连 github.com 基本超时，按 MIRRORS 顺序并发探测，
+  把能用的线路排前面再下载。api.github.com 同样留代理兜底——
+  它一挂，「检查更新」就永远失败，用户只会觉得「怎么没提示更新」。
 """
 import hashlib
 import json
@@ -26,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import zipfile
@@ -140,36 +149,79 @@ def _timeout_for(url):
 def _mirror_urls(url):
     """给一个 GitHub 地址生成「直连 + 各代理」的候选列表。
 
-    ★ 只有 github.com 上的下载/页面地址才需要代理；
-      api.github.com 直连通常可用，套了代理反而更慢。
+    ★ 顺序即尝试顺序，直连最快最稳，失败才逐个换代理。
+    ★ api.github.com 也**必须**留代理兜底：
+      部分网络下 api.github.com 同样连不上，而它一挂，
+      「检查更新」就永远失败，用户只会觉得「怎么没提示更新」。
     """
-    if "api.github.com" in url:
-        return [url]
     out = []
     for m in MIRRORS:
         out.append(url if not m else m + url)
     return out
 
 
-def _open(url, headers=None, method=None):
+def _open(url, headers=None, method=None, timeout=None):
     hdrs = {"User-Agent": UA, "Accept": "application/vnd.github+json"}
     if headers:
         hdrs.update(headers)
     req = urllib.request.Request(url, headers=hdrs, method=method)
-    return urllib.request.urlopen(req, timeout=_timeout_for(url))
+    t = timeout if timeout else _timeout_for(url)
+    return urllib.request.urlopen(req, timeout=t)
 
 
 def _api_get(url, timeout=8):
-    """GitHub API：直连优先，失败再走代理。"""
-    last = None
-    for u in _mirror_urls(url):
+    """GitHub API：所有线路**并发**请求，谁先成功用谁。
+
+    ★ 为什么必须并发，不能串行：
+      国内直连 api.github.com 的典型故障是「挂住」——TCP 连上了，
+      但 TLS 握手/响应迟迟不来，socket 超时要等满 10 秒才报错。
+      串行的话，8 秒的总预算会被直连一条吃光，
+      后面三条代理线路根本没机会跑——用户看到的还是「没检测到更新」。
+      并发之后总耗时 = 最快那条线路的耗时（实测 1.5s 内），
+      无论哪条能通都一样。
+
+    ★ 每条线路都带 timeout 兜底，不会无限挂住。
+    """
+    deadline = time.time() + max(1.0, float(timeout))
+    urls = _mirror_urls(url)
+    results = {}
+    errors = []
+
+    def worker(u):
+        left = deadline - time.time()
+        if left <= 0.5:
+            return
         try:
-            with _open(u) as resp:
-                return json.loads(resp.read().decode("utf-8", "replace"))
+            with _open(u, timeout=max(1.0, left)) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            data = json.loads(body)
+            # ★ 代理有可能返回错误页/HTML，必须验证是像样的 release JSON
+            if not isinstance(data, dict) or not (data.get("tag_name") or data.get("message")):
+                raise ValueError("返回内容不像 release JSON")
+            results[u] = data
         except Exception as e:                      # noqa: BLE001
-            last = e
-            log.debug("API 失败 %s：%s", u, e)
-    raise last or IOError("所有线路都失败")
+            errors.append((u, e))
+            log.debug("API 线路失败 %s：%s", u, e)
+
+    threads = []
+    for u in urls:
+        t = threading.Thread(target=worker, args=(u,), daemon=True)
+        t.start()
+        threads.append(t)
+
+    # 等第一个成功的
+    while threads and not results:
+        alive = [t for t in threads if t.is_alive()]
+        if not alive:
+            break
+        alive[0].join(timeout=0.1)
+
+    if results:
+        return next(iter(results.values()))
+
+    if errors:
+        raise errors[-1][1]
+    raise IOError("所有线路都失败")
 
 
 def fetch_latest(timeout=8):
@@ -200,148 +252,125 @@ def fetch_latest(timeout=8):
     }
 
 
-# ================================================================
-# 远程 zip 探测（只读中央目录，不下载整个包）
-# ================================================================
-class _RangeFile:
-    """只读、可 seek 的 HTTP Range 文件对象，专供 zipfile 读中央目录。
-
-    ★ 用它就不必为了「这个包是不是程序包」先下 48MB：
-      zip 的中央目录在文件末尾，range 读个几百 KB 就够了。
-
-    ★ 每条线路一个实例：直连 github.com/.../releases/download/ 在大陆
-      基本超时，但 api.github.com 反而通 → 探测和下载都必须能换线路。
-    """
-
-    def __init__(self, url, timeout=20):
-        self.url = url
-        self.timeout = timeout
-        self.pos = 0
-        self.size = self._probe_size()
-
-    def _probe_size(self):
-        req = urllib.request.Request(
-            self.url, headers={"Range": "bytes=0-0", "User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            cr = r.headers.get("Content-Range") or ""
-            m = re.search(r"/(\d+)\s*$", cr)
-            if m:
-                return int(m.group(1))
-            cl = r.headers.get("Content-Length")
-            if cl:
-                return int(cl)
-        raise IOError("无法获取远程文件大小")
-
-    def seek(self, off, whence=0):
-        if whence == 0:
-            self.pos = off
-        elif whence == 1:
-            self.pos += off
-        elif whence == 2:
-            self.pos = self.size + off
-        return self.pos
-
-    def tell(self):
-        return self.pos
-
-    def read(self, n=-1):
-        if n is None or n < 0:
-            n = max(0, self.size - self.pos)
-        if n == 0 or self.pos >= self.size:
-            return b""
-        end = min(self.size, self.pos + n) - 1
-        req = urllib.request.Request(
-            self.url,
-            headers={"Range": f"bytes={self.pos}-{end}", "User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            data = r.read()
-        self.pos += len(data)
-        return data
-
-    def seekable(self):
-        return True
-
-    def readable(self):
-        return True
-
-    def close(self):
-        pass
-
-
-def _remote_zip_names(url):
-    """远程读取 zip 的成员名单。失败抛异常。
-
-    ★ 逐条线路试：直连 → v6 → v4 → gh-proxy。
-      每条线路都试一遍 zipfile，中央目录读不出来就换下一条。
-    """
-    last = None
-    for u in _mirror_urls(url):
-        fp = None
-        try:
-            fp = _RangeFile(u, timeout=_timeout_for(u))
-            with zipfile.ZipFile(fp) as z:
-                return z.namelist()
-        except Exception as e:                      # noqa: BLE001
-            last = e
-            log.debug("探测 %s 失败：%s", u, e)
-        finally:
-            if fp is not None:
-                try:
-                    fp.close()
-                except Exception:
-                    pass
-    raise last or IOError("所有线路都失败")
-
-
 def _has_exe(names):
     return any(n.lower().endswith(".exe") for n in names)
+
+
+# ★ 辅助 exe：它们也是 .exe，但**绝不能**当成主程序去替换。
+#   实测 resource.zip 里就躺着「宝可梦调试启动器.exe」，
+#   只按「有没有 exe」判断包类型，会把它当成程序包，
+#   结果更新时用调试启动器把主程序覆盖掉。
+HELPER_EXE_HINTS = ("调试", "debug", "launcher", "启动器", "updater", "update")
+
+
+def _is_helper_exe(name):
+    """判断这个 exe 是不是辅助工具（而不是主程序）。"""
+    low = (name or "").lower()
+    for h in HELPER_EXE_HINTS:
+        if h.lower() in low:
+            return True
+    return False
+
+
+def _has_main_exe(names):
+    """包里有**主程序** exe（排除调试器/启动器这类辅助工具）。"""
+    return any(n.lower().endswith(".exe") and not _is_helper_exe(n) for n in names)
 
 
 def _has_resource_dir(names):
     return any(n.startswith(RESOURCE_WHITELIST) for n in names)
 
 
-def classify_assets(assets):
-    """把 asset 分成 (程序包, 资源包)，识别不了的给 None。
+def _find_exe_asset(assets, exclude_urls=()):
+    """
+    在 asset 列表里找一个**可能**是程序包的（名字像 exe 包，或干脆是裸 exe）。
 
-    识别顺序：
-      ① 读 zip 成员名单按内容判定（最可靠）
-      ② 探测失败就退回文件名猜测
+    只按名字筛，不联网：真正的确认在下载后本地看 zip 内容时做。
+    exclude_urls：已经试过不行的地址，不再重复下载。
+    """
+    exclude = set(exclude_urls or ())
+    cands = []
+    for a in assets or []:
+        name = (a.get("name") or "").lower()
+        url = a.get("url") or ""
+        if not url or url in exclude:
+            continue
+        if name.endswith(".exe"):
+            return a
+        if name.endswith(".zip") and ("resource" not in name and "资源" not in name):
+            cands.append(a)
+    return cands[0] if cands else None
 
-    ★ 同一个包可以**同时**是程序包和资源包。
-      v1.8.3 的 pkmn.tools.v1.8.3.zip 里既有 exe 也有 scripts/，
-      用户后来决定拆成两个包，但旧的/新造的都可能同时满足两边，
-      所以这里不互斥，只记录“哪个包能干什么”。
+
+def inspect_zip_local(path):
+    """
+    看一个**已经下载到本地**的 zip 里有什么。
+
+    返回 (has_exe: bool, has_resource: bool)；不是有效 zip 时返回 (False, False)。
+
+    ★ has_exe 判的是「有**主程序** exe」：
+      resource.zip 里含「宝可梦调试启动器.exe」，它也是 .exe，
+      但它是辅助工具，不能当成程序包——否则更新会用它覆盖主程序。
+
+    ★ 为什么改成「下完再本地看」而不是「下载前远程看」：
+      远程看要读 zip 中央目录，得对 48MB 的包发多次 Range 请求，
+      在大陆直连 github.com 常常一卡十几秒——检查更新因此被拖到 30 秒，
+      用户看到的现象就是「打开工具没触发更新检测」。
+      本地看是零延迟的，而且下载过程中顺带就做了，不用额外请求。
+    """
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+    except Exception as e:                          # noqa: BLE001
+        log.debug("本地检查 zip 失败 %s：%s", path, e)
+        return False, False
+    return _has_main_exe(names), _has_resource_dir(names)
+
+
+def classify_assets_fast(assets):
+    """
+    **不联网**的快速分类：只看文件名/扩展名。
+
+    返回 (exe_asset, res_asset, need_probe)。
+
+    ★ 为什么要分两段：
+      精确识别要读远程 zip 的中央目录（多次 Range 请求），
+      直连 GitHub 在大陆常常一卡十几秒。把它塞进「检查更新」里，
+      启动时的静默检查就会迟迟不弹窗，甚至直接被用户当成「没检测到」。
+      所以检查阶段只做零延迟的快速分类；
+      need_probe=True 表示还有 zip 需要联网精确定位，
+      那个活儿留到用户点「立即更新」之后再做。
+
+    ★ 快速分类的判断依据：
+      · .exe 结尾 → 一定是程序本体
+      · 文件名含 resource/资源 → 资源包
+      · 其它 .zip → 程序包（用户约定 exe 压缩包就叫这个）
     """
     exe_asset = None
     res_asset = None
+    need_probe = False
 
     for a in assets:
         name = (a.get("name") or "").lower()
+        if not name or not (a.get("url") or ""):
+            continue
+
+        if name.endswith(".exe"):
+            # 裸 exe 就是程序本体
+            exe_asset = exe_asset or a
+            continue
+
         if not name.endswith(".zip"):
             continue
-        url = a.get("url") or ""
-        if not url:
-            continue
 
-        try:
-            names = _remote_zip_names(url)
-        except Exception as e:                      # noqa: BLE001
-            log.debug("探测 %s 失败，改用文件名判断：%s", a.get("name"), e)
-            if "resource" in name or "assets" in name:
-                res_asset = res_asset or a
-            else:
-                exe_asset = exe_asset or a
-            continue
-
-        if _has_exe(names):
-            exe_asset = exe_asset or a
-        if _has_resource_dir(names):
+        if "resource" in name or "资源" in name or "assets" in name:
             res_asset = res_asset or a
-        if not _has_exe(names) and not _has_resource_dir(names):
-            log.debug("asset %s 既没 exe 也没资源目录，忽略", a.get("name"))
+        else:
+            # 拿不准是不是「exe + 资源」合一的包，留到精确定位
+            exe_asset = exe_asset or a
+            need_probe = True
 
-    return exe_asset, res_asset
+    return exe_asset, res_asset, need_probe
 
 
 # ================================================================
@@ -373,16 +402,21 @@ def check_update(timeout=8):
 
     info["current"] = getattr(config, "VERSION", "")
 
-    # 只在确实有新版本时才去探测 zip（探测要走网络，没必要每次都做）
+    # ★ 这里**只做零延迟的快速分类**（不联网）。
+    #   精确识别要读远程 zip 的中央目录，直连 GitHub 在大陆常常一卡十几秒，
+    #   塞在检查阶段会让启动时的静默检查迟迟不弹窗——用户只会觉得「没检测到更新」。
+    #   联网精确定位推迟到用户点「立即更新」之后再做。
     if newer:
         try:
-            exe_a, res_a = classify_assets(info.get("assets") or [])
+            exe_a, res_a, need_probe = classify_assets_fast(info.get("assets") or [])
             info["exe_asset"] = exe_a
             info["res_asset"] = res_a
+            info["need_probe"] = need_probe
         except Exception as e:                      # noqa: BLE001
             log.debug("asset 识别失败：%s", e)
             info["exe_asset"] = None
             info["res_asset"] = None
+            info["need_probe"] = False
 
     return newer, info
 
@@ -406,6 +440,47 @@ def _sha256_file(path, progress=None):
     return h.hexdigest()
 
 
+def _probe_mirrors(url, timeout=6):
+    """并发探测各条线路能不能用，按「可用优先、快的在前」返回线路顺序。
+
+    ★ 为什么下载前要先探：
+      直连 github.com 在国内是「挂住」而不是「快速失败」——
+      串行下载的话，第一条直连线路要先浪费掉 10 秒 socket 超时，
+      用户看到的就是「点了立即更新，半天没反应」。
+      先并发探一下（每条只取几个字节），把能用的线路排前面，
+      下载就能直接走通的那条。
+    """
+    urls = _mirror_urls(url)
+    ok = {}
+    err = {}
+
+    def worker(u):
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": UA, "Range": "bytes=0-1023"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                r.read(1024)
+            ok[u] = time.time() - t0
+        except Exception as e:                      # noqa: BLE001
+            err[u] = e
+
+    threads = []
+    for u in urls:
+        t = threading.Thread(target=worker, args=(u,), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout=timeout + 1.0)
+
+    if not ok:
+        # 一条都没通：保持原顺序，让调用方自己按超时重试
+        return urls
+    good = sorted(ok.keys(), key=lambda u: ok[u])
+    bad = [u for u in urls if u not in ok]
+    log.debug("可用线路：%s", good)
+    return good + bad
+
+
 def download(url, dest, progress=None, expected_sha256="", resume=True):
     """
     下载到 dest，支持断点续传与 sha256 校验。
@@ -425,7 +500,10 @@ def download(url, dest, progress=None, expected_sha256="", resume=True):
     start = os.path.getsize(part) if os.path.exists(part) else 0
     last_err = None
 
-    for u in _mirror_urls(url):
+    # ★ 先并发探测线路，把能用的排前面，避免第一条直连挂住 10 秒
+    ordered = _probe_mirrors(url)
+
+    for u in ordered:
         try:
             headers = {"User-Agent": UA}
             if start:
@@ -500,6 +578,33 @@ def _digest_of(asset):
     d = (asset or {}).get("digest") or ""
     m = re.match(r"^sha256:([0-9a-fA-F]{64})$", d.strip())
     return m.group(1) if m else ""
+
+
+def _is_raw_exe(asset):
+    """asset 本身就是 exe 文件（不是 zip 包）。"""
+    return (asset or {}).get("name", "").lower().endswith(".exe")
+
+
+def _stage_raw_exe(path, progress=None):
+    """
+    把下载下来的裸 exe 放进暂存目录，准备替换当前 exe。
+
+    优先用**当前 exe 的文件名**，这样替换后窗口标题、任务栏图标的名字不变；
+    源码运行（没有 exe）时退回下载文件名。
+    返回 (ok, msg, path)。
+    """
+    try:
+        name = os.path.basename(current_exe() or "") or os.path.basename(path)
+        dst = os.path.join(update_dir(), name)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if progress:
+            progress(0, 1, "准备新 exe…")
+        shutil.copyfile(path, dst)
+        size = os.path.getsize(dst)
+        return True, f"已准备新 exe（{size / 1048576:.1f} MB）", dst
+    except Exception as e:                          # noqa: BLE001
+        log.warning("准备裸 exe 失败：%s", e)
+        return False, f"准备 exe 失败：{e}", None
 
 
 # ================================================================
@@ -603,12 +708,15 @@ def extract_exe(zip_path, progress=None):
     从程序包里**只抽 exe** 到暂存目录。
 
     认哪个 exe：优先取与当前 exe 同名的那个；否则取体积最大的 exe。
+    ★ 辅助 exe（调试器/启动器）一律排除：resource.zip 里就有一个，
+      它比主程序小，命中「取最大的」就会拿它去覆盖主程序。
     返回 (ok, msg, path)。
     """
     try:
         with zipfile.ZipFile(zip_path) as z:
             cands = [i for i in z.infolist()
-                     if not i.is_dir() and i.filename.lower().endswith(".exe")]
+                     if not i.is_dir() and i.filename.lower().endswith(".exe")
+                     and not _is_helper_exe(i.filename)]
             if not cands:
                 return False, "程序包里没有 exe", None
 
@@ -715,9 +823,29 @@ def cleanup_old():
             except OSError as e:
                 log.debug("旧 exe 暂时删不掉（下次再试）：%s", e)
 
+    # ★ 也扫一遍 BASE_DIR 里的 *.old：exe 目录不一定等于 BASE_DIR，
+    #   上次更新留下的残留在下次启动时一并清掉。
+    try:
+        for name in os.listdir(config.BASE_DIR):
+            if name.lower().endswith(".old"):
+                p = os.path.join(config.BASE_DIR, name)
+                try:
+                    if os.path.isfile(p):
+                        os.remove(p)
+                        removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
     d = os.path.join(config.BASE_DIR, UPDATE_DIR_NAME)
     if os.path.isdir(d):
         for name in os.listdir(d):
+            # ★ skip.json 是「跳过此版本」的记录，不能删！
+            #   删了的话用户点了「跳过此版本」，下次启动又会被同一个新版骚扰，
+            #   「跳过」按钮就等于白按。
+            if name == SKIP_FILE_NAME:
+                continue
             p = os.path.join(d, name)
             try:
                 if os.path.isfile(p):
@@ -785,9 +913,10 @@ def run_update(info, progress=None, do_exe=True, do_resource=False):
       资源包要更新时由用户显式勾选（GUI 里的复选框），
       而且解压时只写白名单里的程序资源，缓存/术语表/配置一律不碰。
 
-    ★ 同一个 asset 同时充当程序包和资源包时**只下一次**：
-      v1.8.3 的包里面既有 exe 又有 scripts/，下两次就是白费 48MB。
-      所以按 URL 去重，下载一次、两头用。
+    ★ 识别靠**下载后本地看**，不靠下载前的远程探测：
+      远程探测要读 48MB 包的中央目录（多次 Range 请求），
+      在大陆常常一卡十几秒，整个更新流程被拖成 30 秒起步。
+      本地看是零延迟的，而且正好是「文件已经在硬盘上」的那一刻。
     """
     tmp = update_dir()
     parts = []
@@ -795,49 +924,90 @@ def run_update(info, progress=None, do_exe=True, do_resource=False):
     res_a = info.get("res_asset") if do_resource else None
     exe_a = info.get("exe_asset") if do_exe else None
 
-    # ---------- 按 URL 去重，只下一遍 ----------
-    zips = {}                      # url -> 本地 zip 路径
-    needed = []                    # [(用途, asset)]
-    if res_a:
-        needed.append(("res", res_a))
-    if exe_a:
-        needed.append(("exe", exe_a))
+    # ---------- 下载并本地识别 ----------
+    fetched = {}                    # url -> 本地路径
 
-    for role, asset in needed:
-        url = asset.get("url") or ""
+    def fetch(asset, role):
+        """下载一个 asset，返回本地路径。失败返回 None。"""
+        url = (asset or {}).get("url") or ""
         if not url:
-            return False, "更新包缺少下载地址", False
-        if url in zips:
-            continue
-        dst = os.path.join(tmp, "pkg_%d.zip" % len(zips))
+            return None
+        if url in fetched:
+            return fetched[url]
+        suffix = ".exe" if (role == "exe" and _is_raw_exe(asset)) else ".zip"
+        dst = os.path.join(tmp, "pkg_%d%s" % (len(fetched), suffix))
         ok, msg = download(url, dst, progress, _digest_of(asset))
         if not ok:
-            return False, f"{'资源包' if role == 'res' else '程序包'}下载失败：{msg}", False
-        zips[url] = dst
+            log.warning("下载 %s 失败：%s", asset.get("name"), msg)
+            fetched[url] = None
+            return None
+        fetched[url] = dst
+        return dst
 
-    # ---------- 资源（用户显式勾选时才做） ----------
-    if res_a:
-        zpath = zips[res_a.get("url") or ""]
-        ok, msg, _stats = extract_resource_zip(zpath, progress=progress)
-        if not ok:
-            return False, msg, False
-        parts.append(msg)
-
-    # ---------- exe ----------
+    # ---------- 程序包 ----------
     needs_restart = False
     if exe_a:
-        zpath = zips[exe_a.get("url") or ""]
-        ok, msg, new_exe = extract_exe(zpath, progress)
-        if not ok:
-            return False, msg, False
-        ok, msg = apply_exe_update(new_exe)
-        if not ok:
-            return False, msg, False
-        parts.append(msg)
-        needs_restart = True
+        path = fetch(exe_a, "exe")
+        if not path:
+            return False, f"程序包下载失败：{(exe_a.get('name') or '')}", False
+
+        if _is_raw_exe(exe_a):
+            ok, msg, new_exe = _stage_raw_exe(path, progress)
+        else:
+            # ★ 下载后本地看：这个包到底是程序包还是资源包？
+            has_exe, has_res = inspect_zip_local(path)
+            if has_exe:
+                ok, msg, new_exe = extract_exe(path, progress)
+            elif has_res:
+                # ★ 包名骗人了：这个其实是资源包。
+                #   那它就当资源包用，程序包另找。
+                log.info("包 %s 里没有 exe，按资源包处理", exe_a.get("name"))
+                if do_resource and not res_a:
+                    res_a = exe_a
+                ok, msg, new_exe = False, "包里没有 exe", None
+            else:
+                ok, msg, new_exe = False, "包里既没有 exe 也没有资源", None
+
+        if ok and new_exe:
+            ok2, msg2 = apply_exe_update(new_exe)
+            if not ok2:
+                return False, msg2, False
+            parts.append(msg2)
+            needs_restart = True
+        elif not ok:
+            # ★ 退一步：从其它 asset 里再找一个真正带 exe 的包。
+            alt = _find_exe_asset(info.get("assets") or [], fetched.keys())
+            if not alt:
+                return False, msg, False
+            path = fetch(alt, "exe")
+            if not path:
+                return False, "程序包下载失败", False
+            if _is_raw_exe(alt):
+                ok, msg, new_exe = _stage_raw_exe(path, progress)
+            else:
+                ok, msg, new_exe = extract_exe(path, progress)
+            if not ok:
+                return False, msg, False
+            ok2, msg2 = apply_exe_update(new_exe)
+            if not ok2:
+                return False, msg2, False
+            parts.append(msg2)
+            needs_restart = True
+
+    # ---------- 资源（用户显式勾选时才做） ----------
+    if do_resource and res_a:
+        zpath = fetch(res_a, "res")
+        if zpath:
+            ok, msg, _stats = extract_resource_zip(zpath, progress=progress)
+            if ok:
+                parts.append(msg)
+        else:
+            return False, f"资源包下载失败：{(res_a.get('name') or '')}", False
 
     # ---------- 收掉下载的临时包 ----------
-    for p in zips.values():
+    for p in fetched.values():
+        if not p:
+            continue
         try:
             os.remove(p)
         except OSError:
