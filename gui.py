@@ -3968,6 +3968,12 @@ class App:
                      background=ACCENT, borderwidth=0, thickness=8)
         st.configure("TCheckbutton", background=CARD, foreground=TEXT)
         st.map("TCheckbutton", background=[("active", CARD)])
+        # ★ 主行动按钮（更新对话框的「立即更新」）
+        st.configure("Accent.TButton", background=ACCENT,
+                     foreground="#FFFFFF", borderwidth=0, padding=(14, 7), font=FONT_B)
+        st.map("Accent.TButton",
+               background=[("active", ACCENT_DEEP), ("pressed", ACCENT_DEEP)],
+               foreground=[("disabled", "#C9D6E4")])
 
     # ---------------- 根布局 ----------------
     def _build_root(self):
@@ -4886,6 +4892,9 @@ class App:
                 elif kind == "update":
                     has, info, silent = payload
                     self._on_update_result(has, info, silent)
+                elif kind == "update_done":
+                    ok, msg, needs_restart = payload
+                    self._on_update_done(ok, msg, needs_restart)
                 elif kind == "err":
                     self.set_busy(False, "出错")
                     self._append_log("\n[异常] " + payload + "\n")
@@ -9894,11 +9903,108 @@ class App:
         tag = info.get("tag", "")
         url = info.get("url", "")
         notes = (info.get("notes") or "").strip()
-        msg = (f"发现新版本：{tag}\n当前版本：v{config.VERSION}\n\n"
+        try:
+            import updater
+            skip_tag = updater.skipped_version()
+        except Exception:
+            skip_tag = ""
+        if skip_tag == tag:
+            skip_hint = "\n（已跳过：" + skip_tag + "）"
+        else:
+            skip_hint = ""
+        msg = (f"发现新版本：{tag}{skip_hint}\n当前版本：v{config.VERSION}\n\n"
                f"{notes[:300] if notes else ''}\n\n"
                f"下载地址：\n{url}")
-        if messagebox.askyesno("发现新版本", msg + "\n\n是否打开下载页面？"):
-            webbrowser.open(url)
+        
+        # 只有非静默且有 exe 包时才提供下载更新选项
+        exe_asset = info.get("exe_asset")
+        res_asset = info.get("res_asset")
+        
+        if not silent and exe_asset:
+            # 自定义对话框：立即更新 / 跳过此版本 / 稍后
+            dlg = tk.Toplevel(self.root)
+            dlg.title("发现新版本")
+            dlg.transient(self.root)
+            dlg.grab_set()
+            dlg.resizable(False, False)
+            
+            frm = ttk.Frame(dlg, padding=20)
+            frm.pack(fill="both", expand=True)
+            
+            ttk.Label(frm, text=msg, wraplength=500, justify="left").pack(anchor="w", pady=(0, 15))
+            
+            # ★ 默认只换 exe；资源包由用户主动勾选才更新
+            res_var = tk.BooleanVar(value=False)
+            res_chk = ttk.Checkbutton(
+                frm, text="同时更新资源（提示词 / 脚本 / 术语规则等）",
+                variable=res_var)
+            res_chk.pack(anchor="w", pady=(0, 10))
+            
+            btn_frm = ttk.Frame(frm)
+            btn_frm.pack(fill="x")
+            
+            def on_now():
+                do_res = bool(res_var.get()) and bool(res_asset)
+                dlg.destroy()
+                self._run_update(info, do_resource=do_res)
+            
+            def on_skip():
+                import updater
+                updater.skip_version(tag)
+                dlg.destroy()
+                messagebox.showinfo("已跳过", f"已跳过版本 {tag}，下次检查时不再提示。")
+            
+            def on_later():
+                dlg.destroy()
+            
+            ttk.Button(btn_frm, text="立即更新", command=on_now, style="Accent.TButton").pack(side="left", padx=(0, 8))
+            ttk.Button(btn_frm, text="跳过此版本", command=on_skip).pack(side="left", padx=8)
+            ttk.Button(btn_frm, text="稍后", command=on_later).pack(side="left", padx=8)
+            
+            dlg.update_idletasks()
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - dlg.winfo_width()) // 2
+            y = self.root.winfo_rooty() + (self.root.winfo_height() - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{x}+{y}")
+            self.root.wait_window(dlg)
+        elif not silent:
+            # 没有 exe 包（或静默），只提示打开页面
+            if messagebox.askyesno("发现新版本", msg + "\n\n是否打开下载页面？"):
+                webbrowser.open(url)
+
+    def _run_update(self, info, do_resource=False):
+        """在后台下载并应用更新，带进度条。"""
+        def work():
+            try:
+                import updater
+                ok, msg, needs_restart = updater.run_update(
+                    info, progress=self._update_progress_cb,
+                    do_exe=True, do_resource=do_resource)
+                self.q.put(("update_done", (ok, msg, needs_restart)))
+            except Exception:
+                import traceback
+                self.q.put(("update_done", (False, traceback.format_exc(), False)))
+        
+        self.set_busy(True, "下载更新中…")
+        self.prog_var.set(0)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_progress_cb(self, done, total, text):
+        """供 updater.run_update 调用的进度回调。"""
+        self.q.put(("prog", (done, total, text)))
+
+    def _on_update_done(self, ok, msg, needs_restart):
+        self.set_busy(False, "更新完成" if ok else "更新失败")
+        if ok:
+            if needs_restart:
+                if messagebox.askyesno("更新完成", f"{msg}\n\n需要重启程序才能生效，是否现在重启？"):
+                    import updater
+                    if updater.restart(sys.argv[1:]):
+                        self.root.quit()
+                        return
+            else:
+                messagebox.showinfo("更新完成", msg)
+        else:
+            messagebox.showerror("更新失败", msg)
 
     def _save_settings(self):
         ok, fail = 0, []
@@ -15188,6 +15294,13 @@ def main():
 
     LANG_VALUES = _lang_values()
     EXCEL_LANGS = _excel_lang_values()
+
+    # 清理上次更新留下的临时文件
+    try:
+        import updater
+        updater.cleanup_old()
+    except Exception:
+        pass
 
     enable_dpi_awareness()         # ★ 必须早于 tk.Tk()，否则 1500x1000 会被缩放
     root = tk.Tk()
