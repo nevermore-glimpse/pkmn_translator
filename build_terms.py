@@ -17,10 +17,27 @@ import json
 import os
 import sys
 
-try:
-    import openpyxl
-except ImportError:
-    openpyxl = None
+
+def _openpyxl():
+    """
+    按需导入 openpyxl。
+
+    ★ 原来是在模块顶层 import：openpyxl 会连带拖进 numpy，一共约 680 ms。
+      而启动时只需要 LANG_ALIASES（纯字符串表），根本不用读写 Excel，
+      所以改成第一次真要处理 xlsx 时再导入。
+      返回值可能是 None（没装），调用方按原来的方式判空即可。
+    """
+    global openpyxl
+    if openpyxl is False:          # 尚未尝试过
+        try:
+            import openpyxl as _ox
+            openpyxl = _ox
+        except ImportError:
+            openpyxl = None
+    return openpyxl
+
+
+openpyxl = False                   # False = 还没试过；None = 试过但没装
 
 
 # ============================================================
@@ -167,6 +184,13 @@ def write_term_dict(pairs, out_path, source_lang, target_lang, note=None):
             f.write(f"    {json.dumps(s, ensure_ascii=False)}: "
                     f"{json.dumps(t, ensure_ascii=False)},\n")
         f.write("}\n")
+    # ★ 术语表刚被整份重写，让 term_sync 的读取缓存失效，
+    #   否则下一页仍会显示转换前的旧条目。
+    try:
+        import term_sync as _TS
+        _TS.clear_terms_cache()
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -260,9 +284,10 @@ def _norm_value(s):
 # ============================================================
 def list_sheets(excel_path):
     """返回 [(sheet_name, rows, cols), ...]"""
-    if openpyxl is None:
+    ox = _openpyxl()
+    if ox is None:
         raise RuntimeError("缺少 openpyxl，请执行：pip install openpyxl")
-    wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
+    wb = ox.load_workbook(excel_path, read_only=True, data_only=True)
     out = [(name, wb[name].max_row, wb[name].max_column)
            for name in wb.sheetnames]
     wb.close()
@@ -291,13 +316,14 @@ def build_terms(excel_path,
             "existing": 0, "added": 0, "skipped_existing": 0,
             "conflicts": [], "sheet_stats": [], "errors": []}
 
-    if openpyxl is None:
+    ox = _openpyxl()
+    if ox is None:
         return {**base, "errors": ["缺少 openpyxl"]}
 
     if not os.path.exists(excel_path):
         return {**base, "errors": [f"文件不存在：{excel_path}"]}
 
-    wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
+    wb = ox.load_workbook(excel_path, read_only=True, data_only=True)
     targets = sheets or wb.sheetnames
 
     all_pairs = []

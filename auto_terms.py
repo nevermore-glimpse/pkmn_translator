@@ -234,6 +234,12 @@ def _atomic_write(path, text):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     atomic_replace(tmp, path)
+    # ★ 术语表变了，让 term_sync 的读取缓存失效，避免下一页仍显示旧条目
+    try:
+        import term_sync as _TS
+        _TS.clear_terms_cache()
+    except Exception:
+        pass
 
 
 # ================================================================

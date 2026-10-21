@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.parse
 
 import config
@@ -807,7 +808,7 @@ def _find_lms_exe():
     `~/.lmstudio/bin/lms.exe` 是首次启动 GUI 后生成的转发器，可能不存在，
     所以两边都要找；最后再在常见安装目录下浅层递归兜底。
     """
-    exe = shutil.which("lms")
+    exe = which_cached("lms")
     if exe:
         return exe
 
@@ -1013,6 +1014,30 @@ def _fmt_bytes(n):
     return ""
 
 
+_WHICH_CACHE = {}      # cmd -> (查到的路径 或 None, 查询时刻)
+_WHICH_TTL = 60.0      # 秒：装了新程序最多一分钟就能认出来
+
+
+def which_cached(cmd):
+    """
+    带缓存的 shutil.which。
+
+    ★ Windows 下 which 要按 PATHEXT 的十几种扩展名 × 每个 PATH 目录逐一 stat，
+      实测一次 34 ms。provider 页每次刷新都会问「llama-server 在哪」，
+      不缓存的话光这一项就占掉整页 80% 的时间。
+    """
+    now = time.time()
+    hit = _WHICH_CACHE.get(cmd)
+    if hit is not None and now - hit[1] < _WHICH_TTL:
+        path = hit[0]
+        # 缓存命中也要确认文件还在（用户可能刚把目录删了）
+        if not path or os.path.exists(path):
+            return path
+    path = shutil.which(cmd)
+    _WHICH_CACHE[cmd] = (path, now)
+    return path
+
+
 def find_llama_server(folder=None):
     """定位 llama-server.exe。folder 为空时用 config.LLAMACPP_DIR。"""
     folder = folder if folder is not None else \
@@ -1021,7 +1046,7 @@ def find_llama_server(folder=None):
     if folder:
         cands.append(os.path.join(folder, "llama-server.exe"))
         cands.append(os.path.join(folder, "llama-server"))
-    exe = shutil.which("llama-server")
+    exe = which_cached("llama-server")
     if exe:
         cands.append(exe)
     for c in cands:

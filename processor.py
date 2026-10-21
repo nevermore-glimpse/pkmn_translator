@@ -846,6 +846,39 @@ def is_pure_control(text, min_text_len=None):
     effective = _PURE_TEXT_RE.sub('', t)
     return len(effective) < min_text_len
 
+# 单字母判定用：剥掉数字 / 标点 / 空白后剩下的部分
+_LETTER_STRIP_RE = re.compile(r'[\s\W\d_]+', re.UNICODE)
+_ANY_LETTER_RE = re.compile(r'[^\W\d_]', re.UNICODE)
+
+def is_single_letter(text, src_lang=None):
+    r"""
+    整句是否只有**一个字母**（单个英文字母 / 单个西班牙文字母）。
+
+    例：`A`、`ñ`、`Á`、`"A"`、`- A -`、`\c[1]Y` 都算；
+        `ab`、`A A`、`123`、`!!!` 不算。
+
+    ★ 先剥控制码 / 标签 / 占位符 / 数字 / 标点 / 空白，剥完只剩恰好
+      一个字母才算——所以带修饰符号的单字母也会被跳过。
+    ★ 这类句子翻了没有意义（游戏里多是按键提示 / 图标代号），
+      翻译时直接原文写缓存、不送模型，检查报告也不报它。
+    """
+    if not text:
+        return False
+    t = text
+    t = ANGLE_CMD_RE.sub('', t)
+    t = HTML_TAG_RE.sub('', t)
+    t = re.sub(_HTML_ENTITY_PAT, '', t)
+    t = CTRL_RE.sub('', t)
+    t = _NL_RE.sub('', t)
+    t = TAG_RE.sub('', t)
+    t = BRACE_RE.sub('', t)
+    t = re.sub(r'[@\u27e6]\d+[@\u27e7]', '', t)   # 占位符 token
+    t = _LETTER_STRIP_RE.sub('', t)
+    if len(t) != 1:
+        return False
+    return bool(_ANY_LETTER_RE.match(t))
+
+
 
 # ================================================================
 # 占位符还原 / 校验

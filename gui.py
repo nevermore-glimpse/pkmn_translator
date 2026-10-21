@@ -3866,6 +3866,12 @@ class App:
         self.models = []
         self.status_var = tk.StringVar(value="就绪")
         self.prog_var = tk.DoubleVar(value=0)
+        self._log_chars = 0        # 运行日志页当前字符数（裁剪判断用，不每次全量取）
+        self._log_buf = []         # 待写入 Text 的日志缓冲（合并写入，避免逐条卡界面）
+        self._log_flush_id = None  # after() 句柄；有值表示已排队，不重复排
+        self._is_warm = {}         # 已做过几何计算的页面（见 _start_page_warmup）
+        self._warm_queue = []      # 待预热队列
+        self._warm_ready = False   # 预热是否已启动
 
         self.term_edits = {}       # 原文 → 新译文
         self.term_deletes = set()  # 待删除原文集合（应用前可撤回）
@@ -3916,6 +3922,10 @@ class App:
         self.root.after(1500, lambda: self._check_update(silent=True))
 
         self.show("home")      # ★ 启动首页 = 主页（点头像随时回来）
+
+        # ★ 首页显示出来之后（窗口已可见），再逐页空闲预热，
+        #   把「首次进页要现算布局」的那一下挪到用户还不会察觉的时刻。
+        self.root.after(900, self._start_page_warmup)
 
     # ---------------- 样式 ----------------
     def _style(self):
@@ -4052,6 +4062,11 @@ class App:
         for key in list(MENU_KEYS.values()) + list(SUBMENU_KEYS):
             page = tk.Frame(holder, bg=BG_BASE)
             page.grid(row=1, column=0, sticky="nsew")
+            # ★ 建完立刻从布局里摘下：Tk 会把所有 grid 过的控件都算进几何计算，
+            #   24 个页面（1821 个控件）同时参与，首帧要多花约 2 秒。
+            #   tkraise() 只改叠放顺序、不摘布局，所以必须显式 grid_remove()；
+            #   切页时由 show() 把目标页 grid() 回来。
+            page.grid_remove()
             bgc = tk.Canvas(page, highlightthickness=0, bg=BG_BASE)
             bgc.place(x=0, y=0, relwidth=1, relheight=1)
             bgc.bind("<Configure>",
@@ -4090,6 +4105,61 @@ class App:
         self._page_pbs_editor()
         self._page_log()
 
+    # ---------------- 空闲预热 ----------------
+    def _start_page_warmup(self):
+        """
+        窗口可见之后，用空闲时间把还没进过布局的页面「量」一遍。
+
+        ★ 页面建完就 grid_remove 了，首帧只算当前这一页，所以启动快。
+          代价是每一页第一次 grid() 时 Tk 才做它的几何计算（save_box 首开
+          327 ms）。这里在窗口已经显示、主线程空闲时提前算掉，用户真去点
+          的时候就是 13 ms 了。逐页 after() 排队，不阻塞任何操作；
+          用户提前点到某页时 _is_warm 已经是 True，warmup 会跳过它。
+          算过的页用 lower() 压到当前页底下继续留在布局里，这样用户切过去
+          只是一次 tkraise，不用再付一遍布局成本。
+        """
+        self._warm_queue = [k for k in self.pages if k != self.current]
+        self._is_warm = {self.current: True} if self.current else {}
+        self._warm_ready = True
+        self._warm_next()
+
+    def _warm_next(self):
+        if not getattr(self, "_warm_queue", None):
+            return
+        # 用户正在切页/有任务在跑时先让路，避免抢主线程
+        try:
+            if getattr(self, "busy", False):
+                self.root.after(400, self._warm_next)
+                return
+        except Exception:
+            pass
+        key = self._warm_queue.pop(0)
+        # ★ 关键保护：如果用户正好在这一刻切到了这一页，绝不能把它压低，
+        #   否则会把用户眼前的页面藏起来。
+        if key == self.current:
+            self._is_warm[key] = True
+        elif not self._is_warm.get(key):
+            page = self.pages.get(key)
+            if page is not None:
+                try:
+                    page.grid()
+                    # ★ grid() 会把控件排到叠放顺序的最上层，直接 update_idletasks
+                    #   会让这一页在最慢的 save_box（327 ms）期间盖住用户眼前的页面。
+                    #   lower() 把它压到当前页下方：几何照样计算，但看不见。
+                    page.lower()
+                    self.root.update_idletasks()
+                    # ★ 算完就留在布局里（不再 grid_remove）：摘出去的话用户真来点
+                    #   这一页时 Tk 还要再算一遍布局，实测多花 2~23 ms，等于把启动
+                    #   省下的时间还回去一部分。压在最底下既看不见也不占视觉，切页
+                    #   就退化成纯 tkraise，和优化前一样快。
+                    self._is_warm[key] = True
+                except Exception:
+                    pass
+        if self._warm_queue:
+            # 间隔留一点缝隙给用户操作；太短会和用户点击抢主线程，
+            # 太长则预热迟迟做不完（实测 24 页 × 平均 90ms 预算，60ms 间隔约 3.6 秒走完）
+            self.root.after(60, self._warm_next)
+
     # ---------------- 状态条 ----------------
     def _build_status(self):
         holder = tk.Frame(self.root, bg=BG_BASE, height=64)
@@ -4126,7 +4196,18 @@ class App:
         if self.current == key:
             return
         self.current = key
-        self.pages[key].tkraise()
+        # ★ 页面在 _build_content 里建完就 grid_remove 了（不参与首帧布局），
+        #   这里要先把目标页放回布局，再 tkraise 到最上层。
+        #   无参 grid() 会沿用该控件原来的 row/column，重复调用是幂等的。
+        page = self.pages[key]
+        page.grid()
+        page.tkraise()
+        # 已经预热过（或用户直接点到的）页记一下，_warm_next 会跳过
+        try:
+            if getattr(self, "_warm_ready", False):
+                self._is_warm[key] = True
+        except Exception:
+            pass
         # ★ 子页面（被「游戏汉化」/「存档编辑」统合进来的那些）在左侧没有自己的
         #   按钮，高亮统一落在上级菜单上，并显示顶部返回条。
         active = SUBMENU_PARENT.get(key, key)
@@ -4150,6 +4231,8 @@ class App:
                 self.pbs_panel._sync()
         elif key == "pbs_editor":
             self._pbs_reload_file_list()
+        elif key == "excel":
+            self._excel_lazy_load()
         elif key == "log":
             pass
 
@@ -4826,18 +4909,50 @@ class App:
 
     def _append_log(self, text):
         try:
-            self.log_text.configure(state="normal")
-            self.log_text.insert("end", text if text.endswith("\n") else text + "\n")
-            if len(self.log_text.get("1.0", "end-1c")) > 200000:
-                self.log_text.delete("1.0", "50000.0")
-            self.log_text.see("end")
-            self.log_text.configure(state="disabled")
+            text = text if text.endswith("\n") else text + "\n"
+            # ★ 合并写入：原来每条日志都 configure+insert+see+configure 四次
+            #   Tk 往返，实测 1.6 ms/条，翻译时日志一行一行刷会把主线程占满。
+            #   现在先攒进缓冲区，由 _flush_log 按 ~60ms 节奏一次性写进去，
+            #   一批日志只花一次往返的时间。
+            self._log_buf.append(text)
+            self._log_chars += len(text)
+            if not self._log_flush_id:
+                self._log_flush_id = self.root.after(60, self._flush_log)
         except Exception:
             pass
 
         line = (text or "").strip().splitlines()
         if line:
             self.status_var.set(line[-1][:110])
+
+    def _flush_log(self):
+        """把攒下的日志一次性写进 Text，超过 20 万字符时裁掉最旧的 5 万字符。"""
+        self._log_flush_id = None
+        buf = getattr(self, "_log_buf", None)
+        if not buf:
+            return
+        chunk = "".join(buf)
+        # 单批过长时自己再切一刀，避免一次插入几十万字符
+        if len(chunk) > 120000:
+            chunk = chunk[-120000:]
+        try:
+            self.log_text.configure(state="normal")
+            self.log_text.insert("end", chunk)
+            if self._log_chars > 200000:
+                self.log_text.delete("1.0", "50000.0")
+                self._log_chars = len(self.log_text.get("1.0", "end-1c"))
+            self.log_text.see("end")
+            self.log_text.configure(state="disabled")
+        except Exception:
+            # ★ 写失败就原样留在缓冲里（最多留一批），下次 flush 再试；
+            #   先 clear 再 insert 会在 Text 还没建好时把日志永久丢掉。
+            if len(chunk) <= 120000:
+                self._log_buf = [chunk]
+            return
+        # ★ 成功写进 Text 之后才清缓冲
+        buf.clear()
+        if len(chunk) > 120000:
+            self._log_chars = len(self.log_text.get("1.0", "end-1c"))
 
     # ================================================================
     # 复制到剪贴板
@@ -4919,6 +5034,14 @@ class App:
 
     def _copy_log(self):
         """日志页「复制全部」按钮。"""
+        # ★ 先把还攒在缓冲区里的日志落进 Text，否则刚刷出来的那几行复制不到
+        try:
+            if self._log_flush_id:
+                self.root.after_cancel(self._log_flush_id)
+                self._log_flush_id = None
+            self._flush_log()
+        except Exception:
+            pass
         self.copy_to_clipboard(self._text_all(self.log_text), "日志")
 
     def _on_progress(self, done, total, text):
@@ -8843,7 +8966,10 @@ class App:
             c3.body, text="", bg=CARD, fg=C_HINT, font=FONT_SMALL,
             anchor="w", justify="left")
         self.excel_hint.pack(fill="x", pady=(8, 0))
-        self._refresh_excel_hint()
+        # ★ 不在这里真去数术语条数：read_existing_terms 要 ast 解析 384 KB 的
+        #   term_dict.py，实测 58 ms，而启动时用户根本还没进这个页面。
+        #   先占位，等 show("excel") 时再算（见 show() 里的 excel 分支）。
+        self.excel_hint.configure(text="术语字典状态：进入本页后统计", fg=C_HINT)
 
         right = tk.Frame(self.excel_view, bg=BG_BASE, width=330)
         right.grid(row=0, column=1, sticky="nsew")
@@ -8860,8 +8986,19 @@ class App:
 
         self._build_termdict_view(page)
 
-        if self.excel_path.get():
-            self._load_sheets(self.excel_path.get())
+        # ★ 不在这里读 Excel：list_sheets 要 import openpyxl（连带 numpy，约
+        #   1 秒）。等第一次进本页时再读，见 show("excel") 里的 _excel_lazy_load。
+        self._excel_ready = False
+
+    def _excel_lazy_load(self):
+        """进 Excel 页时补做两件启动时不值得做的事：数术语条数 + 读工作表。"""
+        self._refresh_excel_hint()
+        if getattr(self, "_excel_ready", False):
+            return
+        self._excel_ready = True
+        path = self.excel_path.get()
+        if path and os.path.exists(path):
+            self._load_sheets(path)
 
     def _pick_excel(self):
         path = filedialog.askopenfilename(
@@ -8918,8 +9055,9 @@ class App:
             return
         n = 0
         try:
-            import build_terms as BT
-            n = len(BT.read_existing_terms(config.TERM_FILE))
+            # ★ 走 term_sync 的带缓存读取：同样能拿到条数，但不会每次刷新
+            #   都把 384 KB 的 term_dict.py 重新 ast 解析一遍（58 ms）。
+            n = len(TS.load_current_terms())
         except Exception:
             n = 0
         if self.excel_append.get():
@@ -13003,6 +13141,8 @@ class App:
 
     def _clear_log(self):
         try:
+            self._log_buf = []
+            self._log_chars = 0       # 计数器跟文本一起清零
             self.log_text.configure(state="normal")
             self.log_text.delete("1.0", "end")
             self.log_text.configure(state="disabled")

@@ -30,14 +30,75 @@ SNAPSHOT_FILE = os.path.join(config.BASE_DIR, "term_dict.snapshot.json")
 # ================================================================
 # 术语加载
 # ================================================================
-def load_current_terms():
-    """读取 term_dict.py，返回 {源语言: 译文}。"""
-    if not os.path.exists(config.TERM_FILE):
+_TERMS_CACHE = {"key": None, "data": None}
+
+
+def load_current_terms(use_cache=True):
+    """
+    读取 term_dict.py，返回 {源语言: 译文}。
+
+    ★ 带缓存：term_dict.py 有十几 MB 级别的 exec 成本（10800 条约 50 ms），
+      而切到术语页时上层要连读两三次。这里按 (路径, mtime, 大小) 记住上一次
+      的结果，文件一变就自动失效，所以不会读到旧数据。
+      use_cache=False 强制重读（写回之后想立刻看到新值时用）。
+    """
+    path = config.TERM_FILE
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        _TERMS_CACHE["key"] = None
+        _TERMS_CACHE["data"] = None
         return {}
+
+    if use_cache and _TERMS_CACHE["key"] == key \
+            and _TERMS_CACHE["data"] is not None:
+        return dict(_TERMS_CACHE["data"])
+
     ns = {}
-    with open(config.TERM_FILE, "r", encoding="utf-8") as f:
-        exec(f.read(), ns)
-    return ns.get("TERM_DICT", {})
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        log.warning("读取 term_dict.py 失败：%s", e)
+        return {}
+
+    try:
+        exec(src, ns)
+    except Exception as e:
+        # ★ 语法/运行出错时退回 ast 解析：至少能拿到字典，不至于整页空白
+        log.warning("执行 term_dict.py 出错，改用 AST 解析：%s", e)
+        ns = {}
+        try:
+            import ast
+            tree = ast.parse(src)
+            for node in tree.body:
+                if not isinstance(node, ast.Assign):
+                    continue
+                if not any(isinstance(t, ast.Name) and t.id == "TERM_DICT"
+                           for t in node.targets):
+                    continue
+                val = ast.literal_eval(node.value)
+                if isinstance(val, dict):
+                    ns["TERM_DICT"] = val
+                break
+        except Exception as e2:
+            log.warning("AST 解析 term_dict.py 也失败：%s", e2)
+            return {}
+
+    data = ns.get("TERM_DICT", {})
+    if not isinstance(data, dict):
+        data = {}
+    _TERMS_CACHE["key"] = key
+    _TERMS_CACHE["data"] = data
+    # ★ 返回副本：调用方可能就地改它（改完不写盘），共享同一份会污染缓存
+    return dict(data)
+
+
+def clear_terms_cache():
+    """丢掉术语缓存（写回 term_dict.py 之后调用，保证下一次读到新值）。"""
+    _TERMS_CACHE["key"] = None
+    _TERMS_CACHE["data"] = None
 
 
 def _normalize_key(k):
@@ -100,7 +161,7 @@ def save_snapshot(terms):
 # ================================================================
 # 对比
 # ================================================================
-def diff_terms():
+def diff_terms(current=None):
     """
     对比当前 term_dict.py 与上次快照。
 
@@ -111,8 +172,12 @@ def diff_terms():
       · old_was_keyonly     : 上次快照是旧格式（只有 key），此时 modified 恒为空
 
     首次使用（无快照）→ 返回 (None, None, None, False)
+
+    current: 调用方已经加载好的当前术语表。传进来就不再重读文件
+             （上层 analyze_terms 通常刚读过一遍）。
     """
-    current = load_current_terms()
+    if current is None:
+        current = load_current_terms()
     old = load_snapshot()
 
     if old is None:
@@ -284,6 +349,7 @@ def save_term_values(updates):
         return 0
 
     _atomic_write(config.TERM_FILE, "\n".join(out) + "\n")
+    clear_terms_cache()
     log.info("术语表写回 %d 条修改", changed)
     return changed
 
@@ -489,3 +555,6 @@ def _atomic_write(path, text):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     atomic_replace(tmp, path)
+    # ★ 术语表一变就让缓存失效（mtime/大小通常也会变，但同一秒内连写两次
+    #   在部分文件系统上 mtime 精度不够，显式清掉更稳）
+    clear_terms_cache()

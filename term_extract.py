@@ -773,6 +773,11 @@ def run_extract(target, batch_size=None, progress=None, cancel=None,
                     path, lines, newline, show_header=(total == 1),
                     batch_term_hook=make_batch_term_hook(
                         set(names_of.get(path) or [])))
+                # ★ 本文件翻完立刻刷新「术语检查报告」并重翻本文件的问题句
+                #   （term_mode=True → term_fix.check_terms 那条路径）。
+                #   只针对当前文件，不影响已经翻好的其它文件；内部包了
+                #   try/except，报告失败不会打断整个提取流程。
+                C._auto_check_file(path, term_mode=True)
             except Exception as e:
                 log.error("翻译失败（继续下一个文件）：%s：%s", path, e)
                 continue

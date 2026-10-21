@@ -24,7 +24,8 @@ from processor import (
     CTRL_RE, TAG_RE, BRACE_RE,
     ANGLE_CMD_RE, HTML_TAG_RE,
     _HTML_ENTITY_PAT, script_of, detect_unknown_ctrl,
-    _NL_RE, is_path_like, is_hash_placeholder_only,
+    _NL_RE, is_path_like, is_hash_placeholder_only, is_single_letter,
+    has_translatable_text,
 )
 
 log = get_logger("checker")
@@ -442,6 +443,19 @@ def check(out_lines, entries, special, report_path, extra_hits=None):
         # ★ 整句只有 #{...} 占位符（如 #{count}）：原文即译文属正常行为，
         #   不进报告（翻译时也是原样写缓存、不送模型）
         if is_hash_placeholder_only(src_strip):
+            continue
+
+        # ★ 整句只有一个字母（如 A / ñ）：原文即译文是正常行为，
+        #   不进报告（翻译时也是原样写缓存、不送模型）
+        if is_single_letter(src_strip):
+            continue
+
+        # ★ 预过滤跳过的行（无可译文本）：原文即译文，
+        #   不进报告——否则像纯数字 / 纯符号这种本来就不该翻的行
+        #   会被判成「疑似未翻译」，再被自动重翻两次。
+        #   判定与翻译时的 PREFILTER_ENABLE 同源：has_translatable_text
+        if getattr(config, "PREFILTER_ENABLE", True) \
+                and not has_translatable_text(src_strip):
             continue
 
         # ★① 疑似未翻译：剥离控制码后仍含英文；书写系统不同时再看

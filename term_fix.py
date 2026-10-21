@@ -168,6 +168,10 @@ def check_terms(target):
         by_lower = {}
         for src, dst in s["items"].items():
             dst = (dst or "").strip()
+            # ★ 整句只有一个字母（如 A / ñ）：翻译时已经原文即译文写缓存，
+            #   属于正常行为，不该报「未翻（回显原文）」再重翻。
+            if _is_single_letter(src):
+                continue
             if not dst:
                 hits.append({"kind": "译名为空", "section": label,
                              "src": src, "dst": "", "path": path,
@@ -198,6 +202,14 @@ def check_terms(target):
                 by_lower[key] = dst
     return hits
 
+
+def _is_single_letter(text):
+    """整句只有一个字母时返回 True（判定规则见 processor.is_single_letter）。"""
+    try:
+        import processor as PR
+        return bool(PR.is_single_letter(text))
+    except Exception:
+        return False
 
 def _english_residue(text):
     """

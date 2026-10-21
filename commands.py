@@ -1256,7 +1256,7 @@ def _translate_batch(client, batch_texts, cache,
                      unknown_ctrl_hits, failed, extra_hits,
                      mode_of_entry=None, bi=1, conflict_records=None,
                      term_stats=None, section=None,
-                     batch_term_hook=None):
+                     batch_term_hook=None, miss_log=None):
     """
     翻译一批文本，写入缓存。返回成功条数。
 
@@ -1271,6 +1271,10 @@ def _translate_batch(client, batch_texts, cache,
               调用，pairs = [(原文, 该批最终译文), ...]。只有术语提取页
               流程会传它（见 term_extract.make_batch_term_hook）；hook 抛
               异常只记警告，绝不影响翻译结果。
+    miss_log: 可选 list。传了就**不逐条打日志**，而是把「缺失 / 回显」的
+              原文 append 进去，由调用方 _translate_core 汇总成一条日志
+              （几千条缺失时逐条打印会把运行日志刷爆）。
+              不传（None）时保持旧行为：每批一条 warning。
     """
     if not batch_texts:
         return 0
@@ -1372,8 +1376,13 @@ def _translate_batch(client, batch_texts, cache,
             # 模型原样回显，多半没翻
             missing.append((k, safe))
     if missing:
-        log.warning("[批 %d] 缺失/回显 %d 条，保留原文（不重试）",
-                    bi, len(missing))
+        if miss_log is not None:
+            # ★ 记**原文**（batch_texts[k]），不是送模型的 safe：
+            #   后面要按原文去缓存里重翻，safe 已经剥掉了前缀/换行。
+            miss_log.extend(batch_texts[k] for k, _s in missing)
+        else:
+            log.warning("[批 %d] 缺失/回显 %d 条，保留原文（不重试）",
+                        bi, len(missing))
     for k, safe in missing:
         result.pop(k, None)
 
@@ -1382,7 +1391,9 @@ def _translate_batch(client, batch_texts, cache,
     for k, src in enumerate(batch_texts):
         raw = result.get(k)
         if not raw:
-            log.warning("[批 %d][%d] 无返回：保留原文", bi, k)
+            # ★ 传了 miss_log 就只汇总、不逐条打；否则按老行为逐条 warning。
+            if miss_log is None:
+                log.warning("[批 %d][%d] 无返回：保留原文", bi, k)
             failed.append({'src': src, 'reason': '模型无返回'})
             cache.put(src, src)
             continue
@@ -1501,12 +1512,18 @@ def _file_section(src_path):
 
 
 def _translate_core(src_path, lines=None, newline=None, show_header=True,
-                    batch_term_hook=None):
+                    batch_term_hook=None, recover=True):
     """对单个文件执行完整翻译流程（Runtime 已设置好 input/output/cache）。
 
     batch_term_hook: 可选 callable(pairs) -> int，逐批术语回调；
         默认 None（translate_paths / 术语重翻 / 润色等一律不传，行为不变）。
         只有术语提取页流程会传它，见 term_extract.run_extract。
+    recover: 内部用。缺失/回显超过阈值时的整批重翻会再调本函数，那一层
+        必须传 False，否则「缺失 > 阈值 → 重翻 → 又缺失 > 阈值」会无限递归。
+
+    ★ 「每个文件翻完立刻刷新报告 + 重翻」不在这里做，而在调用方
+      （translate_paths / term_extract.run_extract）调 _auto_check_file：
+      本函数会被重翻流程递归调用，放在这里会自我触发。
     """
     # ★ 文本保护规则：按需装载（模式或规则文件改过才重新装载）
     import text_rules
@@ -1555,6 +1572,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
     skipped_path = 0
     skipped_prefilter = 0
     skipped_hash_ph = 0        # ★ 整句只有 #{...}（如 #{count}）：原样写缓存
+    skipped_letter = 0         # ★ 单个字母（如 A / ñ）：原文即译文，不送模型
     whole_hits = []           # ★ 整句命中手工术语：直接写缓存，不送模型
     for _, txt in entries:
         if txt in seen:
@@ -1581,6 +1599,15 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
                 cache.put(txt, hit[1])
                 whole_hits.append((txt, hit[0], hit[1]))
                 continue
+        # ★ 整句只有一个字母（单个英文字母 / 单个西班牙文字母）：
+        #   游戏里多是按键提示 / 图标代号，翻了没意义，
+        #   直接原文写缓存不送模型。
+        #   ★ 放在「纯控制符」之前：单字母本来也会被纯控制符规则捡掉，
+        #     但那条规则可以关掉，而且两条规则的理由不同，所以单独计一条。
+        if getattr(config, "SKIP_SINGLE_LETTER", True) and PR.is_single_letter(txt):
+            cache.put(txt, txt)
+            skipped_letter += 1
+            continue
         if getattr(config, "SKIP_PURE_CONTROL", True) and PR.is_pure_control(txt):
             cache.put(txt, txt)
             skipped_pure += 1
@@ -1622,6 +1649,12 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
         log.info("跳过资源路径句子 %d 条（已缓存原文）", skipped_path)
         emit(f"[过滤] 跳过 {skipped_path} 条资源路径（形如 A/B/C，不翻译）")
 
+    if skipped_letter:
+        cache.save()
+        log.info("跳过单个字母句子 %d 条（已缓存原文）", skipped_letter)
+        emit(f"[过滤] 跳过 {skipped_letter} 条单个字母句子"
+             f"（如 A / ñ，原文即译文，不送模型）")
+
     if skipped_prefilter:
         cache.save()
         log.info("预过滤跳过无可译文本 %d 条（已缓存原文）", skipped_prefilter)
@@ -1635,7 +1668,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
              f"（如 #{{count}}，原文即译文，不送模型）")
 
     n_cache = (len(seen) - len(todo) - skipped_pure - skipped_path
-               - skipped_prefilter - len(whole_hits) - skipped_hash_ph)
+               - skipped_prefilter - len(whole_hits) - skipped_hash_ph
+               - skipped_letter)
     emit(f"[待翻] 唯一 {len(seen)}  需翻 {len(todo)}  缓存命中 {n_cache}")
 
     # ---------- 批量翻译 ----------
@@ -1644,6 +1678,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
     extra_hits = []
     conflict_records = []      # ★ 术语冲突：落盘后供检查报告 / 冲突面板复用
     term_stat_batches = []      # 每批一条 {术语: 命中句数}，跑完汇总落盘
+    miss_log = []              # ★ 缺失 / 回显的原文（不逐条刷日志，跑完汇总）
 
     if todo:
         # 按原文顺序翻译
@@ -1700,7 +1735,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
                     mode_of_entry=mode_of_entry, bi=bi,
                     conflict_records=conflict_records,
                     term_stats=term_stat_batches, section=sec,
-                    batch_term_hook=batch_term_hook)
+                    batch_term_hook=batch_term_hook, miss_log=miss_log)
 
             with ThreadPoolExecutor(max_workers=conc) as ex:
                 futs = {}
@@ -1741,7 +1776,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
                                       conflict_records=conflict_records,
                                       term_stats=term_stat_batches,
                                       section=sec,
-                                      batch_term_hook=batch_term_hook)
+                                      batch_term_hook=batch_term_hook,
+                                      miss_log=miss_log)
 
                 cache.tick()
                 done += len(batch_texts)
@@ -1771,6 +1807,40 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
                 emit(f"    … 其余 {len(failed) - 10} 条省略")
     else:
         cache.save(force=True)
+
+    # ---------- 缺失 / 回显：只汇总一条，超阈值整批重翻 ----------
+    # ★ 用户要求：不逐条刷屏，只显示「缺失/回显 X 条」；X > 阈值（默认 10）
+    #   时把这些句子一起重翻一次（recover=False 防止无限套娃）。
+    miss_uniq = []
+    _seen_miss = set()
+    for s in miss_log:
+        if s and s not in _seen_miss:
+            _seen_miss.add(s)
+            miss_uniq.append(s)
+    if miss_uniq:
+        emit(f"\n[缺失/回显] {len(miss_uniq)} 条（保留原文，已进检查报告）")
+        log.warning("缺失/回显 %d 条（保留原文，不重试单条）", len(miss_uniq))
+        limit = int(getattr(config, "ECHO_RETRANSLATE_OVER", 10) or 0)
+        if recover and limit > 0 and len(miss_uniq) > limit:
+            emit(f"  {len(miss_uniq)} 条 > {limit} 条，开始一起重翻…")
+            log.warning("缺失/回显 %d 条超过阈值 %d，整批重翻一次",
+                        len(miss_uniq), limit)
+            try:
+                cache = Cache(cache_path)
+                removed = cache.remove_many(_seen_miss)
+                cache.save(force=True)
+                emit(f"  ✔ 已删除 {removed} 条缓存，重新翻译")
+                _translate_core(src_path, lines if lines is not None else None,
+                                newline, show_header=False,
+                                batch_term_hook=batch_term_hook,
+                                recover=False)
+            except Exception as e:
+                log.error("缺失/回显整批重翻失败：%s", e)
+                emit(f"  ⚠ 缺失/回显整批重翻失败：{e}")
+            # ★ 重翻走的是另一个 Cache 实例，本函数手里的 cache 已经过期：
+            #   它的内存里这些 key 还是「保留原文」的旧值，后面的回写会拿它
+            #   盖掉刚重翻好的译文。必须从磁盘重新读一遍再回写。
+            cache = Cache(cache_path)
 
     # ---------- 术语命中统计落盘（aux 目录） ----------
     if getattr(config, "TERM_STATS_ENABLE", True) and term_stat_batches:
@@ -1854,6 +1924,129 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
         "failed": len(failed),
         "whole": len(whole_hits),      # ★ 整句命中手工术语、直接写缓存的条数
     }
+
+
+def _auto_check_file(src_path, term_mode=False):
+    """
+    单个文件翻完**立刻**做一次检查（等同界面上的「刷新报告」），并把报告里
+    的问题句子按类型重翻 config.AUTO_CHECK_ROUNDS 轮（默认 2 轮）。
+
+    term_mode=True  → 术语提取流程：用术语检查报告（term_fix.check_terms），
+                      对报告里**所有类型**的问题句子重翻。
+    term_mode=False → 正常翻译（菜单 3）：用重翻检查报告（check_file），
+                      对报告里**所有类型**（PROBLEM_KINDS）的问题句子重翻。
+
+    ★ 只针对**当前这个文件**：所有 hits 都按 path 过滤到 src_path，
+      绝不碰别的文件。
+    ★ 全程 try/except：报告刷不出来或重翻失败只记一笔，绝不影响已经
+      翻好落盘的结果。
+    """
+    if not getattr(config, "AUTO_CHECK_AFTER_FILE", True):
+        return
+    rounds = int(getattr(config, "AUTO_CHECK_ROUNDS", 2) or 0)
+    if rounds <= 0:
+        return
+    if bridge.cancelled():
+        return
+
+    src_abs = os.path.abspath(src_path)
+    # ★ 正常翻译模式下报告读的是译文文件：文件不存在（本文件没抽出任何条目、
+    #   或被行数哨兵拦下）就直接跳过，别刷一条「没有问题句子」的假结论。
+    if not term_mode and not os.path.exists(config.Runtime.output_file):
+        return
+    try:
+        if term_mode:
+            import term_fix as TFX
+            emit(f"\n[自动检查] 术语检查报告（{os.path.basename(src_path)}）…")
+            hits = TFX.check_terms(src_path)
+            hits = [h for h in hits
+                    if os.path.abspath(str(h.get("path") or "")) == src_abs]
+            kinds = [k for k in TFX.KIND_ORDER
+                     if any(h.get("kind") == k for h in hits)]
+        else:
+            emit(f"\n[自动检查] 重翻检查报告（{os.path.basename(src_path)}）…")
+            hits = check_file(src_path) or []
+            # ★「所有类型」= PROBLEM_KINDS（报告里带勾选框、可重翻的全部类型；
+            #   目前与 RETRANSLATE_KINDS 同一集合）。需手动类 / 提示类 / 已编辑
+            #   本来就不该由模型重翻，重翻也修不好。
+            hits = [h for h in hits if h.get("kind") in PROBLEM_KINDS]
+            kinds = [k for k in REPORT_KIND_ORDER
+                     if k in PROBLEM_KINDS
+                     and any(h.get("kind") == k for h in hits)]
+    except Exception as e:
+        log.error("自动检查失败（%s）：%s", src_path, e)
+        emit(f"  ⚠ 自动检查失败（不影响翻译结果）：{e}")
+        return
+
+    if not hits:
+        emit("  ✔ 没有问题句子，跳过自动重翻")
+        return
+
+    emit(f"  问题 {len(hits)} 条，类型：" + "  ".join(
+        f"{k}:{sum(1 for h in hits if h.get('kind') == k)}" for k in kinds))
+    log.info("自动检查 %s：%d 条问题，类型=%s",
+             src_path, len(hits), "、".join(kinds) or "（无）")
+
+    wl_sent = checker.user_sentences()
+    # ★ 「所有类型的问题句子各重翻两次」按字面执行：第 1 轮翻首次报告判出的
+    #   全部问题句；第 2 轮把这些句子**再翻一遍**（顺带补上第 1 轮之后新冒出
+    #   来的），不因为「上一轮看起来修好了」就少翻一次。
+    seed = {h.get("src") for h in hits if (h.get("src") or "").strip()}
+    for rd in range(1, rounds + 1):
+        if bridge.cancelled():
+            emit("  [中断] 用户取消，停止自动重翻")
+            return
+        # 每轮重查一遍报告：拿到当前还剩下的问题（第 2 轮还要并上首轮集合）
+        try:
+            if term_mode:
+                import term_fix as TFX
+                cur = [h for h in TFX.check_terms(src_path)
+                       if os.path.abspath(str(h.get("path") or "")) == src_abs]
+                # ★ 术语报告不做「检查白名单」过滤：白名单是 checker 的句子
+                #   规则，与术语报告的判定无关；界面「术语重翻」也只按类型
+                #   勾选过滤，不查白名单。
+                now = {h.get("src") for h in cur
+                       if (h.get("src") or "").strip()}
+                wanted = (seed | now) if rd > 1 else now
+                items = [{"src": s, "path": src_path} for s in wanted]
+                if not items:
+                    emit(f"  [第 {rd}/{rounds} 轮] 没有需要重翻的句子，提前结束")
+                    break
+                emit(f"  [第 {rd}/{rounds} 轮] 术语重翻 {len(items)} 条…")
+                # 与界面「术语重翻」按钮同一口径：逐批把新译名并进术语表，
+                # 后续批次立刻用上（term_extract 只在函数内 import，无环）。
+                import term_extract as TE
+                TFX.retranslate(
+                    src_path, items,
+                    cancel=lambda: bridge.cancelled(),
+                    batch_term_hook=TE.make_batch_term_hook(None))
+            else:
+                cur = [h for h in (check_file(src_path) or [])
+                       if h.get("kind") in PROBLEM_KINDS]
+                to_re = [h for h in cur
+                         if (h.get("src") or "").strip() not in wl_sent]
+                now = {h.get("src") for h in to_re if h.get("src")}
+                srcs = ((seed | now) - wl_sent) if rd > 1 else now
+                if not srcs:
+                    emit(f"  [第 {rd}/{rounds} 轮] 没有需要重翻的句子，提前结束")
+                    break
+                emit(f"  [第 {rd}/{rounds} 轮] 重翻 {len(srcs)} 条…")
+                config.Runtime.set_input(src_path)
+                cache = Cache(config.Runtime.cache_file)
+                n = cache.remove_many(srcs)
+                cache.save(force=True)
+                emit(f"    已删除 {n} 条缓存")
+                rl, rn = P.read_file(src_path, config.INPUT_ENCODING)
+                _translate_core(src_path, rl, rn, show_header=False)
+        except bridge.CancelRequested:
+            raise
+        except Exception as e:
+            import traceback as _tb
+            log.error("自动重翻第 %d 轮失败（%s）：%s\n%s",
+                      rd, src_path, e, _tb.format_exc())
+            emit(f"  ⚠ 第 {rd} 轮重翻失败：{e}")
+            return
+    emit("  ✔ 自动检查与重翻完成")
 
 
 def _update_snapshot():
@@ -1965,6 +2158,8 @@ def translate_paths(paths, src_lang=None, tgt_lang=None, model=None):
         try:
             _translate_core(path, lines, newline,
                             show_header=(total == 1))
+            # ★ 本文件翻完立刻检查本文件（刷新重翻检查报告）+ 按类型重翻
+            _auto_check_file(path, term_mode=False)
             processed += 1
         except bridge.CancelRequested:
             emit("\n[中断] 用户取消")
@@ -2187,7 +2382,8 @@ def analyze_terms():
     current = TS.load_current_terms()
     if not TS.snapshot_exists():
         return current, None, None, None, False
-    added, removed, modified, old_keyonly = TS.diff_terms()
+    # ★ 把刚读到的 current 传下去，diff_terms 不再 exec 一遍 term_dict.py
+    added, removed, modified, old_keyonly = TS.diff_terms(current=current)
     return current, added, removed, modified, old_keyonly
 
 
@@ -2216,7 +2412,7 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
         TS.save_snapshot(current)
         return {"files": 0, "removed": 0, "baseline": True}
 
-    added, removed, modified, old_keyonly = TS.diff_terms()
+    added, removed, modified, old_keyonly = TS.diff_terms(current=current)
     added = list(added or [])
     modified = list(modified or [])
 

@@ -60,7 +60,7 @@ def resource_dir(name):
 # ================================================================
 # 应用信息
 # ================================================================
-VERSION     = "1.8.2"
+VERSION     = "1.8.3"
 APP_NAME    = "宝可梦同人工具"
 APP_TITLE   = f"{APP_NAME} v{VERSION}"
 
@@ -337,6 +337,16 @@ CTX_OUTPUT_RATIO = 1.5
 CTX_OUTPUT_OVERHEAD = 8
 # 缺失 / 回显的单句是否记为失败（保留原文 + 进检查报告）
 TREAT_ECHO_AS_FAIL = True
+# ---------- 缺失 / 回显汇总与自动重翻 ----------
+# 翻译时「缺失 / 回显」不再逐条打日志，只汇总成一条；超过这个条数则
+# 把这些句子一起（删缓存后）重翻一次。0 = 关闭自动重翻。
+ECHO_RETRANSLATE_OVER = 10
+# ---------- 每个文件翻完立刻自动刷新报告 + 重翻 ----------
+# 翻完一个文件就对本文件跑一次检查（等同「刷新报告」），再按报告里
+# 所有可重翻的问题类型各重翻一遍。
+AUTO_CHECK_AFTER_FILE = True
+# 自动重翻的轮数（2 = 每类问题句子各重翻两次）
+AUTO_CHECK_ROUNDS = 2
 # 已废弃：自适应分批后不参与切批，仅保留读取
 MAX_BATCH_CHARS  = 4096
 MAX_BATCH_TOKENS = 2048
@@ -469,6 +479,7 @@ TEXT_PRESERVE_MODE = "smart"
 
 # ---------- 纯控制符过滤 ----------
 SKIP_PURE_CONTROL = True    # 剥离控制码后无有效内容的句子跳过翻译
+SKIP_SINGLE_LETTER = True   # 整句只有一个字母（A / ñ）的句子原文即译文，不送模型
 PURE_CONTROL_MIN_LEN = 2    # 剥离后至少保留多少个字母/汉字才算有内容
 # ---------- 资源路径 ----------
 # 形如 Graphics/Pictures/battleCommandButtons 的行不翻译（翻了引擎找不到资源）
