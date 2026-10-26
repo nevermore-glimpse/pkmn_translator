@@ -1879,8 +1879,7 @@ class AntiDebugDialog(tk.Toplevel):
                                    self.CTX)
         if cur == orig:
             if not messagebox.askyesno(
-                    "没有改动", "这段代码你没改过，按原样写回等于不动它。\n"
-                    "要继续吗？（一般该点「跳过」或「自动注释」）",
+                    "没有改动", "这段代码没有改动，写回后内容不变。\n要继续吗？（可选择「跳过」或「自动注释」）",
                     parent=self):
                 return
         self.result = {"action": "manual", "edited": cur}
@@ -2201,10 +2200,9 @@ def _save_byte_note(diff_count, roundtrip):
         return "未改动任何字段：写出的字节与原文件完全一致", "ok"
     if diff_count:
         return (f"有 {diff_count} 处改动：写出的字节与原文件不同"
-                f"（改过东西本来就会变，属于预期）"), "warn"
-    return ("★ 字段级比对没发现改动，但写出的字节与原文件不同：说明还有"
-            "无法归因的字节差异（可能是外层封装／逐流封装重排）。"
-            "建议先备份存档，再决定要不要写入。"), "err"
+                f"。"), "warn"
+    return ("字段级比对没有改动，但写出的字节与原文件不同："
+            "存在无法归因的字节差异。写入前请先备份存档。"), "err"
 
 
 def _save_encoding_health(report):
@@ -2239,8 +2237,8 @@ def _save_encoding_note(report):
         txt += f"、按二进制原样保留 {binm} 个"
     txt += "。"
     if bad:
-        txt += ("★ 写回后若游戏仍报 ASCII-8BIT / UTF-8 不兼容，"
-                "说明这款游戏用的是别的编码方案。")
+        txt += ("写回后若游戏仍报 ASCII-8BIT / UTF-8 不兼容，"
+                "说明该游戏使用其他编码方案。")
     return txt
 
 
@@ -2535,8 +2533,8 @@ class SaveWriteDialog(tk.Toplevel):
                      anchor="w").pack(side="bottom", fill="x", pady=(4, 0))
         elif cut:
             tk.Label(body,
-                     text=f"★ 只列出前 {SAVE_DIFF_ROW_CAP} 条，"
-                          f"另有 {cut} 条改动没显示（照样会写入）。",
+                     text=f"只列出前 {SAVE_DIFF_ROW_CAP} 条，"
+                          f"另有 {cut} 条改动没有显示（照样会写入）。",
                      bg=CARD, fg=C_WARN, font=FONT_SMALL,
                      anchor="w").pack(side="bottom", fill="x", pady=(4, 0))
 
@@ -2623,8 +2621,7 @@ class SavePanel(tk.Frame):
 
         tk.Label(self, text="选择游戏存档", bg=bg, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 2))
-        tk.Label(self, text="「游戏数据」和「存档文件」分开选 —— 很多游戏的存档"
-                            "在 AppData 里、文件名也各不相同。",
+        tk.Label(self, text="「游戏数据」和「存档文件」分开选。",
                  bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=width - 40).pack(anchor="w", padx=10, pady=(0, 6))
 
@@ -2782,8 +2779,8 @@ class SavePanel(tk.Frame):
                 fg=C_HINT if ok else C_WARN)
         else:
             self.root_lbl.config(
-                text="未选择（可以不选）—— 名字/种族值会显示不全，\n"
-                     "改「种族 / 道具 / 特性」等时请填**英文内部名或编号**。",
+                text="未选择（可以不选）。名字/种族值将显示不全；\n"
+                     "改「种族 / 道具 / 特性」时请填**英文内部名或编号**。",
                 fg=C_HINT)
         self.count_lbl.config(text=f"已选 {len(self.files)} 个" if self.files
                               else "")
@@ -3694,8 +3691,7 @@ class PbsGamePanel(tk.Frame):
 
         tk.Label(self, text="选择游戏主程序", bg=bg, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w", padx=10, pady=(8, 2))
-        tk.Label(self, text="PBS 的三个动作都在这一个游戏上进行 —— "
-                            "提取写到它的 PBS 文件夹，编译写回它的 Data 文件夹。",
+        tk.Label(self, text="PBS 的三个动作都在这一个游戏上进行：提取写到它的 PBS 文件夹，编译写回它的 Data 文件夹。",
                  bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=width - 40).pack(anchor="w", padx=10, pady=(0, 6))
 
@@ -3729,9 +3725,7 @@ class PbsGamePanel(tk.Frame):
         self.list_inner.pack(fill="both", padx=6, pady=(2, 4))
         self._hint = tk.Label(
             self.list_inner,
-            text="先在上面选好游戏。\n\n支持的版本：Essentials v19 / "
-                        "v20 / v21（v16～v18 的老游戏\n自带 PBS 目录，"
-                        "交给游戏自己编译就行）。",
+            text="先在上面选好游戏。\n\n支持的版本：Essentials v19 / v20 / v21（v16～v18 不支持）。",
             bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
             wraplength=max(120, width - 62))
         self._hint.pack(anchor="w", padx=6, pady=10)
@@ -3803,7 +3797,8 @@ class PbsGamePanel(tk.Frame):
                     fg=C_WARN)
         else:
             self.info_lbl.config(text="")
-        files = pbs_edit.list_pbs_txt(self.root_dir, fam) if fam else []
+        files = pbs_edit.list_pbs_txt(self.root_dir, fam,
+                                     only_editable=False) if fam else []
         self._render_list(files)
 
     def _render_list(self, files):
@@ -4556,6 +4551,45 @@ class App:
                         elif lang:
                             txt += f"\n语言表：{lang.get('reason') or '没有改动'}"
                         self.intl_compile_lbl.config(text=txt)
+                elif kind == "script_intl_done":
+                    r = payload or {}
+                    if r.get("ok") is False:
+                        self.script_intl_lbl.config(
+                            text=f"✘ {r.get('error', '失败')}")
+                    else:
+                        self.script_intl_stat.config(
+                            text=f"{len(r.get('files') or [])} 文件 / "
+                                 f"{r.get('changed', 0)} 处")
+                        head = ("✔ 已写回" if r.get("write") else "预览：会改")
+                        txt = (f"{head} {r.get('changed', 0)} 处，"
+                               f"涉及 {len(r.get('files') or [])} 个文件")
+                        if r.get("miss"):
+                            txt += (f"\n还有 {r['miss']} 处脚本里有、词表里没有"
+                                    f"（编译文本补不上，只能进脚本改或等数据重编）")
+                        if r.get("already"):
+                            txt += f"\n已是中文跳过 {r['already']} 处"
+                        if r.get("dynamic"):
+                            txt += f"；带 #{{}} 插值跳过 {r['dynamic']} 处"
+                        bak = r.get("backups") or []
+                        if bak:
+                            txt += "\n备份：" + "、".join(
+                                os.path.basename(x) for x in bak[:4])
+                        if not r.get("write") and r.get("files"):
+                            txt += "\n（预览，没写任何文件）"
+                        self.script_intl_lbl.config(text=txt)
+                elif kind == "script_intl_export_done":
+                    r = payload or {}
+                    if r.get("ok") is False:
+                        self.script_intl_lbl.config(
+                            text=f"✘ {r.get('error', '失败')}")
+                    else:
+                        self.script_intl_stat.config(
+                            text=f"待补 {r.get('count', 0)} 条")
+                        self.script_intl_lbl.config(
+                            text=f"✔ 已导出 {r.get('count', 0)} 条 → "
+                                 f"{r.get('out')}\n"
+                                 f"去「游戏汉化 → 翻译」翻这个文件，"
+                                 f"存成 *_translated.txt 后回来点「写回脚本」。")
                 elif kind == "plugin_done":
                     r = (payload or [{}])[0] if isinstance(payload, list) else {}
                     fam = r.get("font", "")
@@ -4696,10 +4730,9 @@ class App:
                             "覆盖地图更新完成",
                             "已用官方同版本基准覆盖游戏的 Scene_Map"
                             f"（地图更新）：\n  {names}\n\n"
-                            "原作者对 Scene_Map 的改动已被替换掉（原文件已备份，"
+                            "原作者对 Scene_Map 的改动已被替换（原文件已备份，"
                             "可用「还原覆盖」恢复）。\n\n"
-                            "建议接着用「方式② 删条件 / 方式③④ F6 键」——"
-                            "现在 $DEBUG 条件是官方写法，一定能认出来。")
+                            "接着可用「方式② 删条件 / 方式③④ F6 键」。")
                     else:
                         why = r.get("reason") or "覆盖失败"
                         self.dbg_ow_lbl.config(text=f"✘ {why}", fg=ERR_COLOR)
@@ -5034,7 +5067,7 @@ class App:
                 f"将把 {n_files} 个文件里的 {n_edit} 条手工编辑译文写入：\n"
                 f"· 翻译缓存（<主名>_cache.json）\n"
                 f"· 已生成的译文文件（<主名>_translated.txt）\n\n"
-                f"译文文件里**其它行不会被改动**。\n继续吗？"):
+                f"译文文件里**其它行保持原样**。\n继续吗？"):
             return
         self.show("log")
         self.run_async(
@@ -5581,6 +5614,61 @@ class App:
         self.intl_compile_hint.pack(anchor="w", pady=(6, 0))
         attach_label_copy(self.intl_compile_hint, self, "编译说明")
 
+        # ---- 下层：脚本内文本写回脚本（方案 B） ----
+        c2b = RoundCard(inner, radius=16, pad=16, auto_height=True)
+        c2b.pack(fill="x", pady=(0, 10))
+        head2b = tk.Frame(c2b.body, bg=CARD)
+        head2b.pack(fill="x")
+        tk.Label(head2b, text="脚本内文本汉化（写回脚本）", bg=CARD,
+                 fg=C_TITLE, font=FONT_TITLE).pack(side="left")
+        self.script_intl_stat = tk.Label(head2b, text="", bg=CARD,
+                                         fg=C_KEY, font=FONT_BIG)
+        self.script_intl_stat.pack(side="right")
+        attach_label_copy(self.script_intl_stat, self, "脚本汉化统计")
+
+        row2b = tk.Frame(c2b.body, bg=CARD)
+        row2b.pack(fill="x", pady=(8, 0))
+        self.script_intl_main_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            row2b, text="主脚本", variable=self.script_intl_main_var,
+            bg=CARD, fg=TEXT, activebackground=CARD, activeforeground=TEXT,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            cursor="hand2").pack(side="left")
+        self.script_intl_plugin_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            row2b, text="插件脚本", variable=self.script_intl_plugin_var,
+            bg=CARD, fg=TEXT, activebackground=CARD, activeforeground=TEXT,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            cursor="hand2").pack(side="left", padx=(10, 0))
+        GlassButton(row2b, "预览", width=92, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=lambda: self._do_script_intl(False)
+                    ).pack(side="right")
+        GlassButton(row2b, "写回脚本", width=128, height=46, primary=True,
+                    bg=CARD,
+                    command=lambda: self._do_script_intl(True)
+                    ).pack(side="right", padx=(0, 8))
+        GlassButton(row2b, "导出待补文案", width=120, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_script_intl_export
+                    ).pack(side="left", padx=(10, 0))
+        self.script_intl_lbl = tk.Label(c2b.body, text="", bg=CARD,
+                                        fg=C_KEY, font=FONT_SMALL,
+                                        justify="left", wraplength=560)
+        self.script_intl_lbl.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.script_intl_lbl, self, "脚本汉化结果")
+        self.script_intl_hint = tk.Label(
+            c2b.body,
+            text="把脚本里的 _INTL(\"英文\") 直接改成 _INTL(\"中文\")，"
+                 "改完不再经过语言文件查表。\n"
+                 "译文取自已编译的中文语言文件；带 #{…} 插值的不动，"
+                 "已是中文的跳过。\n"
+                 "改动前自动备份（*.bak），可反复执行。",
+            bg=CARD, fg=C_HINT, font=FONT_SMALL,
+            justify="left", wraplength=560)
+        self.script_intl_hint.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.script_intl_hint, self, "脚本汉化说明")
+
         # ---- 下层：加载中文文本处理插件 ----
         c3 = RoundCard(inner, radius=16, pad=16, auto_height=True)
         c3.pack(fill="x")
@@ -5607,9 +5695,9 @@ class App:
                     primary=True, bg=CARD,
                     command=self._do_plugin_inject).pack(side="right")
         tk.Label(c3.body,
-                 text="按游戏版本挑对应插件本体（16 / 17.2 / 18.1 / 19.1 / 20.1 / "
-                      "21.1），装进游戏、把字体复制到 Fonts，并把引擎脚本里的"
-                      "字体定义一起改掉（不用进游戏、也不用开调试）。",
+                 text="按游戏版本挑对应插件本体（16 / 17.2 / 18.1 / "
+                      "19.1 / 20.1 / 21.1），装进游戏、把字体复制到 Fonts，"
+                      "并把引擎脚本里的字体定义一起改掉。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
 
@@ -5832,6 +5920,56 @@ class App:
 
         self.run_async(work, label="编译文本中…", done_label="文本编译完成")
 
+    def _do_script_intl(self, write):
+        """脚本内文本汉化（写回 _INTL 源码）。write=False 只预览。"""
+        d = self._intl_folder()
+        if not d:
+            return
+        inc_main = bool(self.script_intl_main_var.get())
+        inc_plug = bool(self.script_intl_plugin_var.get())
+        if not (inc_main or inc_plug):
+            messagebox.showwarning("提示", "主脚本和插件脚本至少要勾一个。")
+            return
+        if write:
+            if not messagebox.askyesno(
+                    "确认写回",
+                    "会把脚本里的 _INTL(\"英文\") 直接改成中文并保存。\n\n"
+                    "· 主脚本写 Data/Scripts/*.rb 与 Scripts.rxdata\n"
+                    "· 插件写 Data/PluginScripts.rxdata\n"
+                    "· 每个文件改动前自动备份成 *.bak（已存在则不覆盖）\n\n"
+                    "以后更新插件或脚本会覆盖掉这些改动。\n\n"
+                    "确定写回吗？"):
+                return
+        self.show("log")
+
+        def work():
+            res = commands.script_intl_paths(
+                d, write=write, include_main=inc_main,
+                include_plugins=inc_plug)
+            self.q.put(("script_intl_done", res))
+            return res
+
+        self.run_async(work,
+                       label="写回脚本文本中…" if write else "预览脚本文本中…",
+                       done_label="脚本内文本汉化完成" if write else "预览完成")
+
+    def _do_script_intl_export(self):
+        """导出脚本里「词表没有」的文案，交给翻译页翻。"""
+        d = self._intl_folder()
+        if not d:
+            return
+        inc_main = bool(self.script_intl_main_var.get())
+        inc_plug = bool(self.script_intl_plugin_var.get())
+        self.show("log")
+
+        def work():
+            res = commands.script_intl_export(
+                d, include_main=inc_main, include_plugins=inc_plug)
+            self.q.put(("script_intl_export_done", res))
+            return res
+
+        self.run_async(work, label="导出待补文案中…", done_label="导出完成")
+
     # ================================================================
     # 页面 2：翻译
     # ================================================================
@@ -5998,7 +6136,7 @@ class App:
             self.te_files_lbl.config(text="\n".join(rows))
         else:
             self.te_files_lbl.config(
-                text="（没找到名字文件 —— 需要文件名含 NAME / NAMES / NICKNAMES 词，"
+                text="（没找到名字文件：文件名需含 NAME / NAMES / NICKNAMES 词，"
                      "或开头 [编号] 是名字区块）")
 
         warn = ""
@@ -6105,12 +6243,11 @@ class App:
                  font=FONT_TITLE).pack(anchor="w")
         tk.Label(c1.body,
                  text="只看术语提取的缓存与术语表，把有问题的译名列出来。\n"
-                      "双击「译名」列即可改，点「应用修改」写回缓存、译文文件"
-                      "与术语表（改译名 / 应用修改不走模型）；\n"
+                      "双击「译名」列即可改，点「应用修改」写回缓存、"
+                      "译文文件与术语表（改译名 / 应用修改不走模型）；\n"
                       "点「术语重翻」会删掉选中条目的缓存并重走翻译流水线"
-                      "（★ 会调用模型），\n"
-                      "重翻时每批翻完立刻把新译名并进术语表自动提取区，"
-                      "同一文件的后续批次马上用上。",
+                      "（会调用模型），\n"
+                      "重翻时每批翻完立刻把新译名并进术语表自动提取区。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=560).pack(anchor="w", pady=(4, 0))
 
@@ -6411,7 +6548,7 @@ class App:
                 f"① 删掉这些条目在翻译缓存里的 key\n"
                 f"② 走正常翻译流水线重翻（会重新解析、注入术语、"
                 f"分批送模型）\n\n"
-                f"★ 这一步会调用模型，请确认已配好模型。继续？"):
+                f"这一步会调用模型，请确认已配好模型。继续？"):
             return
 
         def work():
@@ -7272,9 +7409,7 @@ class App:
         rows = commands.load_conflict_rows(srcs)
         if not rows:
             messagebox.showinfo(
-                "提示", "这些文件里没有术语冲突记录。\n\n"
-                        "术语冲突是翻译时记录下来的：模型给某个术语的译法与"
-                        "术语表不一致时才会产生。")
+                "提示", "这些文件里没有术语冲突记录。")
             return
         self._show_conflict_view(rows)
         self.conflict_btn.set_enabled(False)
@@ -11025,7 +11160,7 @@ class App:
                       "可随时用「还原覆盖」恢复）：\n"
                       "· debug 菜单：调试菜单的那几个脚本，覆盖时把菜单文字"
                       "换成中文；\n"
-                      "· 地图更新：只替换 Scene_Map 一个脚本、不做翻译 —— "
+                      "· 地图更新：只替换 Scene_Map 一个脚本、不做翻译；"
                       "方式②③④ 找不到落点时先盖回官方版。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
@@ -11164,9 +11299,7 @@ class App:
         self.dbg_info_lbl.pack(anchor="w", padx=10, pady=(4, 0))
         attach_label_copy(self.dbg_info_lbl, self, "游戏信息")
         tk.Label(body,
-                 text="提示：\n"
-                      "选游戏的启动程序（exe）即可 —— 你选的这个就是主程序，"
-                      "工具用它所在的文件夹当游戏目录。",
+                 text="选游戏的启动程序（exe）即可，工具用它所在的文件夹当游戏目录。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=200).pack(anchor="w", padx=10,
                                                       pady=(10, 0))
@@ -11201,10 +11334,10 @@ class App:
         self.dbg_compile_lbl.pack(anchor="w", padx=10, pady=(6, 0))
         attach_label_copy(self.dbg_compile_lbl, self, "编译回容器结果")
         tk.Label(body,
-                 text="改完 Plugins-p 里的 .rb 后，点「编译回容器」才会生效"
-                      "—— 游戏运行时读的是 Data/PluginScripts.rxdata，"
-                      "不会自己去读 Plugins-p。无条件编译：每次点击都会把 Plugins-p 写回容器；"
-                      "首次点击会把原容器备份成 PluginScripts.rxdata.bak，之后不再重复备份。",
+                 text="改完 Plugins-p 里的 .rb 后，点「编译回容器」才会生效。\n"
+                      "每次点击都会把 Plugins-p 写回 Data/PluginScripts.rxdata；"
+                      "首次点击会把原容器备份成 PluginScripts.rxdata.bak，"
+                      "之后不再重复备份。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=200).pack(anchor="w", padx=10,
                                                       pady=(6, 0))
@@ -11396,10 +11529,10 @@ class App:
         if hasattr(self, "dbg_mode_desc"):
             if locked:
                 self.dbg_mode_desc.config(
-                    text="⚠ 这个游戏目录里没有 Data 文件夹 —— 只能用"
-                         "「方式⑧ 调试启动器」开调试（它不改游戏本体、"
+                    text="⚠ 这个游戏目录里没有 Data 文件夹：只能用"
+                         "「方式⑧ 调试启动器」开调试（不改游戏本体、"
                          "不依赖 Data，脚本打包进 exe 的游戏也适用）。"
-                         "其它方式需要改 Data 里的脚本，已禁用。",
+                         "其它方式已禁用。",
                     fg=C_WARN)
             else:
                 self.dbg_mode_desc.config(fg=C_HINT)
@@ -11497,8 +11630,8 @@ class App:
             messagebox.showwarning(
                 "这个游戏没有 Data 文件夹",
                 "当前选的游戏目录里没有 Data 文件夹，无法改动脚本。\n\n"
-                "这类游戏只能用「方式⑧ 调试启动器」开调试 —— "
-                "请把「开启方式」选成 ⑥ 调试启动器，再点「开启 DEBUG」"
+                "这类游戏只能用「方式⑧ 调试启动器」：请把「开启方式」"
+                "选成 ⑥ 调试启动器，再点「开启 DEBUG」"
                 "或「生成调试启动器」。")
             self._set_debug_mode_value("launcher")
             self._dbg_lock_modes(True)
@@ -11764,8 +11897,7 @@ class App:
             #   而且还会顺手把方式永久锁成⑧。
             messagebox.showwarning(
                 "请先选择游戏",
-                "请先在右侧选择**游戏启动程序（exe）**（或用「选游戏…」按钮）。\n\n"
-                "工具要用它所在文件夹当游戏目录。")
+                "请先在右侧选择游戏启动程序（exe），或用「选游戏…」按钮。")
             return
         has_data = os.path.isdir(GS.data_dir(root_now))
         if not has_data and mode != "launcher":
@@ -11967,8 +12099,10 @@ class App:
                  font=FONT_TITLE).pack(anchor="w")
         hint = tk.Label(c0.body,
                         text="右侧先选好游戏主程序，再从下面点一个动作。\n"
-                             "只处理 4 个文件：宝可梦（pokemon）、宝可梦形态"
-                             "（pokemon_forms）、道具（items）、招式（moves）。\n"
+                             "提取：把该版本支持的全部 PBS 文件还原成 txt（不止 4 类）。\n"
+                             "编辑：只开放 4 个文件：宝可梦（pokemon）、宝可梦形态"
+                             "（pokemon_forms）、道具（items）、招式（moves）；"
+                             "其余类型暂不提供编辑界面。\n"
                              "提取和编译都按该游戏版本的官方引擎脚本走"
                              "（v19 / v19.1 / v20 / v20.1 / v21 / v21.1 各自不同），"
                              "产出与官方一致。",
@@ -11983,12 +12117,14 @@ class App:
         mods = [
             ("1. 提取PBS文件", self._pbs_extract,
              "把 Data 里的 .dat 还原成 txt，写到游戏根目录的 PBS 文件夹"
-             "（没有就新建）。"),
+             "（没有就新建）。★ 提取该版本支持的全部 PBS 类型。"),
             ("2. 编辑PBS文件", self._pbs_open_editor,
              "打开 PBS 窗口：左边挑一个 txt，右边按它自己的类型显示编辑界面，"
-             "列表上方可以搜索条目。"),
+             "列表上方可以搜索条目。★ 左侧只显示 4 类："
+             "宝可梦 / 宝可梦形态 / 道具 / 招式。"),
             ("3. 编译PBS文件", self._pbs_compile,
-             "把 PBS 文件夹里的 txt 编译回 Data/*.dat（第一次编译会留 .orig）。"),
+             "把 PBS 文件夹里的 txt 编译回 Data/*.dat（第一次编译会留 .orig）。"
+             "★ 只编译 4 类：宝可梦 / 宝可梦形态 / 道具 / 招式。"),
         ]
         for i, (name, cmd, desc) in enumerate(mods):
             GlassButton(grid, name, width=210, height=46, bg=CARD,
@@ -12000,19 +12136,14 @@ class App:
             bind_autowrap(lb, pad=4)
 
         warn = tk.Label(c0.body,
-                        text="★ 编译会改游戏的 Data 目录（原文件留成 .dat.orig），"
-                             "改内部名／顺序还可能让旧存档对不上 —— 动手前建议先备份。",
+                        text="编译会改写游戏的 Data 目录（原文件留成 .dat.orig），改内部名或顺序可能让旧存档对不上。",
                         bg=CARD, fg=C_WARN, font=FONT_SMALL, justify="left",
                         wraplength=620)
         warn.pack(fill="x", pady=(12, 0))
         bind_autowrap(warn, pad=4)
 
         old = tk.Label(c0.body,
-                       text="★ v16 / v17 / v18 的老游戏（.dat 是数组/二进制、"
-                            "一半数据是衍生缓存）不建议使用此功能 "
-                            "会出现未知BUG \n"
-                            "★ 老版本的 .dat 里不存名字/描述， "
-                            "所以会出现字段错位等问题",
+                       text="v16 / v17 / v18 的老游戏不支持此功能，可能出现未知问题（如字段错位）。",
                        bg=CARD, fg=C_KEY, font=FONT_SMALL, justify="left",
                        wraplength=620)
         old.pack(fill="x", pady=(6, 0))
@@ -12060,7 +12191,7 @@ class App:
         if not root:
             return
         if os.path.isdir(pbs_edit.pbs_dir(root)):
-            n = len(pbs_edit.list_pbs_txt(root, fam))
+            n = pbs_edit.count_pbs_txt(root)
             if n and not messagebox.askyesno(
                     "覆盖确认",
                     "PBS 文件夹里已经有 %d 个 txt 了。\n\n"
@@ -12115,6 +12246,7 @@ class App:
         if not messagebox.askyesno(
                 "确认编译",
                 "要把 %s 里的 txt 编译回 Data/*.dat 吗？\n\n"
+                "· 只编译 4 类：宝可梦 / 宝可梦形态 / 道具 / 招式\n"
                 "· 原 .dat 会备份成 .dat.orig（只留第一版）\n"
                 "· 改过内部名/顺序的话，旧存档可能识别不了" % pbs):
             return
@@ -13727,7 +13859,7 @@ class App:
             if not messagebox.askyesno(
                     "保存到存档",
                     f"写入这个文件：\n{sv.path}{tip}\n\n要在游戏里看到效果，"
-                    "需要回游戏重新「读档」（继续游戏不会重读）。确定写入吗？"):
+                    "需要回游戏重新「读档」。确定写入吗？"):
                 return
         try:
             sv.write()
@@ -13987,8 +14119,8 @@ class App:
                 row=i, column=1, sticky="w", padx=(14, 0))
 
         hint2 = tk.Label(body,
-                         text="★ 数据来源：优先读游戏 Data 目录里的 .dat，"
-                              "读不到才退回 PBS。宝可梦／道具／招式名按游戏的语言包显示。",
+                         text="数据来源：优先读游戏 Data 目录里的 .dat，"
+                              "读不到才退回 PBS；宝可梦／道具／招式名按游戏的语言包显示。",
                          bg=CARD, fg=C_WARN, font=FONT_SMALL, justify="left",
                          wraplength=620)
         hint2.pack(fill="x", pady=(12, 0))
@@ -14472,7 +14604,7 @@ class App:
         if sv is None or i is None:
             return
         if not messagebox.askyesno("移出队伍", "把这只从队伍里删掉吗？"
-                                              "（不会放进箱子，直接消失）"):
+                                              "（不进箱子，直接消失）"):
             return
         sv.remove_from_party(i)
         self.mark_dirty()

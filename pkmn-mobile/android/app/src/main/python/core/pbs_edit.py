@@ -1463,14 +1463,34 @@ def is_legacy(family: str) -> bool:
 EDITABLE_KEYS = ("pokemon", "pokemon_forms", "items", "moves")
 
 
-def list_specs(family: str) -> List[dict]:
-    """返回这个版本可编辑的 PBS 文件类型（只含 EDITABLE_KEYS）。"""
+def list_all_specs(family: str) -> List[dict]:
+    """
+    这个版本支持的**全部** PBS 文件类型（提取用：能提的都提出来）。
+
+    ★ 提取 = 全量（本函数）；编辑 = 只开放 EDITABLE_KEYS 那几类（见 list_specs）。
+      其余类型照常提取成 txt，但不在编辑界面里出现，也不管它们的编译。
+    """
     if is_legacy(family):
         import pbs_legacy
-        specs = pbs_legacy.specs(family)
-    else:
-        specs = [s for s in FILES if supports(s, family)]
-    return [s for s in specs if s["key"] in EDITABLE_KEYS]
+        return pbs_legacy.specs(family)
+    return [s for s in FILES if supports(s, family)]
+
+
+def list_specs(family: str) -> List[dict]:
+    """返回这个版本**可编辑**的 PBS 文件类型（只含 EDITABLE_KEYS）。"""
+    return [s for s in list_all_specs(family) if s["key"] in EDITABLE_KEYS]
+
+
+def count_pbs_txt(game_root: str) -> int:
+    """PBS 文件夹里现有的 txt 个数（不限类型；覆盖确认用）。"""
+    pbs = pbs_dir(game_root)
+    if not os.path.isdir(pbs):
+        return 0
+    try:
+        return sum(1 for fn in os.listdir(pbs)
+                   if fn.lower().endswith(".txt"))
+    except OSError:
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -2503,7 +2523,7 @@ def extract_all(game_root: str, family: str, keys: Optional[List[str]] = None,
     out_dir = pbs_dir(game_root)
     os.makedirs(out_dir, exist_ok=True)
     results = []
-    for spec in list_specs(family):
+    for spec in list_all_specs(family):
         if keys and spec["key"] not in keys:
             continue
         ok, text, stat = extract_spec(spec, family, game_root)
@@ -4270,18 +4290,21 @@ def load_doc(game_root: str, spec: Optional[dict], family: str,
     return Doc.load(spec, family, txt_path)
 
 
-def list_pbs_txt(game_root: str, family: str) -> List[dict]:
+def list_pbs_txt(game_root: str, family: str = "",
+                only_editable: bool = True) -> List[dict]:
     """
-    PBS 目录下的 txt 列表（左侧文件列表用）。
+    PBS 目录下的 txt 列表。
 
-    ★ 只列 PBS编辑 开放的 4 类文件（宝可梦 / 形态 / 道具 / 招式），
-      其余 txt 一律不显示。
+    ★ only_editable=True（默认）：只列 PBS编辑 开放的 4 类文件
+      （宝可梦 / 形态 / 道具 / 招式），其余 txt 一律不显示。
+      only_editable=False：列出该版本支持的全部类型（查看提取结果用）。
     """
     pbs = pbs_dir(game_root)
     out: List[dict] = []
     if not os.path.isdir(pbs):
         return out
-    by_name = {txt_name(s, family): s for s in list_specs(family)}
+    specs = list_specs(family) if only_editable else list_all_specs(family)
+    by_name = {txt_name(s, family): s for s in specs}
     for fn in sorted(os.listdir(pbs)):
         if not fn.lower().endswith(".txt"):
             continue

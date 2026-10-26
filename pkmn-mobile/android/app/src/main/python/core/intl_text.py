@@ -51,6 +51,55 @@ MESSAGES_CANDIDATES = ("messages.dat", "english.dat")
 _HEADER = ("# To localize this text for a particular language, please\r\n"
            "# translate every second line of this file.\r\n")
 
+# ★ 文件开头最多跳过几行 # 注释（与 parser.HASH_HEADER_MAX 保持一致）。
+#   导出文件开头固定是 _HEADER 那 2 行；**之后的 # 开头行是正文**——
+#   同人游戏真有以 # 开头的文本（如 #{count}），要照常编译进 .dat。
+_HASH_HEADER_MAX = 4
+
+# ★ 分段之间的分隔线（_SEP）也是 # 开头，但它不是正文，必须在任何位置都跳过，
+#   否则它会被当成一条译文行，把「行数不是 3 的倍数」的校验顶翻。
+_SEP_LINE_RE = re.compile(r'^\s*#[-=]{3,}\s*$')
+
+# ★ 「一串 CR（后面可以再跟一个 LF）」→ 统一当成一个换行。
+#   正常文件里它等价于 replace("\r\n", "\n")；坏文件（\r\r\n 双 CR、或者
+#   整篇只有 \r\r 连 \n 都没有）也能一并修好，与 parser.CR_RUN_RE 同一套规则。
+#   没有它的话，\r\r 文件会被当成 1 行 → 解析出 0 条 → 静默把整篇内容丢光。
+_CR_RUN_RE = re.compile(r'\r+\n?')
+
+
+def _hash_header_end(lines, limit=None):
+    """
+    返回「文件开头 # 注释区」的结束行号（不含）。
+
+    只有 [0, 返回值) 范围内的 # 开头行才算注释；其余位置的 # 开头行一律
+    当正文处理（与 parser.hash_header_end 同一套规则，两端必须一致）。
+
+    注释区一直延续到**第一个 [分段名] 行**之前；区内空行不打断扫描
+    （译文文件里 \r\r\n 会被通用换行读成「换行 + 空行」）。
+
+    lines 必须已经去掉 BOM / 行尾 CR —— 首行带 BOM 时 "# To localize…"
+    看起来不以 # 开头，注释区会被误判成 0 行。
+    """
+    if limit is None:
+        limit = _HASH_HEADER_MAX
+    n = len(lines)
+    i = 0
+    skipped = 0
+    while i < n:
+        s = lines[i].strip()
+        if not s:
+            i += 1
+            continue
+        if _SECTION_LINE.match(s):
+            break
+        if s.startswith("#") and skipped < limit:
+            skipped += 1
+            i += 1
+            continue
+        break
+    return i
+
+
 # ================================================================
 # 两种文本方案
 #   legacy（v19/v20 及更早）：一份 Data/messages.dat ↔ 一个 intl.txt
@@ -738,16 +787,31 @@ def parse_intl_text(text, name="intl.txt", allow_constants=False,
         哈希段 2 行一条 → 原文 / 译文，取**译文**（第 2 行）。
     """
     keep = (lambda s: s.rstrip()) if trim == "rstrip" else (lambda s: s.strip())
-    lines = text.split("\n")
+    # ★ 先用 _CR_RUN_RE 把各种坏行尾（\r\r\n 双 CR / 整篇只有 \r\r 没 \n）
+    #   统一成 \n，再切行。否则坏文件会被当成 1 行 → 解析出 0 条，
+    #   编译时静默把整篇内容丢光，且不报任何错。
+    lines = _CR_RUN_RE.sub("\n", text).split("\n")
+    # ★ 先把 BOM / 行尾 CR 统一去掉，再算「文件头 # 注释区」：
+    #   首行带着 BOM 时 "# To localize…" 看起来并不以 # 开头，
+    #   注释区会被误判成 0 行，那两行说明就成了正文。
+    for idx in range(len(lines)):
+        line = lines[idx].rstrip("\r")
+        if idx == 0:
+            if line.startswith("\ufeff"):
+                line = line[1:]
+            if line[:3] == "\xef\xbb\xbf":
+                line = line[3:]
+        lines[idx] = line
+    header_end = _hash_header_end(lines)
     sections = []
     current = None
-    for idx, raw in enumerate(lines):
-        line = raw.rstrip("\r")
-        if idx == 0 and line.startswith("\ufeff"):
-            line = line[1:]
-        if idx == 0 and line[:3] == "\xef\xbb\xbf":
-            line = line[3:]
-        if line.startswith("#") or line.strip() == "":
+    for idx, line in enumerate(lines):
+        if line.strip() == "":
+            continue
+        # ★ # 开头：文件头注释 + 分段分隔线 → 跳过；
+        #   其余位置一律当正文（以 # 开头的文本是真实内容，要编译进 .dat）
+        if line.startswith("#") and (idx < header_end
+                                     or _SEP_LINE_RE.match(line)):
             continue
         m = _SECTION_LINE.match(line)
         if m:
@@ -1049,7 +1113,10 @@ def compile_split(game_dir, paths, emit=None, backup=True, out_paths=None):
         merged = {}
         conflicts = 0
         for p in files:
-            with io.open(p, "r", encoding="utf-8", errors="replace") as f:
+            # ★ newline="" 关掉通用换行：\r\r\n 这类坏行尾不至于被读成
+            #   「换行 + 空行」，行号与错误信息才和文件里看到的一致。
+            with io.open(p, "r", encoding="utf-8", errors="replace",
+                         newline="") as f:
                 text = f.read()
             # ★ 新版用 Compiler.pbEachSection：行首尾空白都去掉，键再过 stringToKey
             secs = parse_intl_text(text, os.path.basename(p),
@@ -1134,7 +1201,10 @@ def compile_text(game_dir, input_path, out_path=None, emit=None, backup=True):
     conflicts = 0
     for p in files:
         try:
-            with io.open(p, "r", encoding="utf-8", errors="replace") as f:
+            # ★ newline="" 关掉通用换行：\r\r\n 这类坏行尾不至于被读成
+            #   「换行 + 空行」，行号与错误信息才和文件里看到的一致。
+            with io.open(p, "r", encoding="utf-8", errors="replace",
+                         newline="") as f:
                 text = f.read()
         except OSError as e:
             raise IOError(f"读取 {p} 失败：{e}") from e

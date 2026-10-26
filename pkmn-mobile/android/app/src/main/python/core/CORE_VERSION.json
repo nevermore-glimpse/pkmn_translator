@@ -1,6 +1,6 @@
 {
   "source": "E:/pkmn_translator",
-  "synced_at": "2026-10-17 09:33:13",
+  "synced_at": "2026-10-19 13:40:00",
   "modules": [
     "rmarshal.py",
     "save_tools.py",
@@ -16,12 +16,12 @@
   ],
   "files": {
     "rmarshal.py": {
-      "sha256": "3b16fcc35a1e4c3ac73e92568c12afc71ec6eebe4a28a9062eaa1c1c7a80bee9",
-      "size": 39721
+      "sha256": "08cf3a242d4652785ae8d6fa79c92840dc410d9746d5e09a02998491c30c71a2",
+      "size": 41372
     },
     "save_tools.py": {
-      "sha256": "ff60482cc8fdadf6e95ab8ace9c3ebec3001a4cd8b6e68792d7acff0f0c9abd3",
-      "size": 172497
+      "sha256": "c17eebaf44bc7aaf47584163a05188f4ddc8763767ae14dcdb1af61bbc5da105",
+      "size": 208430
     },
     "debug_tool.py": {
       "sha256": "172b76d64efc12f60f8411063e99e52ae0e5d63ae31fd1b704ea072a818e216b",
@@ -40,8 +40,8 @@
       "size": 5460
     },
     "intl_text.py": {
-      "sha256": "a6ca007a33516816bb4e0870c864b6be9dc3db6065c4a8d190052e559d8367a2",
-      "size": 51674
+      "sha256": "a406b865a9f4b839cbe38c5feeb210441052e88a8022c8a64de1e8d90bf15879",
+      "size": 55081
     },
     "pbs_edit.py": {
       "sha256": "27a0a99277c40e19592bd58993f4099d41373168e2612c09119d0f348172384e",

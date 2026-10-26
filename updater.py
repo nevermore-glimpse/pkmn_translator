@@ -62,7 +62,7 @@ MIRRORS = (
     "https://v6.gh-proxy.org/",
     "https://v4.gh-proxy.org/",
     "https://gh-proxy.org/",
-    "",
+    ""
 )
 
 # 单个地址的超时（秒）。直连要短一点，免得卡在那儿等太久。

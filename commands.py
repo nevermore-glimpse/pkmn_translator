@@ -3413,6 +3413,51 @@ def intl_apply_language(game_dir, display="简体中文", fragment=None, emit=No
                                     first=first)
 
 
+def script_intl_paths(game_dir, write=False, include_main=True,
+                      include_plugins=True):
+    """
+    脚本内文本汉化（方案 B）：把 `_INTL("英文")` 直接换成 `_INTL("中文")`。
+
+    为什么不靠编译文本：`_INTL` 按键查第 24 段，查不到就原样返回英文；
+    而第 24 段只能由游戏自己编译数据生成，插件文案常常一条都没进表
+    （实测登神 v0.1.1.3：3299 键里 99.2% 来自主脚本）。写回源码不查表。
+
+    write=False → 只预览，不动任何文件。
+    返回 script_intl.run 的报告 dict。
+    """
+    import script_intl as SI
+    emit("\n" + "=" * 55)
+    emit(f"  脚本内文本汉化：{game_dir}")
+    emit("=" * 55)
+    try:
+        return SI.run(game_dir, write=write, include_main=include_main,
+                      include_plugins=include_plugins, emit=emit)
+    except Exception as e:
+        log.error("脚本内文本汉化失败：%s\n%s", e, traceback.format_exc())
+        emit(f"  ✘ 失败：{e}")
+        return {"ok": False, "error": str(e)}
+
+
+def script_intl_export(game_dir, include_main=True, include_plugins=True):
+    """
+    导出「脚本里有、词表里没有」的 `_INTL` 文案 → 游戏根目录
+    `Script_texts_missing.txt`（intl 格式，每段两行）。
+
+    翻完存成 `Script_texts_missing_translated.txt`，「写回脚本」会自动用上。
+    """
+    import script_intl as SI
+    emit("\n" + "=" * 55)
+    emit(f"  导出脚本待补文案：{game_dir}")
+    emit("=" * 55)
+    try:
+        return SI.export_missing(game_dir, include_main=include_main,
+                                 include_plugins=include_plugins, emit=emit)
+    except Exception as e:
+        log.error("导出待补文案失败：%s\n%s", e, traceback.format_exc())
+        emit(f"  ✘ 失败：{e}")
+        return {"ok": False, "error": str(e), "count": 0}
+
+
 def plugin_inject_paths(game_dirs, font_file=None):
     """
     加载中文文本处理插件：复制进 <游戏>/Plugins/、写字体名，并把**全部**
