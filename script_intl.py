@@ -18,6 +18,29 @@ SCRIPT_TEXTS_SECTION = 24
 # `_INTL("...")` / `_ISPRINTF("...")` —— 前面不能紧跟标识符字符（防 pb_INTL）
 _LIT_RE = re.compile(r'(?<![A-Za-z0-9_])(?:_INTL|_ISPRINTF)\s*\(\s*"((?:[^"\\]|\\.)*)"')
 
+# ★ 粗略判断（用户指定）：`_INTL` 所在**行**里出现下面任一记号，整行都不替换。
+#   宁可不翻，也不把资源名写坏。例：
+#     @sprites["memo"].bitmap =
+#         RPG::Cache.load_bitmap(@directory, _INTL("memo"))
+#   代价：同一行里的真界面文案也会被跳过（如
+#   `pbMessageDisplay(@sprites["msgwindow"], _INTL("What?"))`）。
+SKIP_LINE_TOKENS = (
+    "@sprites[",
+    "RPG::Cache.load_bitmap",
+    "AnimatedBitmap.new",
+    "pbBitmap",
+)
+
+
+def should_skip_line(line, col=None):
+    """
+    `_INTL` 所在行出现 SKIP_LINE_TOKENS 里任一记号 → 不替换。
+
+    ★ 只按行判断，不看 `_INTL` 在行内的位置（粗略判断，宁可少翻）。
+    col 参数保留给调用方，当前不使用。
+    """
+    return bool(line) and any(t in line for t in SKIP_LINE_TOKENS)
+
 # ★ 判「是不是中文」要连**全角标点**一起认：`{1}（PP：---）` 整串只有
 #   U+FF08 / U+FF1A 这类全角符号，只查 \u4e00-\u9fff 会把它当成没翻。
 _CJK_RE = re.compile(u"[\u2e80-\u9fff\uf900-\ufaff\uff01-\uff60]")
@@ -25,6 +48,15 @@ _CJK_RE = re.compile(u"[\u2e80-\u9fff\uf900-\ufaff\uff01-\uff60]")
 
 def has_cjk(text):
     return bool(text and _CJK_RE.search(text))
+
+
+def line_of(text, pos):
+    """pos 所在的那一整行（不含换行符）。"""
+    start = text.rfind("\n", 0, pos) + 1
+    end = text.find("\n", pos)
+    if end < 0:
+        end = len(text)
+    return text[start:end]
 
 
 # ================================================================
@@ -280,17 +312,27 @@ def rewrite_text(text, table, stats=None):
     """
     把一个脚本的源码里所有 `_INTL("英文")` 换成中文 → (新源码, 命中数)。
 
-    stats（可选 dict）会被累加：hit / already / dynamic / miss，并收集 miss 样例。
+    stats（可选 dict）会被累加：hit / already / dynamic / miss / skip_line，
+    并收集 miss 样例。
+
+    ★ 所在行出现 SKIP_LINE_TOKENS 里任一记号（`@sprites[` / `RPG::Cache.load_bitmap`
+      / `AnimatedBitmap.new` / `pbBitmap`）→ 整行不动，例如：
+        @sprites["memo"].bitmap =
+            RPG::Cache.load_bitmap(@directory, _INTL("memo"))
+      这类文本是**资源名 / 索引键**，不是给人看的界面文案。
     """
     if stats is None:
         stats = {}
-    for k in ("hit", "already", "dynamic", "miss"):
+    for k in ("hit", "already", "dynamic", "miss", "skip_line"):
         stats.setdefault(k, 0)
     stats.setdefault("miss_samples", [])
     stats.setdefault("miss_set", set())
 
     def rep(m):
         body = m.group(1)
+        if should_skip_line(line_of(text, m.start())):
+            stats["skip_line"] += 1
+            return m.group(0)
         if "#{" in body:                      # 动态串，换掉会丢插值
             stats["dynamic"] += 1
             return m.group(0)
@@ -475,7 +517,7 @@ def run(game_dir, write=False, include_main=True, include_plugins=True,
 
     rep = {"ok": True, "write": bool(write), "dict": len(table),
            "files": [], "changed": 0, "miss": 0, "dynamic": 0,
-           "already": 0, "backups": [], "errors": [],
+           "already": 0, "skip_line": 0, "backups": [], "errors": [],
            "miss_samples": [], "notes": notes}
 
     # 容器文件先备份（整份容器一改就是全量重写，必须能退回改动前那一刻）
@@ -506,6 +548,7 @@ def run(game_dir, write=False, include_main=True, include_plugins=True,
         rep["miss"] += stats.get("miss", 0)
         rep["dynamic"] += stats.get("dynamic", 0)
         rep["already"] += stats.get("already", 0)
+        rep["skip_line"] += stats.get("skip_line", 0)
         for s in stats.get("miss_samples", []):
             if s not in rep["miss_samples"]:
                 rep["miss_samples"].append(s)
@@ -528,8 +571,10 @@ def run(game_dir, write=False, include_main=True, include_plugins=True,
                                   row["label"][:46], hits))
 
     say("-" * 55)
-    say("  改写 %d 个文件、共 %d 处；已中文跳过 %d，动态串跳过 %d"
-        % (len(rep["files"]), rep["changed"], rep["already"], rep["dynamic"]))
+    say("  改写 %d 个文件、共 %d 处；已中文跳过 %d，动态串跳过 %d，"
+        "加载资源的行跳过 %d"
+        % (len(rep["files"]), rep["changed"], rep["already"],
+           rep["dynamic"], rep["skip_line"]))
     if rep["miss"]:
         say("  仍有 %d 处查不到译文（脚本里有、词表里没有）" % rep["miss"])
     if rep["errors"]:

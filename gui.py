@@ -4570,6 +4570,9 @@ class App:
                             txt += f"\n已是中文跳过 {r['already']} 处"
                         if r.get("dynamic"):
                             txt += f"；带 #{{}} 插值跳过 {r['dynamic']} 处"
+                        if r.get("skip_line"):
+                            txt += (f"；行内带资源记号跳过 "
+                                    f"{r['skip_line']} 处")
                         bak = r.get("backups") or []
                         if bak:
                             txt += "\n备份：" + "、".join(
@@ -5662,7 +5665,9 @@ class App:
             text="把脚本里的 _INTL(\"英文\") 直接改成 _INTL(\"中文\")，"
                  "改完不再经过语言文件查表。\n"
                  "译文取自已编译的中文语言文件；带 #{…} 插值的不动，"
-                 "已是中文的跳过。\n"
+                 "已是中文的跳过；\n"
+                 "同一行出现 @sprites[ / RPG::Cache.load_bitmap / "
+                 "AnimatedBitmap.new / pbBitmap 的整行不动。\n"
                  "改动前自动备份（*.bak），可反复执行。",
             bg=CARD, fg=C_HINT, font=FONT_SMALL,
             justify="left", wraplength=560)
@@ -5936,7 +5941,8 @@ class App:
                     "会把脚本里的 _INTL(\"英文\") 直接改成中文并保存。\n\n"
                     "· 主脚本写 Data/Scripts/*.rb 与 Scripts.rxdata\n"
                     "· 插件写 Data/PluginScripts.rxdata\n"
-                    "· 每个文件改动前自动备份成 *.bak（已存在则不覆盖）\n\n"
+                    "· 每个文件改动前自动备份成 *.bak（已存在则不覆盖）\n"
+                    "· 行内有 @sprites[ 等资源记号的整行不动\n\n"
                     "以后更新插件或脚本会覆盖掉这些改动。\n\n"
                     "确定写回吗？"):
                 return
