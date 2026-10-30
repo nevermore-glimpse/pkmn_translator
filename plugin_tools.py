@@ -58,6 +58,12 @@ PLUGIN_INJECT_MARK = "[pkmn] injected by the Pokemon translation tool"
 
 PLUGIN_SCRIPTS_NAME = "PluginScripts.rxdata"
 
+# 真插件系统里**真正干活**的方法（见 has_plugin_manager）。
+# ★ 不能拿「模块名 PluginManager 出现过」当判据：同人作者会塞空壳兼容层。
+_PLUGIN_MANAGER_API_RE = re.compile(
+    r"def\s+(?:self\.)?(compilePlugins|getPluginOrder|needCompiling"
+    r"|getPluginFiles|pluginFiles|pluginList|installPlugin)\b")
+
 # ---- 没有插件目录时：插件会被拼成一个脚本，插到 Main **之前** ----
 # ★ 必须排在 Main 之前：RGSS 是「从上往下依次执行脚本，读到 Main 就开始跑游戏」，
 #   所以写在 Main 后面的脚本永远不会执行（这就是最早「塞进脚本却没生效」的原因）。
@@ -91,66 +97,110 @@ def plugin_src_dir(ver=None):
     return config.resource_path(PLUGIN_SRC_DIRS[0][1])
 
 
-def pick_plugin_version(game_dir):
+def variant_for_major(major):
+    """Essentials 主版本号 → 插件变体键；比 v16 还老的返回 None。"""
+    if major is None:
+        return None
+    if major >= 21:
+        return "21.1"
+    if major == 20:
+        return "20.1"
+    if major == 19:
+        return "19.1"
+    if major == 18:
+        return "18.1"
+    if major == 17:
+        return "17.2"
+    if major == 16:
+        return "16"
+    return None
+
+
+def _major_of(ver):
+    """'19.1' / '21.99' / 19 → 19（主版本号）；认不出返回 None。"""
+    m = re.match(r"\s*(\d+)", str(ver if ver is not None else ""))
+    return int(m.group(1)) if m else None
+
+
+def detect_plugin_engine(game_dir):
     """
-    按游戏的 Essentials 版本挑插件变体 → (变体, 游戏里读到的版本字符串)。
+    认出这个游戏该用哪份插件本体 → dict：
 
-      主版本 ≥ 21 → 21.1 ；== 20 → 20.1 ；== 19 → 19.1 ；== 18 → 18.1
-      16 / 17.2 → 16 / 17.2（这两个版本没有插件系统，靠塞脚本）
-      读不出版本号 → 有插件系统就当新版（用 21.1）；
-                     没有就按函数指纹认基准（16 / 17.2 / 18.1），认不出用 legacy
+      version   —— 脚本里读到的 Essentials 版本号（读不到为 ""）
+      variant   —— 21.1 / 20.1 / 19.1 / 18.1 / 17.2 / 16 / legacy
+      source    —— 依据："version"（版本号）/ "fingerprint"（函数指纹）
+                        / "fallback"（都没认出来）
+      matched   —— 指纹认出来的基准版本（source=fingerprint 时有值）
+      ratio     —— 指纹重合度
 
-    ★ 插件系统是 **v18 就有的**（`351117_Plugin_Manager.rb`），不是 v19 才有 ——
-      以前这里按「有没有 PluginManager」二分，把 v18.1 的游戏判成了 19.1 版插件
-      （19.1 用 `Color.new_from_rgb` 之类新 API，在 18.1 引擎上会出错）。
-      所以现在先看版本号，PluginManager 只用来兜「读不出型号」的情况。
+    ★ 判定顺序就是**先版本号、读不出来再函数指纹**：
+
+        ① 版本号（module Essentials::VERSION / ESSENTIALSVERSION）
+           主版本 ≥21→21.1 ；20→20.1 ；19→19.1 ；18→18.1 ；17→17.2 ；16→16
+        ② 读不出版本号 → 按「函数指纹重合度」认（essentials_base.best_baseline，
+           跟「官方引擎覆盖」用的是同一套基准表）
+        ③ 连指纹也认不出 → legacy（用 18.1 那份兜底）
+
+    ★ **PluginManager 不参与挑版本**。v18 起引擎就带插件系统，但它只决定
+      「怎么装」（见 install_mode）；早先这里把「有没有 PluginManager」当成
+      「是不是新引擎」，于是被同人作者塞进脚本的兼容空壳
+      （`module PluginManager;def self.register(options);end;end`）骗过去，
+      把 v16 的游戏判成 21.1 —— Pokemon GS Vitro 就是这么中招的。
     """
     ver = essentials_version(game_dir)
-    tup = _version_tuple(ver)
-    pm = has_plugin_manager(game_dir)
-    if tup is None:
-        if pm:
-            return "21.1", ver              # 有插件系统但读不出型号：用最新版
-        return _old_variant(None, game_dir), ver
-    if tup[0] >= 21:
-        return "21.1", ver
-    if tup[0] == 20:
-        return "20.1", ver
-    if tup[0] == 19:
-        return "19.1", ver
-    if tup[0] == 18 or pm:
-        return "18.1", ver
-    return _old_variant(tup, game_dir), ver
+    variant = variant_for_major(_major_of(ver) if ver else None)
+    if variant:
+        return {"version": ver, "variant": variant, "source": "version",
+                "matched": None, "ratio": 0.0}
+
+    # ---- 没有（或读不出）版本号：按函数指纹认 ----
+    variant, matched, ratio = _fingerprint_variant(game_dir)
+    if variant:
+        return {"version": ver, "variant": variant, "source": "fingerprint",
+                "matched": matched, "ratio": ratio}
+    return {"version": ver, "variant": "legacy", "source": "fallback",
+            "matched": None, "ratio": ratio}
 
 
-def _old_variant(tup, game_dir):
+def pick_plugin_version(game_dir):
+    """按「先版本号、没有就函数指纹」挑插件变体 → (变体, 版本号字符串)。"""
+    info = detect_plugin_engine(game_dir)
+    return info["variant"], info["version"]
+
+
+def _fingerprint_variant(game_dir):
     """
-    老引擎（没有插件系统）该用哪份插件 → "16" / "17.2" / "18.1" / "legacy"。
+    按「函数指纹重合度」认引擎 → (变体, 认出的基准版本, 重合度)。
 
-    ★ 认不出版本号时按「函数指纹重合度」挑基准 —— 跟「官方引擎覆盖」用的是
-      同一套（essentials_base.best_baseline）。v16 的脚本里没有版本号常量，
-      老同人作也常读不出来，只靠版本号会一律掉进 legacy。
+    ★ 老同人作和一部分改过版本号的作品读不出版本号，只能靠这个；
+      基准表里 16~21.1 都有，认出哪个主版本就用对应那版插件。
+      认不出（重合度不够）返回 (None, None, 最好重合度)。
     """
-    if tup:
-        if tup[0] >= 18:
-            return "18.1"
-        if tup[0] == 17:
-            return "17.2"
-        if tup[0] == 16:
-            return "16"
     try:
         import essentials_base as EB
         scripts = EB.scan_game_scripts(game_dir)
         if scripts:
             auto, ratio = EB.best_baseline(scripts)
-            mapping = {"16": "16", "17": "17.2", "18": "18.1"}
-            if auto in mapping:
-                log.info("老引擎按函数指纹认出 v%s（重合 %.0f%%）→ 用 %s 版插件",
-                         auto, ratio * 100, mapping[auto])
-                return mapping[auto]
+            variant = variant_for_major(_major_of(auto))
+            if variant:
+                log.info("脚本里没有版本号，按函数指纹认出 v%s（重合 %.0f%%）"
+                         "→ 用 Essentials %s 版插件", auto, ratio * 100, variant)
+                return variant, auto, ratio
+            log.info("函数指纹没能认出引擎（最高重合 %.0f%%），用 legacy 兜底",
+                     (ratio or 0) * 100)
+            return None, auto, ratio or 0.0
     except Exception as e:                    # noqa: BLE001
-        log.debug("老引擎按指纹认版本失败：%s", e)
-    return "legacy"
+        log.debug("按函数指纹认版本失败：%s", e)
+    return None, None, 0.0
+
+
+def _old_variant(tup, game_dir):
+    """老引擎该用哪份插件 → "16" / "17.2" / "18.1" / "legacy"（保留的兼容入口）。"""
+    variant = variant_for_major(tup[0] if tup else None)
+    if variant:
+        return variant
+    variant, _auto, _r = _fingerprint_variant(game_dir)
+    return variant or "legacy"
 
 
 def install_mode(game_dir):
@@ -691,20 +741,37 @@ end
 
 def has_plugin_manager(game_dir):
     """
-    这个游戏有没有插件系统（Essentials v19 起才有 PluginManager）。
+    这个游戏有没有**真正的**插件系统（Essentials v18 起才有 PluginManager）。
 
-    ★ 只看**脚本里有没有 PluginManager** —— 很多整合版压根没有 Plugins
-      文件夹（我们到时候自己建），但插件系统是有的。
+    ★ 只看「脚本里有没有 PluginManager」会被骗：很多同人作者为了让
+      通用的插件代码在有/没有插件系统的引擎上都能跑，会往脚本里塞一个
+      空壳 —— Pokemon GS Vitro / 宝可梦异界汉化版 / 宝可梦非洲征服者
+      里就有：
+
+          module PluginManager;def self.register(options);end;end
+
+      这几个游戏的引擎其实是 v16，却被空壳骗成了「有插件系统」。
+      所以这里必须看到**真正干活的方法**（compilePlugins / getPluginOrder /
+      needCompiling …）才算有；只有 module 名不算。
+
+    ★ 很多整合版压根没有 Plugins 文件夹（我们到时候自己建），所以不靠文件夹；
       脚本读不出来时才退回去看文件夹（这种情况下判不了，就当没有）。
     """
-    readable = False
+    stub = False
     for _name, text in GS.iter_script_texts(game_dir):
-        readable = True
-        if "module PluginManager" in text or "def self.compilePlugins" in text:
+        if _PLUGIN_MANAGER_API_RE.search(text):
             return True
-    if readable:
+        if "module PluginManager" in text or "class PluginManager" in text:
+            stub = True
+    if stub:
+        log.info("脚本里只有 PluginManager 的空壳（没有 compilePlugins 等），"
+                 "不当作插件系统")
         return False
-    return os.path.isdir(plugins_dir(game_dir))
+    if os.path.isdir(plugins_dir(game_dir)):
+        # 脚本读得出来却找不到能干活的方法 → 还是不算；
+        # 脚本读不出来（readable=False）时才只能看文件夹。
+        return not bool(list(GS.iter_script_texts(game_dir)))
+    return False
 
 
 def _version_tuple(text):
@@ -730,7 +797,8 @@ def check_compat(game_dir):
       时才兜底加兼容层。
     """
     ver = essentials_version(game_dir)
-    variant, _v = pick_plugin_version(game_dir)
+    info = detect_plugin_engine(game_dir)
+    variant = info["variant"]
     mode = install_mode(game_dir)
     pm = has_plugin_manager(game_dir)
     texts = GS.iter_script_texts(game_dir)
@@ -744,26 +812,36 @@ def check_compat(game_dir):
     need = bool(missing) or (unreadable and variant != "legacy")
     if mode == "scripts":
         need = False            # 塞脚本不需要兼容外壳
+    # 版本是怎么认出来的（给界面/日志看）
+    if info["source"] == "version":
+        why_ver = f"Essentials {ver}"
+    elif info["source"] == "fingerprint":
+        why_ver = (f"脚本里没有版本号，按函数指纹认出是 v{info['matched']}"
+                   f"（重合 {info['ratio']:.0%}）")
+    else:
+        why_ver = "版本号和函数指纹都没认出来"
     if not readable:
         mode_name = "脚本" if mode == "scripts" else "Plugins 目录"
         advice = (f"读不到游戏脚本，按 Essentials {variant} 版插件"
                   f"（{mode_name}方式）处理")
     elif mode == "scripts":
-        why = ("这个游戏没有插件系统（Essentials v19 之前 / Ruby 1.8）"
+        why = ("这个游戏没有插件系统（Essentials v18 之前 / Ruby 1.8）"
                if not pm else "这个游戏没有 Plugins 目录")
-        advice = (f"{why}：改用 Essentials {variant} 版插件，"
+        advice = (f"{why_ver} → {why}：用 Essentials {variant} 版插件，"
                   f"并把它插到脚本里 Main 的前面")
     elif missing:
-        advice = ("脚本里找不到 " + "、".join(missing) +
+        advice = (why_ver + "，脚本里找不到 " + "、".join(missing) +
                   f"，用 Essentials {variant} 版插件并加兼容层兜底")
     else:
-        advice = (f"Essentials {ver} → 用 {variant} 版插件"
+        advice = (f"{why_ver} → 用 {variant} 版插件"
                   f"（Plugins 目录 + PluginScripts.rxdata）")
     if not readable:
         advice += "（脚本读不出来，判断可能不准）"
     return {"version": ver, "variant": variant, "mode": mode,
             "plugin_manager": pm, "missing_apis": missing,
             "need_compat": need, "old": unreadable,
+            "detected_by": info["source"], "matched": info["matched"],
+            "ratio": info["ratio"],
             "readable": readable, "advice": advice}
 
 
@@ -806,18 +884,21 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
     植入中文文本处理插件。两条路（按游戏自动选，见 install_mode）：
 
       ★ 「有插件系统 + 有 Plugins 目录」→ 老办法：
-          1. 按 Essentials 版本挑插件本体（21.1 / 20.1 / 19.1），
-             复制到 <游戏>/Plugins/chinese text manager/；
+          1. 按**引擎版本**挑插件本体（16 / 17.2 / 18.1 / 19.1 / 20.1 / 21.1，
+             见 detect_plugin_engine），复制到 <游戏>/Plugins/chinese text manager/；
           2. 选定字体写进 Settings.rb，字体复制到 Fonts/；
              并把引擎脚本里的字体定义一起改掉（见 engine_tools.patch_engine_font）；
-          3. 型号读不出来 / 引擎缺 API 时加一层兼容外壳；
+          3. 版本号读不出来 / 引擎缺 API 时加一层兼容外壳；
           4. 重新编译 Data/PluginScripts.rxdata（含游戏原有的其它插件）。
 
-      ★ 「没有插件系统（v19 之前 / Ruby 1.8）」或「没有 Plugins 目录」→
+      ★ 「没有插件系统（v18 之前 / Ruby 1.8）」或「没有 Plugins 目录」→
          用 16 / 17.2 / 18.1 里对应那份（认不出型号就用 legacy = 18.1 兜底），
          把 Settings.rb + Tools.rb 拼成一个脚本，
-         **追加到 Scripts.rxdata 的最后一个**（解包游戏则写
-         Data/Scripts/zzz_pkmn_chinese_text.rb）。字体一样复制到 Fonts/。
+         **插到 Scripts.rxdata 里 Main 的前面**（解包游戏则写
+         Data/Scripts/<Main 编号-1>_pkmn_chinese_text.rb）。字体一样复制到 Fonts/。
+
+    ★ 挑版本**只看引擎**（先版本号、读不出来再函数指纹），不看有没有
+      PluginManager —— 那东西只决定怎么装。
 
     adaptive=False 时不做兼容层、也不按版本挑（一律用 21.1 那份、走插件系统）。
     返回报告 dict。
@@ -831,6 +912,19 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
         say(f"[插件] {compat['advice']}")
         variant = compat["variant"]
         mode = compat["mode"]
+        if compat["detected_by"] == "version":
+            say(f"[插件] 引擎识别：读出版本号 Essentials {compat['version']}"
+                f" → 用 {variant} 版插件")
+        elif compat["detected_by"] == "fingerprint":
+            say(f"[插件] 引擎识别：脚本里没有版本号，按函数指纹认出是 "
+                f"v{compat['matched']}（重合 {compat['ratio']:.0%}）"
+                f" → 用 {variant} 版插件")
+        else:
+            say(f"[插件] 引擎识别：版本号和函数指纹都没认出来"
+                f" → 用 {variant} 版插件兜底")
+        if compat["plugin_manager"] is False:
+            say("[插件] 注意：这个游戏没有真正的插件系统"
+                "（脚本里的 PluginManager 可能只是空壳），所以走「插到脚本里」这条路")
     else:
         variant, mode = "21.1", "plugins"
 

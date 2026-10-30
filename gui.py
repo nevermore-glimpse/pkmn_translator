@@ -5685,7 +5685,8 @@ class App:
                     primary=True, bg=CARD,
                     command=self._do_plugin_inject).pack(side="right")
         tk.Label(c3.body,
-                 text="按游戏版本挑对应插件本体（16 / 17.2 / 18.1 / "
+                 text="先读游戏里的 Essentials 版本号，读不出来再按函数指纹认，"
+                      "据此挑对应版本的插件本体（16 / 17.2 / 18.1 / "
                       "19.1 / 20.1 / 21.1），装进游戏、把字体复制到 Fonts，"
                       "并把引擎脚本里的字体定义一起改掉。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
