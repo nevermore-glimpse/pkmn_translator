@@ -36,13 +36,12 @@ BANNER = """\
   3. 重翻检查报告内容
   4. 术语更新后重翻
   5. 前缀字典（查看 / 应用）
-  6. 中文润色重翻
-  7. 换行重排
-  8. 术语字典（Excel 转术语表 / 查看编辑字典）
-  9. 设置
-  10. 本地模型服务（Ollama / llama.cpp / LM Studio）
-  11. 开启DEBUG（检测引擎 / 写 $DEBUG=true）
-  12. 日志 / 环境检查
+  6. 换行重排
+  7. 术语字典（Excel 转术语表 / 查看编辑字典）
+  8. 设置
+  9. 本地模型服务（Ollama / llama.cpp / LM Studio）
+  10. 开启DEBUG（检测引擎 / 写 $DEBUG=true）
+  11. 日志 / 环境检查
   0. 退出
 ====================================================================
 """
@@ -172,18 +171,16 @@ def run_cli():
             elif choice == "5":
                 commands.cmd_review_prefix_dict()
             elif choice == "6":
-                commands.cmd_polish()
-            elif choice == "7":
                 commands.cmd_reflow()
-            elif choice == "8":
+            elif choice == "7":
                 commands.cmd_build_terms()
-            elif choice == "9":
+            elif choice == "8":
                 settings.show_menu()
-            elif choice == "10":
+            elif choice == "9":
                 commands.cmd_provider()
-            elif choice == "11":
+            elif choice == "10":
                 commands.cmd_debug()
-            elif choice == "12":
+            elif choice == "11":
                 commands.cmd_show_logs()
             elif choice == "0":
                 log.info("用户退出")

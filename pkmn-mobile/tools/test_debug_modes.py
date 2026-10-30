@@ -200,7 +200,7 @@ def main():
             games[mode] = game
             rep, logs = run_task(
                 port, "/api/debug/enable",
-                {"dir": game, "mode": mode, "force": True, "guard": True})
+                {"dir": game, "mode": mode, "force": True})
 
             if rep is None:
                 report(False, f"方式 {mode}：任务未返回结果",

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-翻译客户端 + 批量翻译 / 中文润色。
+翻译客户端 + 批量翻译。
   · 翻译：输出固定 JSON，每行 {"id":N,"text":"译文"}
   · 术语提取（term_extract.py）**就是这条翻译流水线**：名字文件直接走
     正常翻译，翻完由 term_extract 把「原文→译文」并进术语表
@@ -36,33 +36,6 @@ log = get_logger("translator")
 #      "生动" 添油加醋，明确写"不增不删"比抽象要求有效。
 #   5. 模板文件在 prompts/ 下，按目标语言放 prompts/{zh,en,ja}/ 可覆盖
 #      默认版本；改模板不用动代码，exe 旁放同名文件即可热替换。
-
-# ---------------- 中文润色 ----------------
-POLISH_SYSTEM_PROMPT = r"""你的任务是把已经译成中文的游戏台词润色成更地道的{tgt}。
-
-【输出】
-每条一行：
-<编号>译文
-不要解释、空行、markdown，不要输出【参考原文】。
-
-【必须遵守】
-1. 控制码（\n \c[3] \v[10] \tg[Owen] 等）原样保留，不翻译、不改写、不移动，
-   数量、位置、大小写都不变。
-2. 保留换行控制码 \n；不要在 \n 前后新增标点。
-3. 不改变原意、事实、情绪方向、人物关系；不新增动作、心理活动或设定；
-   不改变句子数量，不删减内容，可以适当调整句子长度和语序。
-4. 输入里有多少个编号，就必须输出多少行，一个都不能少、不能合并；
-   也不要输出输入里没有的编号。
-
-【润色标准】
-通顺：符合中文口语习惯，消除翻译腔、语序别扭、搭配不当、代词/量词误用、重复啰嗦。
-生动：在原文信息范围内用更具体、有画面感的说法，让台词有代入感。
-贴角色：按说话人身份、性格、情绪调整口吻，同一角色前后一致。
-克制：生动不等于堆辞藻；不要网络梗、不要过度文艺。
-"""
-
-_POLISH_TEMPLATE = r"""{body}
-"""
 
 # 翻译用 system 提示词（输出格式固定 JSON）
 SYSTEM_PROMPT_JSONLINE = r"""你是专业游戏本地化译者，负责把游戏文本翻译成{tgt}。
@@ -462,8 +435,8 @@ def _parse_model_output(raw, expected=None):
 
     ★ 翻译走 JSON（{"id":N,"text":"...","terms":{...}}）：逐行 json.loads，
       失败走逐字段抠取兜底（模型漏转义引号 / 多逗号都能救）。
-    ★ 同时保留 tag 行（<N>译文 / <N>@@T:术语）的解析：润色流程用的就是
-      <编号>译文，模型偶尔也会不听话输出这个格式。
+    ★ 同时保留 tag 行（<N>译文 / <N>@@T:术语）的解析：
+      模型偶尔会不听话输出这个格式。
     """
     translations = {}
     terms_map = {}
@@ -1294,61 +1267,6 @@ class OllamaClient:
 
         return translations
 
-    # ---------- 中文润色 ----------
-    def polish_batch(self, items, section=None):
-        """
-        items: [(idx, safe_text), ...]  safe_text 为已保护控制码的中文译文
-               也接受 [(idx, safe_text, safe_src), ...]：
-               第三项是原文（已保护），会作为末尾的【参考原文】交给模型比对。
-        section: 可选，当前文件的文本类别名 —— 有类别提示词时，
-               把它的**风格段**（【本文本类型】+【翻译方法】，见
-               cat_prompts.style_block 的取舍说明）追加到 system 末尾。
-        返回:  {idx: polished}
-        """
-        if not items:
-            return {}
-
-        body_lines, ref_lines = [], []
-        for it in items:
-            idx = it[0]
-            text = it[1]
-            src = it[2] if len(it) > 2 else None
-            body_lines.append(f"<{idx}>{text}")
-            if src:
-                ref_lines.append(f"[{idx}]{src}")
-
-        body = "\n".join(body_lines)
-        if ref_lines:
-            # ★ 原文放末尾当参考提示词：只用于比对原意，不参与输出
-            body += ("\n\n【参考原文】编号与上面一一对应，仅供比对原意、检查漏译；"
-                     "不要输出这一段，也不要照抄其中的控制码。\n"
-                     + "\n".join(ref_lines))
-
-        user_msg = load_template("user_polish.txt",
-                                 _POLISH_TEMPLATE).replace("{body}", body)
-        system = load_template("system_polish.txt", POLISH_SYSTEM_PROMPT)
-        system = system.replace("{tgt}", config.TARGET_LANG)
-        if section:
-            # ★ 同 _system_prompt：类别段只追加在末尾，共享前缀保持稳定；
-            #   反向 import 成环，故延迟导入。
-            try:
-                import cat_prompts as CP
-                block = CP.style_block(section)
-            except Exception as e:
-                log.debug("润色类别段装配失败（按无类别段处理）：%s", e)
-                block = ""
-            if block:
-                system = system.rstrip() + "\n\n" + block.rstrip()
-
-        raw = self.chat(
-            system, user_msg,
-            temperature=getattr(config, "POLISH_TEMPERATURE", 0.35),
-        )
-        translations, _ = _parse_model_output(
-            raw, expected={it[0] for it in items})
-        return translations
-
-
 # ================================================================
 # 带重试的封装
 # ================================================================
@@ -1394,36 +1312,4 @@ def translate_with_retry(client, batch, depth=0,
         return result
 
     log.error("单条也失败，放弃该批（最后错误：%s）", last_err)
-    return {}
-
-
-def polish_with_retry(client, batch, depth=0, section=None):
-    """润色的重试封装（逻辑与翻译一致，但不带术语表）。"""
-    if not batch:
-        return {}
-
-    retries = int(getattr(config, "BATCH_RETRIES", 2) or 0)
-    last_err = None
-    for attempt in range(retries + 1):
-        try:
-            return client.polish_batch(batch, section=section)
-        except Exception as e:
-            last_err = e
-            log.warning("润色整批失败（第 %d/%d 次）：%s",
-                        attempt + 1, retries + 1, e)
-            time.sleep(min(2.0 * (attempt + 1), 6.0))
-
-    if len(batch) > 1 and depth < 4:
-        parts = 2 ** (depth + 1)          # 几何缩块（同翻译）
-        size = max(1, -(-len(batch) // parts))
-        log.info("润色整批失败，按 %d 块（每块约 %d 条）缩块重试",
-                 parts, size)
-        result = {}
-        for i in range(0, len(batch), size):
-            chunk = batch[i:i + size]
-            r = polish_with_retry(client, chunk, depth + 1, section)
-            result.update(r)
-        return result
-
-    log.error("润色单条也失败，放弃该批（最后错误：%s）", last_err)
     return {}

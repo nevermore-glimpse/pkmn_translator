@@ -571,7 +571,6 @@
     box.innerHTML = kv([
       ["Essentials 版本", d.version],
       ["DEBUG 开关", d.debug_on ? "已开启" : "未开启", d.debug_on ? "on" : "off"],
-      ["编译闸门", d.guarded ? "已装" : "未装", d.guarded ? "on" : "off"],
     ]);
   }
 
@@ -630,12 +629,11 @@
       srcs.forEach((s) => { adDecisions[s.key] = pick; });
     }
 
-    // 方式①–⑦ + 两个勾选项，全部交给后端（逻辑在 api_debug.api_enable）
+    // 方式①–⑦ + 勾选项，全部交给后端（逻辑在 api_debug.api_enable）
     runTask("/api/debug/enable", {
       dir,
       mode: $("debugMode").value || "main",
       force: $("optForce").checked,
-      guard: $("optGuard").checked,
       antidebug: adDecisions,
     }, "debugLog", "debugBar", "btnCancel", loadDebugStatus);
   });

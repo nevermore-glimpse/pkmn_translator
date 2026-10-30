@@ -1,363 +1,813 @@
-# Pokémon Fan Game Translation Tool
+# 宝可梦同人工具
 
-[中文](README-ch.md) | [English](README.md)
+[中文](README.md) | [English](README-en.md)
 
-A batch translation tool for Pokémon fan game text files, powered by a local Ollama LLM.  
-Supports terminology lists, control-code detection, resume from cache, and automatic checking.
+使用本地 Ollama 大模型批量翻译宝可梦同人游戏文本文件，支持术语表、  
+控制码检测、断点续传、自动检查。
 
-## Features
+## 特性
 
-- 🤖 **Local translation** — Uses the Ollama API, data never leaves your machine
-- 📚 **Terminology list** — Generate from an Excel multilingual sheet with one click; official translations are pre-substituted
-- 🔒 **Placeholder protection** — Control codes like `\PN`, `\wt[10]`, `[Haya]` are not translated
-- 💾 **Resume from cache** — Cache is saved after each batch; you can Ctrl+C and continue anytime
-- ✅ **Auto-check** — Automatically reports untranslated lines / symbol mismatches / special lines after translation
-- 🔄 **Auto re-translate** — Re-translates untranslated / suspected-untranslated sentences with one click
-- 🔀 **Line rewrapping** — Dedicated step (menu 7): by character count for `[map*]` (`\n`) and other blocks (spaces). **Blocks can be multi-selected, and only the selected blocks are rewrapped.** Not applied automatically after translation.
-- 📤 **Extract / compile game text** — Same as *Extract Text* / *Compile Text* in the game's debug menu, but without launching the game. Text is always split into **one txt per section** (older builds go to `Text_<lang>/`, v21+ to `Text_<lang>_core/` and `Text_<lang>_game/`), which makes translating far easier. **Splitting never changes the compiled result** — the compiler rebuilds the table by section/map id, so a single file and 20 files produce a **byte-identical** `.dat` (verified on real games; regression `work/t_lang_split.py`). Can also add the language to `Settings::LANGUAGES` for you (uncomment the first entry → copy the line → `English`→`Chinese`; no model call, no comment translation). Verified byte-for-byte against real games' own output (menu 1).
-- ✏️ **Edit translations by hand + apply them** — Double-click any row in the check report to edit it: source text on top (read-only, for reference), translation below. Saved into the cache and filed under a new "已编辑" (edited) kind that is never overwritten by re-translation. Then hit **"应用已编辑"** to push every hand-edited line into the translation cache *and* into the generated `*_translated.txt` — untouched lines stay byte-identical (menu 3).
-- 🈶 **Chinese text plugin** — **Four plugin bodies ship with the tool (21.1 / 20.1 / 19.1 / legacy) and the right one is picked automatically from the game's `Essentials::VERSION`** (plus whether the game has a plugin system at all).
-  - Games **with** a `Plugins/` folder: the plugin is dropped in there and every plugin (including the game's own) is **compiled straight into `Data/PluginScripts.rxdata`** — no debug mode, no launching the game. A compatibility shim is added when the version can't be read, falling back to the engine's own implementation if the plugin raises.
-  - Games **without** a `Plugins/` folder, or without a plugin system at all (pre-v19, **Ruby 1.8.1**): the plugin is concatenated into a single script and **inserted just *before* the `Main` script in `Scripts.rxdata`** — RGSS evaluates scripts top to bottom and enters the game loop the moment it reaches `Main`, so anything placed *after* `Main` never runs (that was the original "injected but no effect" bug). For unpacked games the file is named after `Main`'s number minus one (e.g. `999_Main.rb` → `998_pkmn_chinese_text.rb`) so it sorts between the last normal script and `Main`.  
-    The legacy body patches `String#ord` (via `unpack("U")` — `self[0]` only returns the first *byte* in 1.8 and would never detect Chinese) and `String#each_char`, routes every per-character split through `_pkmn_chars()` (Ruby 1.8's `$KCODE` is not `'U'`, so `scan(/./m)` splits *bytes* and Chinese is never detected), writes both the modern `FONT_NAME` and the legacy `MessageConfig::FontName` font constants, and builds the `\p{Han}` regex at runtime so old Oniguruma won't choke. Re-injecting never stacks duplicates, and "restore" removes exactly that one entry. Verified: `Scripts.rxdata` round-trips byte-for-byte on six real games, so only the one inserted entry changes (menu 1).
-- 🧠 **Terminology re-translation** — Detects newly added terms and re-translates only the affected sentences
-- ⚙️ **In-app settings** — Edit all configuration values from the menu, no manual file editing
-- 📋 **One-click copy** — Right-click any report / term / prefix list to copy it as  
-  tab-separated text (paste straight into Excel); logs, file paths, statistics and  
-  settings fields are copyable too
-- 🖥️ **Standalone exe** — Releases include a ready-to-run Windows executable
+- 🪟 **亚克力毛玻璃 GUI** — v1.2.0 起默认图形界面，11 个功能页 + 文件勾选侧边栏
+- ☁️ **云端 API 模式** — 除本地 Ollama 外支持 OpenAI 兼容云端模型，切换时自动同步省 token 参数
+- 🔔 **检查更新** — 启动时自动比对 GitHub 最新 release，有新版弹窗提示并给出下载链接
+- 🤖 **本地翻译** — 调用 Ollama API，数据不出本机
+- 📚 **术语表** — 从 Excel 多语言表一键生成，官方译名预替换
+- 🔒 **控制码保护** — `\PN`、`\wt[10]`、`[Haya]` 等控制码不被翻译
+- 💾 **断点续传** — 缓存每批落盘，随时 Ctrl+C 都能继续
+- ✅ **自动检查** — 翻译后自动报告未翻译 / 符号不匹配 / 特殊行
+- 🔄 **自动重翻** — 一键重翻未翻译 / 疑似未翻译的句子
+- 🖊️ **手工改句 + 应用已编辑** — 报告列表双击改译文；改完点「应用已编辑」把  
+  手工译文写进缓存和 `*_translated.txt`（没改的行一个字节都不动）
+- 🔀 **换行重排** — 独立菜单（菜单 6），`[map*]` 按字数重排 `\n`、其它区块按字数重排空格；**可多选区块，只重排选中的那些**
+- 📤 **文本提取 / 编译** — 不用进游戏、不用开调试，直接读游戏已编译的原文表导出 `intl.txt`，翻译完再编译回游戏能读的语言文件（菜单 1）
+- 🈶 **中文文本处理插件** — 有 `Plugins/` 目录的游戏：放进去并**直接编译进 `PluginScripts.rxdata`**；**没有 `Plugins/` 目录或没有插件系统（v19 之前的老游戏，跑 Ruby 1.8）**：把插件拼成一个脚本**插到 `Scripts.rxdata` 里 `Main` 的前面**（RGSS 读到 Main 就进游戏主循环，挂在它后面的脚本不执行）。**按游戏 Essentials 版本自动选 21.1 / 20.1 / 19.1 / 18.1 / 17.2 / 16 六份插件本体**，字体可自选（菜单 1 下层）；换字体的同时会把**引擎脚本里的字体定义**一起改掉（v16/17.2 在 `SpriteWindow`、v18.1 在 `MessageConfig`、v19 在 `Settings::FONT_OPTIONS`、v19.1+ 在 `MessageConfig` 的 `FONT_NAME`），改前自动备份，「还原」可退回
+- 🧠 **术语更新重翻** — 自动识别新增术语，只重翻包含它的句子
+- 📁 **单文件 / 整个文件夹** — 重翻类功能可自由选择作用范围
+- ⚙️ **内置设置菜单** — 界面里直接改配置，Ollama 模型名自动检测本机已装模型
+- 📋 **一键复制** — 报告 / 术语 / 前缀等列表可右键复制（导出制表符分隔，直接粘进  
+  Excel），日志、文件路径、统计数字、设置项也都支持右键复制
+- 🖥️ **独立 exe** — Releases 页提供可直接运行的 Windows 可执行文件
 
-## Requirements
+## 环境要求
 
-**If you download the exe from [Releases](https://github.com/nevermore-glimpse/pkmn_translator/releases):**
+**下载 Releases 里的 exe：**
 
 - Windows 10/11
-- [Ollama](https://ollama.com/download) installed and running
-- Recommended model: `qwen2.5:14b`
+- [Ollama](https://ollama.com/download) 已安装并运行
+- 推荐模型：`qwen2.5:14b`
 
-**If you run from source:**
+**源码运行：**
 
 - Python 3.9+
-- [Ollama](https://ollama.com/download) installed and running
-- Recommended model: `qwen2.5:14b`
+- [Ollama](https://ollama.com/download) 已安装并运行
+- 推荐模型：`qwen2.5:14b`
 
-## Installation
+## 安装
 
-### Option A — Download the exe (recommended)
+### 方式 A —— 下载 exe（推荐）
 
-1. Go to the [Releases](https://github.com/nevermore-glimpse/pkmn_translator/releases) page
-2. Download `PkmnTranslator_vX.Y.Z.zip` and unzip it
-3. Run `宝可梦同人工具.exe`
-4. (Optional) Double-click `创建桌面快捷方式.vbs` to create a desktop shortcut with icon
+1. 打开 [Releases](https://github.com/nevermore-glimpse/pkmn_translator/releases) 页面
+2. 下载 `PkmnTranslator_vX.Y.Z.zip` 并解压
+3. 双击 `宝可梦同人工具.exe`
+4. （可选）双击 `创建桌面快捷方式.vbs` 生成桌面带图标的快捷方式
 
-### Option B — Run from source
+### 方式 B —— 源码运行
 
 ```bash
-# 1. Install dependencies
+# 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. Pull the model
+# 2. 拉取模型
 ollama pull qwen2.5:14b
 
-# 3. Make sure Ollama is running
+# 3. 确认 Ollama 在跑
 curl http://localhost:11434/api/tags
 
-# 4. Start the tool
+# 4. 启动图形界面
+python main.py
+# 需要命令行模式时：
+python main.py --cli
+```
+
+## 使用
+
+### 快速开始
+
+双击 `启动.bat`（或 exe 版本的 `宝可梦同人工具.exe`），或在命令行：
+
+```bash
 python main.py
 ```
 
-## Usage
+默认进入图形界面；加 `--cli` 进入命令行菜单。
 
-### Quick Start
 
-Double-click `启动.bat` (or `宝可梦同人工具.exe` if using the release build), or run:
+### 图形界面（GUI）
 
-```bash
-python main.py          # acrylic GUI (default)
-python main.py --cli    # command-line menu
+| 菜单          | 作用                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 文本提取与编译   | 上层「提取文本」（同游戏 debug 的 Extract Text）/ 中层「编译文本」（可选单个 txt、多个 txt 或整个文件夹，可勾选「编译后把中文加进游戏语言表」；**只编译译文 `*_translated.txt`，源文件没有译文时才编译源文件**）/ 下层「加载中文文本处理插件」（可自选字体；**按游戏 Essentials 版本自动选 21.1 / 20.1 / 19.1 / 18.1 / 17.2 / 16 六份插件本体**；有 `Plugins/` 目录就编译进 `PluginScripts.rxdata`，没有就把插件插到 `Scripts.rxdata` 里 `Main` 前面）；右侧选游戏根目录（要有 `Data` 文件夹和 `.exe`）。**会按 Essentials 版本自动选旧版单文件 / 新版拆分方案** |
+| 2 翻译        | 上层语言 / 中层模型 / 下层开始；右侧选文件                                                                                                                                                                                                                                                                                                                                                      |
+| 3 重翻检查报告    | 语言与模型 + 报告内容列表（**双击任意一行可编辑译文** + **搜索框按类型 / 原文 / 译文 / 文件名过滤**）+ 开始重翻 / **解决术语冲突**（独立的冲突列表：上方术语、下方命中句子，可改译文、可点「状态」列手动标记「已编辑」）/ 复制列表 / **应用已编辑**                                                                                                                                                                                                                                |
+| 4 术语更新后重翻   | 语言与模型 + 可编辑术语表 + 「应用术语」（**重翻对象 = 复选框勾选的术语**；新增 / 修改 / 删除的术语自动勾选）；右侧**只选翻译缓存 `*_cache.json`**                                                                                                                                                                                                                                                                                                                           |
+| 5 前缀字典      | 前缀列表（**只展示 `\tg` 类型的前缀**；原文 / 译文可编辑）+「应用前缀字典」；右侧**只选翻译缓存 `*_cache.json`**（没勾文件时只更新字典本身）                                                                                                                                                                                                                                                                                                           |
+| 6 换行重排      | [map*]（\n）与其它区块（空格）合并为一屏按区块类型切换；**区块列表可多选，重排只对选中的区块生效**；右侧**只选译文文件 `*_translated.txt`**（也可直接选游戏根目录自动扫，植入插件已移到菜单 1 下层）                                                                                                                                                                                                                                                         |
+| 7 术语字典      | **首页是术语字典**：查看 / 搜索 / 修改（原文与译文均可双击编辑）/ 新增 / 删除 / 撤回，并支持**一键删除自动提取的术语**；可切到 Excel 转术语表（语言 + 工作表选择 + 追加/覆盖开关 + 开始转换）                                                                                                                                                                                                                                    |
+| 8 设置        | 顶部作者信息，下方全部配置项（模型自动检测）                                                                                                                                                                                                                                                                                                                                                        |
+| 9 本地模型服务   | 上层切换服务提供商 / 中层模型列表与参数 / 下层参数设置与一键部署                                                                                                                                                                                                                                                                                                                                           |
+| 10 开启 DEBUG | 右侧先选**游戏启动程序 exe**（工具用它所在文件夹当游戏目录，没有 `Data` 也能选）；开启方式下拉框（见下）                                                                                                                                                                                                                                                                                                                |
+| 11 日志       | 实时运行日志 + 进度                                                                                                                                                                                                                                                                                                                                                                   |
+
+> **左侧菜单（8 项）**：1 文本提取与编译 / 2 游戏汉化 / 3 PBS编辑 / 4 本地模型服务 / 5 开启DEBUG / 6 存档编辑 / 7 设置 / 8 日志。
+> 下表里的 2–7 项（翻译 / 重翻检查报告 / 术语更新后重翻 / 前缀字典 / 换行重排 / 术语字典）都收进了 **菜单 2「游戏汉化」**：
+> 进去后右侧列出这些步骤，点一项进入对应界面，界面顶部有「← 返回游戏汉化」可以回来。
+> 下表 / 下文提到的「菜单 8 / 9 / 10 / 11」分别对应左侧的 **7 设置 / 4 本地模型服务 / 5 开启DEBUG / 8 日志**；
+> 命令行菜单（`--cli`）与下表编号一致。
+
+**菜单 10 · 开启 DEBUG 的方式**（按引擎版本自动适配注入位置）：
+
+| # | 方式             | 说明                                                                                            |
+| - | -------------- | --------------------------------------------------------------------------------------------- |
+| ① | 通用             | Main 的 `pbCallTitle` 第一行写 `$DEBUG=true`，启动即调试模式                                            |
+| ② | 删条件            | 去掉三处「需 $DEBUG 才生效」的判定（F9 / 队伍 Debug 项 / 穿墙）                                                   |
+| ③ | SPECIAL 键      | Scene_Map 的 SPECIAL 分支注入「`$DEBUG` 不为真就设为真并弹窗」                                                 |
+| ④ | 除虫喷雾（设 $DEBUG） | `pbRepel` 开头注入同样逻辑                                                                            |
+| ⑤ | 除虫喷雾（开菜单）      | 同位置注入 `pbFadeOutIn { pbDebugMenu }`                                                           |
+| ⑥ | 调试启动器 **（测试）** | 在游戏目录生成「调试模式启动.py / .bat」，点击即以调试模式进游戏；不改游戏本体、不动存档，加密打包（单 exe）的游戏也能用；**也是唯一不需要 `Data` 文件夹的方式** |
+
+方式 ①–⑤ 直接改游戏脚本（两处存放时两处都改、各备份一次）；方式 ⑥ **不改游戏本体**：  
+按引擎走不同路径 —— RGSS（v16–v18）用内存补丁（启动后替换进程内的脚本引导串，关游戏即失效）；  
+mkxp-z（v19–v21.1）用命令行参数 `Game.exe debug` + 游戏目录 `mkxp.json` 的 `preloadScript`。  
+为防开调试后触发 Essentials 全量重编译（打包版没有 `pbs/` 与 `Data/*.dat` → `Errno::ENOENT`），  
+方式 ⑥ 会**补齐空占位文件**（缺目录就建、缺文件就补，让 `Data/*.dat` 恒新于 `pbs/*.txt`，已有文件不动）。
+
+菜单 2–6 右侧都有「待操作文件」侧边栏（菜单 1 是「游戏文件夹」，选游戏根目录），可用「单个文件」/「整个文件夹」  
+两种方式添加，勾选后参与本次操作。  
+菜单 9 右侧是「切换适配」侧边栏，列出换提供商后已自动改了什么、还要手动做什么。
+
+### 命令行菜单
+
+```
+1. 文本提取与编译（提取文本 / 编译文本 / 中文插件）
+2. 翻译
+3. 重翻检查报告内容
+4. 术语更新后重翻
+5. 前缀字典（查看 / 应用）
+6. 换行重排
+7. 术语字典（Excel 转术语表 / 查看编辑字典）
+8. 设置
+9. 本地模型服务（Ollama / llama.cpp / LM Studio）
+10. 开启DEBUG（检测引擎 / 写 $DEBUG=true）
+11. 日志 / 环境检查
+0. 退出
 ```
 
-On startup, the tool automatically checks your Python environment, dependencies,  
-Ollama service, and the required model. If Ollama is not running, it will offer to  
-launch it for you (Ollama Desktop App is preferred, with `ollama serve` as fallback).
+菜单 3 / 4 / 5 执行前会先问「单个文件 / 整个文件夹」。
 
-GUI pages:
+### 创建桌面快捷方式（可选）
 
+双击 `创建桌面快捷方式.vbs`。  
+桌面会出现名为"宝可梦同人工具"的快捷方式。
+
+### 翻译流程
+
+1. 选 `2` → 选源/目标语言 → 弹窗选择要翻译的 `.txt` 文件
+2. 等待翻译完成，输出到 `<文件名>_translated.txt`
+3. 检查报告会生成在**输出文件旁边**：`<文件名>_translated_report.txt`
+4. 若还有问题，选 `3` 自动重翻未翻译的行，或手动修正
+
+### 重翻未翻译内容（菜单 3）
+
+对输出文件重新检查，然后：
+
+- 自动重翻标记为 **未翻译** 或 **疑似未翻译** 的句子
+- **派生命中** 是术语词根派生词的抽查提示（如 `Altarianites` 命中 `Altaria=七夕青鸟`）：  
+  **默认不勾选**（不显示、不参与重翻），勾上才显示，也可一并重翻
+- **符号不匹配** 和 **特殊行** 只报告，不自动重翻  
+  （符号不匹配通常意味着模型漏了控制码，重翻往往还是漏）
+
+只有被影响的缓存条目会被删除，重翻速度很快。
+
+#### 搜索报告内容（报告页搜索框）
+
+报告页顶部「白名单」按钮右边是**搜索框**，输入即过滤（不用点按钮；  
+按回车重绘，按 **Esc** 或点「清除」清空）：
+
+- 匹配范围：问题类型、行号、原文、译文、详情、术语冲突里的新旧词，  
+  以及文件名（含所在路径与文件名本身）；
+- **忽略大小写**、按**子串**匹配；
+- 有关键词时**忽略左侧的类型勾选**，列表上方显示  
+  `搜索「关键词」：命中 / 总数 处`；
+- 清空搜索框后恢复按类型勾选过滤。
+
+#### 手工编辑译文（双击报告列表任意一行）
+
+弹窗上方是**原文**（只读，用来对照），下方是**译文**（可编辑）。保存后：
+
+- 写进翻译缓存；
+- 这一句归入新的「**已编辑**」类型 —— 该类型**默认不勾选**，也**不会**被重翻  
+  覆盖（改过的句子不会被冲掉）；勾上就能在列表里看到自己改过的所有句子；
+- 编辑记录存在 `<缓存名>_edited.json`，下次「刷新报告」时这些句子仍列在  
+  「已编辑」下，不会因为改好了就从报告里消失。
+
+#### 应用已编辑（报告页「应用已编辑」按钮）
+
+双击改译文只写进**翻译缓存与编辑记录**；已经生成的那份  
+`<文件名>_translated.txt` 还是旧的，要再点一次右下角 **「应用已编辑」**：
+
+- 把 `<缓存名>_edited.json` 里的每条手工译文重新写进翻译缓存；
+- **就地改写译文文件** —— 只替换改过的那几句，其它行一个字都不动  
+  （行尾风格也保持原样）。
+- 译文文件里**没有**对应的原文时（比如换行被手工改乱）会跳过并写进日志；  
+  找不到译文文件时只更新缓存，并在日志里提示。
+
+所以正确的顺序是：**双击改句 → （改完所有要改的）→ 点「应用已编辑」→  
+可选地再点「刷新报告」**。
+
+#### 解决术语冲突（报告页「解决术语冲突」按钮）
+
+术语冲突 = 模型给某个术语的译法与术语表里的不一致（例：表里 `Pikachu = 皮卡丘`，  
+模型却把它译成「皮卡揪」）。翻译时会把这类冲突记在  
+`<输入文件名>_conflicts.json` 里，报告页有冲突时「解决术语冲突」按钮才可点。
+
+点进去是一个**独立的术语冲突列表**（占主区域，右侧的文件面板保持不动）：
+
+- **上方**：术语冲突列表 —— `术语原文` / `已有译文`（术语表里的） /  
+  `新增译文`（模型返回的）/ `状态`。  
+  状态只有两种：`待解决` / `已编辑`；待解决的排在前面，已编辑的排在最后（绿色底）。  
+  **点「状态」列就能手动切换**（不用非得改句子），切换会立刻写回记录文件。
+- **下方**：选中某条术语后，列出**命中它的句子**（`原文` + 该句当前的缓存译文）。
+- 点下方的 **「编辑译文」**（或双击句子）打开弹窗：上方**原文只读**供对照，  
+  下方**译文可编辑**；点「确定并保存」后：
+  1. 把改好的译文写进**这一句所属文件**的翻译缓存（同时记进  
+     `<缓存名>_edited.json`，刷新报告时该句归入「已编辑」）；
+  2. 这条术语自动标记为「已编辑」，并**移到列表最下方**。
+- 想让译文文件 `<文件名>_translated.txt` 也跟着更新，点右上角  
+  **「应用已编辑」** —— 这一步会同时把**已编辑**的冲突从  
+  `<输入文件名>_conflicts.json` 里删掉（都清空后自动回到报告列表），  
+  待解决的仍留在列表里继续处理。点「返回报告」则不应用、直接回报告列表。
+
+> 这一套只改**句子译文**（不动术语表）。如果希望术语表里的译法也统一改掉，  
+> 到菜单 7「术语字典」里改那条术语的译文即可。  
+> 冲突内容变化后（模型这回给了另一种译法）「已编辑」标记会自动清掉，  
+> 重新算待解决；内容没变则保留你的标记。
+
+#### 白名单（菜单 3 报告页「白名单」按钮）
+
+分两种，互不影响：
+
+- **检查白名单（词）**：加了词的句子不再报「疑似未翻译」。  
+  **区分大小写** —— 加 `Tab` 不会顺带放行 `tab`。  
+  默认已包含 `Tab` `Ctrl` `Fn` `Alt` `Esc` `MVP` `txt` `PBS`  
+  以及宝可梦/平台名等本来就该保留的英文。
+- **重翻白名单（整句）**：加了整句的，重翻时直接跳过不再重翻。  
+  可以在报告列表里按住 Ctrl / Shift 多选几行，一次加进去。
+
+白名单存在程序目录下的 `check_whitelist.json`（不含在仓库里，  
+换电脑要自己再配一次）。
+
+> 另外，**译文残留控制码** 检查默认放行 `\b` 和 `\pn`（同样区分大小写）——  
+> 这两个是游戏自己的写法，不算「未识别的残留」。
+
+#### 资源路径不翻译
+
+形如 `Graphics/Pictures/battleCommandButtons` 的行会在翻译前被跳过，  
+原样保留。判定条件是：整行只有 `/` 分隔的 2 段以上、没有空格、  
+没有中文（顺带排除 `http://` 这类 URL）。
+
+开关：设置 → 「跳过资源路径」（`SKIP_PATH_LINES`，默认开）。
+
+### 术语表
+
+准备一份 Excel，每个 sheet 表头含语言列名（`英文`、`简体中文` 等），当然也可以用我的：
+
+| 图鉴编号 | 英语        | 简体中文 |
+| ---- | --------- | ---- |
+| 1    | Bulbasaur | 妙蛙种子 |
+| 2    | Ivysaur   | 妙蛙草  |
+
+选菜单 `8` → 弹窗选 Excel → 选源/目标语言 → 自动生成 `term_dict.py`。
+
+#### 词根派生匹配（默认开）
+
+术语按**整词**匹配，所以 `Altaria=七夕青鸟` 原本盖不住 `Altarianite` /  
+`Altarianites` 这类派生词、复合词 —— 模型没见过这个词根，就容易瞎译成「阿尔玛石」。
+
+「词根派生匹配」会在整词查不到时，按**词根 + 后缀**再试一次：
+
+|        |                                                                              |
+| ------ | ---------------------------------------------------------------------------- |
+| 后缀白名单  | `s` `es` `ies`（含 ies→y 还原）、`'s`、`ite` `ites` `nite` `nites` `ium` `iumz`、`z` |
+| 词根长度   | 至少 4 个字母（`Rock` 不会命中 `Rocket` 这类无关词）                                         |
+| 多个词根可选 | 取**最长**的那个（同时有 `Altaria` 与 `Altarianite` 时，`Altarianites` 认 `Altarianite`）   |
+| 命中之后   | **只把该术语注入 prompt**（不改译文），模型按提示词里的派生词规则沿用译名                                   |
+
+例：术语表里有 `Altaria=七夕青鸟`，句中的 `Altarianites` 会带上「Altaria=七夕青鸟」，  
+提示词要求译成「七夕青鸟进化石」，而不是音译。
+
+- **抽查**：菜单 `3` 报告类型里勾上 **「派生命中」**，就能看到哪些句子命中了派生词、  
+  命中的是哪个词根、当前译文是什么。它**默认不勾选**（也不显示、不参与重翻），  
+  勾上后再点「开始重翻」会把这些句子一起重翻。
+- **关掉**：`config.TERM_DERIVED_MATCH = False`（需要做成设置页开关就说一声，加一行即可）。
+- 菜单 5 前缀字典的 `\tg[]` 预填**不用**派生匹配（只认整词），免得把后缀吃掉。
+
+#### 整句术语直译（默认开）
+
+有些行整句就是一个术语（比如 `Defensa X`、`¡Defensa X!`、`(?)`）。  
+这类句子不必再麻烦模型 —— 翻译前会先查一次术语表，命中就**直接用术语译文  
+写进缓存**，既不调用模型，也不会被模型翻成别的说法。
+
+|          |                                                                                           |
+| -------- | ----------------------------------------------------------------------------------------- |
+| 参与匹配的术语  | **只认手工维护的术语**（`term_dict.py` 里 AUTO 块之外的条目）；翻译时自动提取进 AUTO 块的术语不参与，免得模型瞎提取的词条被当成整句译文       |
+| 标点       | 只看句子**首尾**的标点与空白（`.` `,` `!` `?` `¡` `¿` `…` 引号、括号、全角标点等），匹配时忽略、译文里**原样保留**：`Yes!` → `是!` |
+| 不参与剥离的字符 | 反斜杠、`[ ]` `{ }` `< >` `@` `#`、`~` —— 这些都是控制码 / 标签的构件，剥掉会把 `[Pikachu]` 这类标签误判成整句术语   |
+| 术语本身带标点  | 先按整串原样查一次（所以 `(?)` → `神石` 照常命中），查不到才剥首尾标点再查                                               |
+| 词条门槛     | 与术语表加载一致：跳过 `processor.load_terms` 会丢弃的短词 / 含控制码 / 占位符型条目                                 |
+
+开关：设置 → 「整句术语直译」（`WHOLE_TERM_MATCH`，默认开）。  
+命中条数会打印在翻译日志里（`[整句术语] N 条整句命中手工术语…`）。
+
+> 另外，界面上「添加术语」写进字典时一律进**手工区**（AUTO 块之外），  
+> 所以自己敲的术语一定参与整句直译，也不会被「一键删除自动提取术语」删掉。
+
+### 翻译模式（本地 / 云端）
+
+在菜单 2/3/4（以及「游戏汉化 → 术语提取」）的「模型与模式」处或菜单 8 设置页顶部切换：
+
+- **本地 Ollama**：数据不出本机，参数偏宽松
+- **云端 API**：OpenAI 兼容接口，需在设置里填 `API_BASE_URL` / `API_KEY` / `API_MODEL`
+
+> 地址填法（以 DeepSeek 为例）：
+>
+> - **推荐** `https://api.deepseek.com`（OpenAI 兼容，走 `/chat/completions`）
+> - 若填 `https://api.deepseek.com/anthropic`，本工具会自动改用  
+>   Anthropic Messages 协议（`/v1/messages`）；模型检测也会自动回退到  
+>   同级 OpenAI 地址去列模型
+> - 云端 `max_tokens` 受「设置 → API 最大生成长度」保护，不会把本地的  
+>   大值直接透传（否则会被云端以 400 拒绝、表现为"翻出 0 条"）
+
+切换后会自动调整为适配该模式的参数并弹窗列出前后值  
+（术语上限、请求超时、上下文长度、最大生成长度、每批条数、单批字符上限）。
+
+### 本地模型服务（菜单 9）
+
+一键在 **Ollama / llama.cpp / LM Studio / 自定义 OpenAI 兼容** 之间切换，  
+切换后自动改写翻译模式、服务地址、模型名与该提供商的推荐参数。
+
+| 提供商       | 协议             | 默认地址                              | 模型怎么来                |
+| --------- | -------------- | --------------------------------- | -------------------- |
+| Ollama    | `/api/chat` 原生 | `http://localhost:11434/api/chat` | `ollama pull`，一键部署   |
+| llama.cpp | OpenAI 兼容      | `http://127.0.0.1:8080/v1`        | 启动时用 `-m` 指定 GGUF 文件 |
+| LM Studio | OpenAI 兼容      | `http://localhost:1234/v1`        | `lms get`，或界面里下载     |
+| 自定义       | OpenAI 兼容      | `http://localhost:8080/v1`        | 由你自己的服务端提供           |
+
+页面三层：
+
+- **上层** 切换提供商、改服务地址、**检测连接**、**尝试启动服务**、  
+  「推理模式必须关掉」也要在这里看
+- **中层** 视提供商不同：
+  - llama.cpp → **模型地址与选择**（选程序目录、扫本地 GGUF、挑模型、预览启动命令）
+  - 其余 → 模型列表（参数量 / 上下文 / 体积 / 量化 / 状态），选中后看详情
+- **下层** 上下文、最大生成、温度、top_p、think、驻留、每批条数，以及「一键部署模型」
+
+**「尝试启动服务」按钮**：自动把对应的应用叫起来 ——  
+Ollama 跑 `ollama serve`；llama.cpp 直接拉起 `llama-server`（自动带上你选的模型  
+和 `--reasoning off`）；LM Studio 打开主程序（启动后到 Local Server 页载入模型并  
+Start Server）。点完等几秒，状态栏会自动复查连接。
+
+**llama.cpp 的中层**要你指两个目录：
+
+| 项            | 说明                                 |
+| ------------ | ---------------------------------- |
+| llama.cpp 目录 | 解压出来那个文件夹（里面要有 `llama-server.exe`） |
+| GGUF 模型目录    | 存放模型的文件夹，会自动递归扫描 `.gguf`           |
+| 选择模型         | 从扫到的模型里挑一个，启动时自动 `-m` 加载它          |
+
+忘了路径就点 **「自动查找程序和模型目录」**，会扫各盘根目录自己找。  
+选中模型后下方的命令预览里已经带了 `--reasoning off`（关推理）和  
+`-np 1`（单槽，别让 llama-server 白开 4 份 KV 缓存）。
+
+**LM Studio** 下右下角有 **「操作指南」** 按钮，会把  
+`LM操作指南/LM1~3.jpg` 按数字顺序拼成一页打开。
+
+「一键部署模型」会在后台跑对应命令（Ollama 是 `ollama pull`，  
+LM Studio 是 `lms get`），输出实时写进菜单 11 的日志页。  
+llama.cpp / 自定义没有拉取命令，会直接告诉你该怎么准备模型。
+
+> LM Studio 的 `lms` 依赖它的守护进程：**要先手动打开一次 LM Studio**  
+> （装好后 `resources\app\.webpack\lms.exe` 才能用），否则会报  
+> "daemon is not running"。
+>
+> llama.cpp 启动示例（注意要加 `--reasoning off`）：
+>
+> ```
+> llama-server.exe -m "你的模型.gguf" -c 8192 --port 8080 --no-ui -a qwen3.5-4b --reasoning off
+> ```
+>
+> `-a` 是给模型起的别名，接口里报的就是这个名字；不指定的话会用模型文件路径。
+
+右侧「切换适配」栏会列出这一换动了多少东西：哪些已自动改好（协议、地址、  
+模型名映射、推荐参数），哪些还得你在服务端处理。点「一键适配」可以把能  
+自动改的再套一遍。
+
+> 跨提供商的同名问题：同一个模型在不同提供商里标识不一样。  
+> 例如 Qwen2.5 14B 在 Ollama 里叫 `qwen2.5:14b`，在 LM Studio 里叫  
+> `qwen2.5-14b-instruct`，切换时会自动改写，不用手工改。
+>
+> 上下文长度要注意：Ollama 的 `num_ctx` 每次请求都生效；  
+> llama.cpp 要在启动时用 `-c` 指定，LM Studio 要在加载模型时设  
+> Context Length，否则长批会被截断。
+
+#### 推理（思考）模式必须关掉
+
+带思考的模型（Qwen3 / Qwen3.5 / DeepSeek-R1 等）会先输出一大段 `<think>`，  
+**把生成预算全吃光**，后面的译文就没了 —— 表现为「模型无返回」或只翻一半。  
+实测 Qwen3.5-4B 单句：不关 29 秒且译文为空，关掉后 0.8 秒且译文完整。
+
+各家的关法：
+
+| 提供商       | 关法                                                    |
+| --------- | ----------------------------------------------------- |
+| Ollama    | 菜单 9 取消勾选「推理模式 think」（请求里带 `think=false`）            |
+| LM Studio | 工具自动处理（请求里带 `reasoning_effort=none`），不用手动设            |
+| llama.cpp | **启动时加 `--reasoning off`**（等价 `--reasoning-budget 0`） |
+| 自定义       | 看服务端支不支持 `reasoning_effort`，不支持就在服务端关                 |
+
+配置项 `NO_REASONING`（设置里叫「关闭推理(API端)」，默认开）控制工具是否  
+自动附带 `reasoning_effort=none`。极少数云端服务不接受这个字段时改成 `False`。
+
+> 试过但**没用**的写法：`chat_template_kwargs={"enable_thinking":false}`、  
+> `enable_thinking=false`、提示词里塞 `<arg_key:6124c78e>`。
+
+### 文本提取与编译（菜单 1）
+
+先在右侧选**游戏根目录**（里面要有 `Data` 文件夹和 `.exe` 启动程序）——  
+选完会显示识别到的 Essentials 版本、用的是哪套方案、读写的是哪几个文件。  
+然后从上往下三层。
+
+#### 两种文本方案（自动识别）
+
+v21 起 Essentials 把文本拆成两份，语言文件也从「一个 `.dat`」变成「两个 `.dat`」，  
+`Settings::LANGUAGES` 里存的是**文件名片段**。工具按游戏版本自动选：
+
+|     | 旧版（legacy）                                             | 新版（split，v21 起）                                   |
+| --- | ------------------------------------------------------ | ------------------------------------------------- |
+| 读   | `Data/messages.dat`                                    | `messages_core.dat` + `messages_game.dat`         |
+| 导出  | `Text_<语言>/` **各分段一个 txt**（`EVENT_TEXTS.txt` + 每个分段一个） | `Text_<语言>_core/`、`Text_<语言>_game/` **各分段一个 txt** |
+| 编译  | 一个语言 `.dat`（按 `LANGUAGES` 里中文那条定）                      | `messages_<语言>_core.dat` + `_game.dat`            |
+| 分段名 | 数字（`[12]`）/ `[Map003]`                                 | 常量名（`[SPECIES_NAMES]`）+ `[Map003]`                |
+
+> **旧版为什么也拆开**：一个 `intl.txt` 动辄上万条，翻译时容易看花眼、  
+> 也不好分批。现在按分段拆成多个小文件（写法和新版一模一样），  
+> 翻译/检查/重排/术语全流程都按单个小文件走。  
+> **编译结果不受影响** —— 编译器是按「段号 / 地图号」把文件重新拼回表的，  
+> 文件个数不影响结果。已用真实游戏验证：同一份文本「单文件编译」与  
+> 「拆成 20 个文件编译」出来的 `.dat` **逐字节一致**  
+> （回归：`work/t_lang_split.py`）。  
+> 想要回老样子（一个 `intl.txt`）就调 `intl_text.extract_text(..., split=False)`。
+
+**① 上层 · 提取文本** —— 等同于在游戏 debug 菜单里执行 *Extract Text*。  
+读游戏 `Data` 下已编译好的原文表，按游戏自己的格式写出文本文件：  
+带 BOM、说明行、`[段名]` 分段；有序列表段每 **3** 行一条（序号 / 原文 / 译文），  
+哈希段每 **2** 行一条（原文 / 译文）；`\n` `\r` `\t` `[]` 转义成 `<<n>>` 之类。  
+文件已存在时先自动备份（拆分模式是先把旧文件夹里的 `.txt` 删掉再写）。
+
+> 翻译时**只改每个条目的最后一行**（译文那行），上一行的原文原样留着。  
+> 新版导出会把**已有的译文带出来**（如果 `messages_<语言>_*.dat` 已存在，  
+> 第二行写的是译文），方便接着翻。
+
+**② 中层 · 编译文本** —— 等同于 *Compile Text*。可以选**单个 txt**、**多个 txt**，  
+或**整个文件夹**（新版就选 `Text_<语言>_core` / `_game` 两个文件夹，或直接选里面的  
+txt）。不选就默认用刚提取出来的那些。输出按上面表格自动定，**覆盖前自动备份**。
+
+> **只编译哪些文件**：默认只编译译文文件 `*_translated.txt`；某个源文件没有对应的  
+> `*_translated.txt` 时，改编译源文件本身；重翻检查报告（`*_translated_report.txt`）、  
+> 工具生成的其它 txt **一律不编译**。跳过的文件会在日志里  
+> 报数（`[编译] 按规则跳过 N 个文件`），如果一个可编译文件都不剩会直接报错而不是  
+> 编出一份空表。
+
+勾上「**编译后把中文加进游戏语言表**」（默认开）时，还会自动改  
+`Settings` 里的 `LANGUAGES`，做法是三步：
+
+1. 数组里第一条语言如果被注释掉了（`#  ["English","english.dat"]`），先把 `#` 去掉；
+2. 把这一行**复制一份**插到它下面；
+3. 复制出来的那一行里 `English` → `Chinese`。
+
+于是 `["English","english.dat"]` 只一条时会变成：
+
+```ruby
+LANGUAGES = [
+  ["English","english.dat"],
+  ["Chinese","english.dat"]
+]
 ```
-1. Extract / compile text     7. Line rewrap
-2. Translate                  8. Excel to terminology
-3. Re-translate report        9. Settings   (double-click a row to edit)
-4. Re-translate terms        10. Local model server
-5. Prefix dictionary         11. Enable DEBUG
-6. Chinese polish (resumable) 12. Log
-```
 
-Page 11 ("Enable DEBUG") works on a chosen game executable: pick the  
-game's `.exe` (its folder becomes the game directory; a `Data` folder is  
-not required), then choose one of six methods from the dropdown — write  
-`$DEBUG=true` into Main, strip `$DEBUG` conditions (F9 / party Debug /  
-walk-through-walls), inject a SPECIAL-key hook, inject into `pbRepel`  
-(set `$DEBUG` or open the debug menu), or generate a **debug launcher  
-(test)** that starts the game in debug mode without modifying the game  
-itself. Method ⑥ is the only one that needs no `Data` folder; it uses an  
-in-memory patch for RGSS (v16–v18) or `Game.exe debug` + a `preloadScript`  
-in `mkxp.json` for mkxp-z (v19–v21.1), and fills in empty placeholder  
-`Data/*.dat` / `pbs/*.txt` files so debug mode does not trigger a full  
-recompile.
+已经有中文条目（中文 / Chinese / 简中…）的数组**不会重复加**。  
+**不翻译注释、也不添加注释** —— 编译这一步现在完全不碰模型。
 
-Pages 2–7 have a file checklist sidebar on the right; add files via  
-"Single file" or "Whole folder". Page 1 uses a game-folder picker  
-instead (it must contain a `Data` folder and an `.exe`). Page 10 has an  
-"Adaptation" sidebar listing what changed after switching provider.
+已解包的游戏改 `.rb` 文件，没解包的直接改 `Scripts.rxdata`，都先备份再写。
 
-Command-line menu:
+> 已用真实游戏验证：旧版 `Chinese.dat`（1,194,931 字节）→ 文本 → 重新编译  
+> **逐字节一致**；新版导出 49 个文件 / 33671 条 → 编译 → 再导出，**31/31 完全一致**。
 
-```
-1. Extract / compile text (extract text / compile text / Chinese plugin)
-2. Translate
-3. Re-translate check report
-4. Re-translate after terminology update
-5. Prefix dictionary (view / apply)
-6. Chinese polish (resumable, writes a detail report)
-7. Line rewrap
-8. Excel to terminology
-9. Settings
-10. Local model server (Ollama / llama.cpp / LM Studio)
-11. Log / environment check
-0. Exit
-```
+**③ 下层 · 加载中文文本处理插件** —— 把社区通用的  
+「chinese text manager」放进游戏 `Plugins/`、把选定字体写进插件设置并复制到  
+游戏 `Fonts/`，然后**把全部插件（含游戏原有的）一起编译进  
+`Data/PluginScripts.rxdata`**。
 
-Menus 3 / 4 / 5 ask for "single file / whole folder" first.
+> ★ **按游戏版本自动挑插件本体**：工作区里按版本各备一份  
+> （`scripts/chinese text manager`=21.1、`… 20.1`、`… 19.1`、`… 18.1`、`… 17.2`、`… 16`；  
+> 同一套中文补丁、函数体逐行对齐目标版本）。工具读游戏里的 `Essentials::VERSION`  
+> 后自动选：`≥21` 用 21.1 版、`20.x` → 20.1、`19.x` → 19.1、`18.x` → 18.1、
+> `17.x` → 17.2、`16.x` → 16；读不出版本号时按函数指纹认（v16 脚本里
+> 没有版本号常量）。  
+> 游戏里植入的目录名固定是 `Plugins/chinese text manager/`（还原靠它）。  
+> 版本号读不出来时才退回 21.1 版 + 兼容外壳（见下面一节）。  
+> 没有插件系统（v18 之前）或没有 `Plugins/` 目录的游戏，会改成把插件
+> 拼成一个脚本插到 `Scripts.rxdata` 里 `Main` 的前面。
 
-### Create Desktop Shortcut (Optional)
+> 这是本工具自己做编译，**不用进游戏、也不用开调试模式**。  
+> Essentials 自带的 `PluginManager` 只在 `$DEBUG` 为真时才编译插件  
+> （`needCompiling?` 首行就是），平时进游戏根本不会重新编译。  
+> 已用真实游戏验证：编译出的 `PluginScripts.rxdata` 与游戏自己编译的那份  
+> **每个插件的脚本清单与压缩内容逐条一致**（只多出我们植入的中文插件）。
 
-Double-click `创建桌面快捷方式.vbs` (Create Desktop Shortcut.vbs).  
-A shortcut named *Pokémon Fan Game Translation Tool* will be created on your desktop.
+**字体可以自己挑**：点「选择字体」从电脑上选任意 `TTF` / `OTF`，程序会读它的  
+字族名、复制到游戏 `Fonts`，并写进插件的 `Settings::GLOBAL_FONT_NAME`；  
+不选就用随程序分发的萝莉体。选择结果会被记住。
 
-### Translation Workflow
+**还原**：同区块的「还原」按钮只删 `Plugins/` 下**本工具植入**的那个目录  
+（`meta.txt` 里带 `# [pkmn]` 标记）和当初复制进 `Fonts` 的那份字体 ——  
+游戏自带的字体与其它插件一个都不动。
 
-1. Select `1` → choose source/target languages → a file dialog opens to pick the `.txt` file
-2. Wait for translation to finish; output is written to `<filename>_translated.txt`
-3. A check report is generated next to the output file: `<filename>_translated_report.txt`
-4. If problems remain, select `2` to auto re-translate the untranslated lines, or fix manually
+整个过程**不调用模型、不联网**，纯文件读写。
 
-### Re-translate Check Report (Menu 2)
+### 四个版本的插件本体（21.1 / 20.1 / 19.1 / legacy）
 
-Runs a fresh check on the output file, then:
+三个版本的引擎在「文字换行」这块的代码与可用助手函数**不一样**，所以不能用  
+同一份插件通吃：
 
-- Auto re-translates lines marked as **Untranslated** or **Suspected untranslated**
-- Only reports **Symbol mismatch** and **Special lines** — these are not auto-fixed  
-  (symbol mismatches usually mean the model dropped a control code; retrying rarely helps)
+| 版本                                   | 文本绘制的助手函数                                                  | 说明                                           |
+| ------------------------------------ | ---------------------------------------------------------- | -------------------------------------------- |
+| 21.1                                 | `mb_chars` / `fmtReplaceEscapes` / `Color.new_from_rgb`    | 插件原始版本（社区 v1.3.8）                            |
+| 20.1                                 | `rgbToColor` / `Rgb16ToColor`（**没有** `Color.new_from_rgb`） | 直接拿 21.1 那份会 `NoMethodError`                 |
+| 19.1                                 | 同 20.1，且 `MessageConfig` 里**没有** `FONT_Y_OFFSET`           | 同上                                           |
+| legacy（18.x 及更早 / 没有插件系统 / Ruby 1.8） | 同 20.1，但语法要能跑在 **Ruby 1.8.1** 上                            | `String#ord` / `String#each_char` 都还没有，直接跑会崩 |
 
-Only the affected cache entries are deleted, so re-translation is fast.
+所以 20.1 / 19.1 / legacy 三份是这样生成的（生成脚本：`work/gen_plugin_ports.py`）：
 
-#### Editing a translation by hand
+- `getLineBrokenChunks` / `getLineBrokenText` / `ischinese?` / `_MAPINTL`  
+  四个函数各版本通用 → 原样从 21.1 那份带过去（legacy 那份做了 1.8 适配，见下）；
+- `getFormattedText` / `getFormattedTextFast` / `pbDrawShadowText`  
+  是**覆盖引擎实现**的，改为**照抄目标版本引擎自己的代码**再打两处补丁：
+  1. **断行点**：原版只在「空格后的词首」记 `lastword`，中文没有空格 →  
+     长句永不换行。补丁改成「汉字逐字可断，非汉字仍走原来的空格逻辑」。
+  2. **垂直偏移**：`pbDrawShadowText` 里整体加  
+     `Settings::Y_OFFSET_OF_TEXT`（在同目录 `Settings.rb` 里可调）。
 
-Double-click any row in the report list: the top box shows the **source** (read-only,  
-for reference) and the bottom box the **translation** (editable). Saving writes the  
-line into the translation cache and files it under the "已编辑" (edited) kind, which  
-is **never** overwritten by re-translation.
+> ★ 顺带修了 21.1 插件里 `getFormattedTextFast` 那一处写反的判断  
+> （原文把汉字送进了空格逻辑、把非汉字当成逐字断点）。四份插件里这一处  
+> 都按「汉字逐字可断」实现。
 
-That alone does **not** touch the already-generated `*_translated.txt`. To push your  
-edits into the output file, click **"应用已编辑" (Apply edits)** next to "Copy list":
+#### legacy 版（v19.1 之前 / 老游戏 / Ruby 1.8）
 
-- every entry of `<cache>_edited.json` is written back into the translation cache;
-- the translation file is rewritten **in place** — only the edited lines change,  
-  every other line stays byte-identical (line endings included);
-- lines whose source text no longer matches (e.g. after manual rewrapping) are  
-  skipped and reported in the log; a missing translation file only updates the cache.
+RPG Maker XP 那一代跑的是 **Ruby 1.8.1**，比 1.9 少两样关键东西，插件里都在  
+最上面补了（`if RUBY_VERSION.to_f < 1.9`）：
 
-So the order is: **edit lines → "Apply edits" → (optionally) "Refresh report"**.
+| 缺的东西                             | 补法                                                        | 不补会怎样                                                                         |
+| -------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `String#ord`                     | `self.unpack("U")[0]`                                     | `NoMethodError` 直接崩                                                           |
+| `String#each_char`               | 按 UTF-8 字节头自己走一遍（见下条）                                     | 同上                                                                            |
+| `$KCODE` 不是 `'U'`                | 逐字符切分全部改走 `_pkmn_chars()`                                 | `String#scan` 配 `/./m` 会**按字节切**，汉字被切成 3 段 → `ischinese?` 永远判不出汉字 → 中文换行等于没生效 |
+| 老引擎读的是 `MessageConfig::FontName` | 四份 `Settings.rb` 把 `FONT_NAME` / `FontName` 等**两套常量名都写上** | 换了字体，老游戏完全没反应                                                                 |
 
-#### Resolving term conflicts
+> ⚠️ 补 `ord` **不能**写成 `self[0]`：Ruby 1.8 里 `"中"[0]` 返回的是第一个  
+> **字节**（`228`），拿它跟 `0x4e00` 比永远判不出汉字，中文就换不了行。  
+> 必须用 `unpack("U")` 取真正的码点。
 
-A term conflict means the model translated a term differently from the terminology  
-list (e.g. the list says `Pikachu = 皮卡丘` but the model wrote 皮卡揪). Conflicts are  
-recorded in `<input>_conflicts.json` while translating; the **"解决术语冲突"  
-(Resolve term conflicts)** button on the report page is enabled once there are any.
+另外两处 1.8 适配：
 
+- `ischinese?` 直接 `char.unpack("U")[0]` 判码点 —— 不依赖 `ord` 有没有被别人  
+  覆盖成错的写法；
+- `_MAPINTL` 整段包在 `if defined?(MessageTypes) && ...respond_to?(:getFromMapHash)`  
+  里（有的整合版没有 `MessageTypes`），里面的 `\p{Han}` 正则改成  
+  **运行时 `Regexp.new` + rescue 构造** —— 老版 Oniguruma 不认就跳过这一步，  
+  只影响「地图文本去空格」，换行和字体照旧。
 
-It opens a dedicated view that fills the main area (the file panel on the right stays
-put):
+#### 没有 `Plugins/` 目录的游戏：插件插到 `Scripts.rxdata` 里 **Main 的前面**
 
-- **Top**: the conflict list — `术语原文` (term) / `已有译文` (list translation) /
-  `新增译文` (model translation) / `状态` (status).
-  There are only two states, `待解决` (pending) and `已编辑` (edited); pending rows come
-  first and edited ones are shown in green at the bottom. **Clicking the `状态` cell
-  toggles the state by hand** (no sentence edit required) and writes it back at once.
-- **Bottom**: the sentences that hit the selected term (`原文` + the sentence's
-  current cached translation).
-- **"编辑译文" (Edit translation)** — or double-clicking a sentence — opens a dialog
-  with the **source read-only** on top and an **editable translation** below. On
-  "确定并保存" (Save) it:
-  1. writes the new translation into the cache of the file that sentence belongs to
-     (and into `<cache>_edited.json`, so the report files it under "已编辑");
-  2. marks that term **已编辑** and moves its row to the very bottom of the list.
-- Click **"应用已编辑" (Apply edits)** in the top-right corner to push the change into
-  the generated `*_translated.txt` as well; at the same time every **已编辑** conflict is
-  deleted from `<input>_conflicts.json` (the view returns to the report automatically
-  once the record is empty). Pending ones stay in the list.
-  **"返回报告" (Back to report)** just leaves the view without applying anything.
+老游戏（还有一部分没建 `Plugins/` 目录的整合版）没有插件系统可用，工具改成  
+**把 `Settings.rb` + `Tools.rb` 拼成一个脚本，插进脚本表里 `Main` 的前面**：
 
-> This flow only edits **sentence translations**; the terminology list is untouched.
-> To change the term itself, use the term dictionary page (menu 8).
-> If the conflict content changes later (the model returns yet another translation),
-> the "已编辑" mark is cleared automatically; an identical conflict keeps it.
+> ★★ **为什么必须是 Main 之前**：RGSS 是「从上往下依次执行脚本，读到 `Main`  
+> 就进游戏主循环」——`Main` 后面的脚本**永远不会执行**。最早那版工具把插件  
+> 追加在最末尾（也就是 `Main` 后面），于是「插件塞进去了却一点反应都没有」，  
+> Void 等老游戏就是这么中的招。现在改成插到 `Main` 前面。
 
-#### Line rewrapping (Menu 7)
+- 没解包 → 往 `Data/Scripts.rxdata` 里插一条  
+  （标题固定 `[pkmn] chinese text manager`，写之前**先备份**整份文件；  
+  `Main` 找不到时才退回放末尾，并在日志里提醒你手动挪）；
+- 解包成 `Data/Scripts/` 的 → 文件名按 `Main` 的编号减一来取，  
+  例如 `999_Main.rb` → **`998_pkmn_chinese_text.rb`**，正好夹在最后一个  
+  普通脚本与 `Main` 之间（旧版本写过的 `zzz_*.rb` 会被自动清掉）；
+- **重复植入不会堆好几份** —— 每次都先把上次那条删掉再插；
+- 「还原」按标题里的 `[pkmn]` 标记删掉那一条（或那个 .rb），并把当初复制进  
+  `Fonts` 的字体一起删掉。
 
-Pick the translation `.txt` files on the right, hit **Refresh list**, then select the
-blocks to rewrap in the left list (Ctrl / Shift for multi-select, or `[全选]`). With
-**"仅重排选中的区块" (only selected blocks)** checked — the default — blocks you did
-not select are left untouched, byte for byte. Use the two parameter sets (lower/upper
-char count + minimum gap) for `[map*]` blocks (`\n`) and for all other blocks
-(spaces). With nothing selected, the tool asks before falling back to "all blocks".
+> 已用真实游戏验证：`Scripts.rxdata` 读出来原样写回去是**逐字节一致**的  
+> （Void / 蛋白石 / 燃之智 / 真谊系统 / 无限融合 / POG 六份都试过），  
+> 所以「插一条脚本」只会改变多出来的那一条，其余脚本一个字节都不动。  
+> 回归：`work/t_legacy_plugin.py`（57 项）。
 
-Rewrapping only rearranges line breaks and spaces: it never changes the translated
-text and never calls the model, and running it twice with the same settings is a no-op.
+### 旧版游戏的兼容外壳（兜底）
 
-### Term Extraction (Game localization → Term extraction)
+万一型号读不出来、或脚本里连插件依赖的引擎 API（`MessageTypes.getFromMapHash`、  
+`getFormattedText`、`pbDrawShadowText`、`MessageConfig`、`Settings`）都找不到，  
+工具会额外写两个脚本 `000_CNCompatPre.rb` / `zz_CNCompatPost.rb`：  
+前者把引擎原本的实现存下来，后者把插件的  
+`getFormattedText` / `getFormattedTextFast` / `pbDrawShadowText` / `_MAPINTL`  
+包一层 —— 插件的实现出错就**退回引擎原本的实现**，不会一进游戏就崩  
+（最多是换行 / 排版沿用原版行为）。加载顺序靠文件名排序保证  
+（Pre → Settings → Tools → Post），并写进 `meta.txt` 的 `Scripts`。
 
-Reads the proper nouns out of the game's exported name files (`ITEM_NAMES` /
-`MOVE_NAMES` / `TYPE_NAMES` / `POKEMON_NICKNAMES` …, or any file whose leading
-`[number]` block is a name block), sends them to the model, and writes the
-resulting `source → translation` pairs into the AUTO block of `term_dict.py`.
+### 术语提取（游戏汉化 → 术语提取）
 
-**It is the regular translation pipeline**, just doing a different job:
+从游戏导出的名字文本文件（`ITEM_NAMES` / `MOVE_NAMES` / `TYPE_NAMES` /  
+`POKEMON_NICKNAMES` 等，或开头带 `[编号]` 名字区块的文件）里抽专有名词，  
+交给模型翻成目标语言，翻完之后把「原文 → 译文」写进术语表的自动提取区。
 
-- it runs the exact same pipeline as Translate (menu 2) over the name files,
-  producing ordinary `*_translated.txt` files, ordinary translation caches
-  (`*_cache.json`) and check reports;
-- so **resume-from-cache, whole-sentence term substitution and injecting hit
-  terms into the prompt all work exactly as usual**;
-- the only difference is *when* the terminology list is updated: **after every
-  batch** those `source → translation` pairs are merged into the `term_dict.py`
-  AUTO block via `auto_terms.merge_into_term_dict()` and the list is reloaded
-  immediately, so **later batches of the same file use the new terms right
-  away**; a final whole-file merge runs at the end as a safety net (already
-  merged entries are not counted twice).
+**它就是正常翻译流水线**，只是干的活不同：
 
-Resuming and resetting the cache work just like ordinary translation (delete the
-corresponding `*_cache.json` to re-translate).
+- 对名字类文件跑**菜单 2「翻译」那条完全一样的流水线** —— 产出正常的  
+  `*_translated.txt`、正常的翻译缓存 `*_cache.json` 与检查报告；
+- 因此**断点续翻、整句术语直译、命中术语注入 prompt 等能力全部照常生效**；
+- 差别是**术语表什么时候更新**：**每翻完一批**就把这批的「原文 → 译文」  
+  经 `auto_terms.merge_into_term_dict()` 并入 `term_dict.py` 的 AUTO 块，  
+  并立刻重载术语表，于是**同一文件的后续批次马上用上新术语**；  
+  全部翻完之后再整体合并一次兜底（重复的不会重复计数）。
 
-#### Term check report (no model calls for edits; re-translation does call the model)
+续翻与重置缓存跟普通翻译完全一样（删掉对应的 `*_cache.json` 即重翻）。
 
-Buttons to the right of "Start extraction & translation" on the term
-extraction page:
+#### 术语检查报告（改译名不走模型；重翻走模型）
 
-| Button | What it does |
+「术语提取」页「开始提取并翻译」右侧「检查报告」按钮进入的页面：
+
+| 按钮 | 作用 |
 | --- | --- |
-| Check report | Reads only the translation cache and the terminology list and classifies every entry into one of four mutually exclusive kinds, in this order — empty translation, untranslated (echoed source), leftover English in the translation, likely machine-translation leftovers — plus the additive same source/different translation — into `<target>_terms_check.txt`. The page filters by problem kind; **double-clicking the translation column edits a translation**, and "Apply" writes the changes into (1) the translation cache, (2) the name file's translated file, and (3) the AUTO block of the terminology list, with per-edit undo. **Editing a translation / "Apply" do not call the model.** |
-| Re-translate terms | For the rows currently shown after filtering: (1) deletes their keys from the translation cache, (2) re-runs the normal translation pipeline (re-parse, whole-sentence term lookup, term injection into the prompt, batched model calls), (3) merges each batch's new translations into the AUTO block of the terminology list and reloads it, exactly like the extraction page. **This one does call the model.** |
+| 检查报告 | 只读翻译缓存与术语表，按「译名为空 → 未翻（回显原文）→ 译文残留英文 → 疑似机翻残留」四类互斥问题逐条判定（另加可叠加的「同词不同译」），写 `<目标名>_terms_check.txt`。页内可按问题类型筛选；**双击「译名」列即可改译文**，点「应用修改」同时写进 ① 翻译缓存 ② 名字文件的译文文件 ③ 术语表的自动提取区，可逐条撤销。**改译名 / 应用修改不调用模型** |
+| 术语重翻 | 对**当前筛选后显示**的条目：① 删掉它们在翻译缓存里的 key，② 走一遍正常翻译流水线重翻（重新解析、整句术语直译、术语注入 prompt、分批送模型）。③ 与术语提取页一样**逐批**把新译名写进术语表的自动提取区并重载，后续批次立刻用上。**★ 会调用模型** |
 
-> Name files (`*_NAMES`, or any file whose leading `[number]` block is a name
-> block) belong to term extraction only: translate / re-translate report /
-> terminology re-translation / Chinese polish / line rewrap all skip them
-> automatically, and the file panels no longer list them.
+> 名字类文件（`*_NAMES`、`[编号]` 名字区块那批）只归术语提取管：  
+> 「游戏汉化」里的翻译 / 重翻检查报告 / 术语更新后重翻 /  
+> 换行重排都会自动跳过它们，文件面板也不再列出来。
 
-#### Translation workflow (red text on the right of the Game-localization page)
+#### 翻译流程（「游戏汉化」页右侧红字）
 
-1. Term extraction — every file to translate goes through term extraction first
-2. Term fix — check the terms for omissions or mistranslations
-3. Translate — translate the non-term files
-4. Re-translate check report — fix the problematic sentences
-5. Check terms — see whether any term needs updating, and fix the related sentences
-6. Review the prefix dictionary — only `\tg[]` contents are translated
-7. Chinese polish — improve translation quality
-8. Line rewrap — re-wrap the sentences
-9. When everything is translated, delete the auto-extracted terms in 10. Terminology dictionary
+1. 术语提取 —— 所有要翻译的文件先走术语提取
+2. 术语检查 —— 检查术语是否遗漏或错翻并直接改译文
+3. 翻译 —— 翻译非术语文件
+4. 重翻检查报告 —— 修正有问题的句子
+5. 检查术语 —— 看是否要更新术语并修正相关句子
+6. 查看前缀字典 —— 只翻译 `\tg[]` 里的
+7. 换行重排 —— 重新设置句子的换行
+8. 全部完成后，在「8. 术语字典」里删除自动提取术语
 
+### 前缀字典（菜单 5）
 
-### Terminology List
+句首的连续控制码（如 `\tg[Edward]`）在翻译时会被剥离，正文才送模型，  
+回写时再拼回 —— 前缀本身由 `prefix_dict.json` 统一管理，可批量改译。
 
-Prepare an Excel file where each sheet has language column headers (e.g. `English`, `Simplified Chinese`).
-You can also use mine:
+**翻译时提取到新前缀，若其中命中术语字典，会自动把替换结果填进它的译文**，例如：
 
-| Pokédex No. | English | Simplified Chinese |
-|-------------|---------|-------------------|
-| 1 | Bulbasaur | 妙蛙种子 |
-| 2 | Ivysaur | 妙蛙草 |
+| 前缀原文                        | 命中术语      | 自动填入的译文   |
+| --------------------------- | --------- | --------- |
+| `\tg[Owen]`                 | Owen → 欧文 | `\tg[欧文]` |
+| `\w[speech hgss 3]\tg[???]` | （无）       | 留空 = 待翻译  |
 
-Select menu `3` → choose the Excel file → choose source/target languages → `term_dict.py` is generated automatically.
+所以在前缀字典页（菜单 5）里可以直接看到「已经能自动翻好的」和「还需要手工处理的」，  
+只用管后者。部分命中的前缀（如只译出一个人名）也会被填进去，仍可手工修正。
 
-#### Whole-sentence terms (on by default)
+### 换行重排（菜单 6）
 
-When a line is exactly a term (for example `Defensa X`, `¡Defensa X!` or `(?)`),
-no model call is needed: before translating, the tool checks the terminology list
-and, on a hit, writes the term's translation straight into the cache.
+> 翻译完成后**不会自动**按字数重排 —— 翻译只保留「原文标点处记录下来的换行」。  
+> 想让行更碎 / 更整，用菜单 6 手动执行；原文的换行节奏不会被动改掉。
 
-- Only **hand-maintained** terms participate — entries the translation run
-  auto-extracted into the `term_dict.py` AUTO block are ignored.
-- Leading/trailing punctuation and whitespace are ignored **for matching only**
-  and are kept verbatim in the translation: `Yes!` → `是!`.
-- Backslashes and `[ ] { } < > @ # ~` are *not* stripped (they build control
-  codes / tags, so `[Pikachu]` is never mistaken for a term).
-- A term that itself contains punctuation is matched as-is first
-  (`(?)` → `神石`), then with the surrounding punctuation stripped.
+译文已经翻好后，想调整「换行 / 空格」的排布，不必重翻：
 
-Toggle: Settings → 「整句术语直译」(`WHOLE_TERM_MATCH`, default on).
+1. 选菜单 `7`（GUI 为第 7 页），右侧勾选要处理的文件
+2. 点「刷新列表」，左边列出扫描到的**区块**（`[map*]` 页签管 `\n` 重排，  
+   其它区块页签管空格重排），点区块可在右侧预览它的原文 / 译文
+3. **只重排一部分区块**：在左边列表里按住 Ctrl / Shift 多选（或点 `[全选]`），  
+   下面的「**仅重排选中的区块**」勾选保持默认打开即可 —— 没选中的区块  
+   原样保留，字节级不动
+4. 两套参数（上下限 + 最小间隔）各自独立，改完点「开始重排」
 
-### Re-translate After Adding New Terms (Menu 3)
+> 一个区块都没选时点「开始重排」会先问一句要不要改成重排全部区块，  
+> 不会静默全量重排。想重排整份文件就取消勾选「仅重排选中的区块」。
 
-After editing `term_dict.py` (or regenerating from Excel):
+它只重新排列，**不改动译文文字、不调用模型**；同一配置反复执行结果一致。
 
-1. Select `3`
-2. The tool compares the current terminology list against the last snapshot
-3. Newly added terms are identified; sentences containing them are located in the cache
-4. Those cache entries are deleted and re-translated with the new terminology
+### 术语字典（菜单 7）
 
-The first time you run menu `3`, it records the current terminology list as the baseline.
-Every subsequent run compares against it.
+#### Excel 转术语表
 
-### Input File Format
+选好 Excel、源语言列、目标语言列和工作表，点「开始转换」即可。
+
+**默认是追加写入**：如果程序目录下已经有 `term_dict.py`，新术语会**接在末尾**，  
+已存在的词保留字典里的原译法不动 —— 你在菜单 3 里逐条校对过的内容、  
+或在术语更新流程里改过的译法，都不会被 Excel 里的旧数据冲掉。
+
+- 同名术语但译法不同 → 不覆盖，只在日志和完成弹窗里列出「冲突」提示
+- 大小写不同视为同一个词（`Pikachu` 和 `pikachu` 算一个）
+- 想整份重写 → 取消勾选「已有术语字典时追加到末尾」（命令行菜单 7 会问  
+  「回车 = 追加 / 输入 o = 整份覆盖」，GUI 会二次确认）
+- 这个开关记在设置里（菜单 8），下次打开保持上次的选择
+
+Excel 一行都没提取到时**不会碰你的术语字典**，只报错。
+
+#### 查看 / 编辑术语字典
+
+进入本页**默认就是字典列表**（点右上角「Excel 转换」切到 Excel 视图，
+该页里点「术语字典」再切回来）：
+
+- **搜索框**：按原文或译文筛选，来源单选（全部 / 自动提取 / 手动录入）。  
+  来源列里还有两个标记：**「新增」** = 本次刚加、还没保存的条目，  
+  **「自动·改」/「手动·改」** = 这条有未保存的改动
+- **修改**：双击原文或译文直接改，或选中一行点「修改选中」弹窗改（预填当前值）
+- **新增**：点「新增术语」，原文与译文都必须填；与已有术语重名（忽略大小写）  
+  会被拒绝，提示你直接改那一条。新增的词写进 `term_dict.py` 的**手工区**  
+  （`TERM_DICT` 开括号之后、AUTO 块之外），所以不会被「一键删除自动术语」删掉
+- **删除**：勾选行（或直接选中行）后点「删除选中」
+- **一键删除自动术语**：「一键删除自动术语」把 `term_dict.py` 里 AUTO 块内  
+  自动提取的词一次性标记删除（手工新增的词不受影响）
+- **撤回**：「撤回」逐步回退上一步改动（编辑、删除、新增都能退）
+- **保存**：所有改动先记在内存里，点「保存」才写进 `term_dict.py`；保存前  
+  列表上方会一直显示「有 N 处未保存改动」；切回 Excel 视图时若有未保存改动  
+  会问一句要不要先保存
+
+保存后「术语更新后重翻」会把这次改动认成「新增 / 修改」术语，并自动勾选它们。
+
+### 术语更新后重翻（菜单 4）
+
+修改 `term_dict.py`（或重新从 Excel 生成）后：
+
+1. 选菜单 `4`
+2. 系统自动对比当前术语表和上次快照
+3. 找出新增的术语，并定位到所有包含这些术语的缓存句子
+4. 删除这些缓存并重新翻译
+
+**首次运行菜单 3** 会把当前术语表记录为基准；  
+**以后每次运行** 都会对比它，只需几十秒就能完成增量重翻。
+
+### 输入文件格式
 
 ```
 [map1]
 Text A
-Text A            ← the repeated second line will be translated
+Text A            ← 重复的第二行会被翻译
 Text B
 Text B
 ```
 
-- Block markers `[map1]` occupy a line by themselves
-- Pure numeric lines are skipped
-- Text lines must appear in **duplicate pairs**; only the second line is translated
-- Text lines that are not paired are marked as "special lines" and need manual handling
+- 区块符 `[map1]` 独占一行
+- 纯数字行跳过
+- 文本行必须**成对重复**，只翻译第二行
+- 不成对的文本行会被标记为"特殊行"，需手动处理
+- **`#` 开头的行**：只有**文件开头最多 4 行**算注释（导出时自动写的两行说明
+  就在其中），会被跳过；文件中间以 `#` 开头的行是**正常句子，照常翻译**。
+  例如游戏文本里真有 `#{count}` 这种写法。文件开头的注释区一直延续到
+  **第一个分段区块名**（如 `[10]`）之前，区内空行不打断
+- **整句只由 `#{...}` 组成**（如 `#{count}`、`#{a}#{b}`）：这是游戏自己填值的
+  模板，翻了会坏，所以**原文直接写进缓存、不送模型**，日志报
+  `[过滤] 整句 #{} 占位符 N 条`
+- `#-------------------------------` 之类的分隔线一律跳过（不参与配对）
+- **异常行尾**（`\r\r\n` 双 CR、整篇只有 `\r\r` 没有 `\n`）会被自动归一为普通
+  换行，译文文件行尾不规范也能正常读取与编译
 
-## Configuration
+编译端**用同一套规则**解析文本文件：只跳过文件开头那最多 4 行 `#` 和分隔线，
+后面的 `#` 一样当正文编进 `.dat`。两端的上限常量必须保持一致：
+`parser.HASH_HEADER_MAX` 与 `intl_text._HASH_HEADER_MAX`（现均为 4）。
 
-You can edit settings in three ways:
+## 配置
 
-**Method 1 — In-app menu (recommended)**
+三种修改方式：
 
-Select `6` from the main menu. Enter the number of the setting you want to change:
+**方式 1 —— 菜单里改（推荐）**
+
+打开菜单 `8`（GUI 是「设置」页），输入要改的设置序号：
 
 ```
-  1. Ollama model         = qwen2.5:14b
-  2. Ollama URL           = http://localhost:11434/api/chat
-  3. Batch size           = 20
-  4. Temperature          = 0.2
+  1. Ollama 模型名      = qwen2.5:14b
+  2. Ollama 服务地址    = http://localhost:11434/api/chat
+  3. 每批条数           = 20
+  4. 采样温度           = 0.2
   ...
- 20. Excel target column  = 简体中文
+ 20. Excel 目标语言列   = 简体中文
 ```
 
-Changes take effect immediately — no restart needed.
+改完**当前会话立即生效**，无需重启。
 
-- **Running from source** → changes are written back to `config.py`
-- **Running from exe** → changes are saved in `user_config.json` next to the exe
+- **源码运行** → 写回 `config.py`
+- **exe 运行** → 存到 exe 同目录的 `user_config.json`
 
-**Method 2 — Edit `config.py` directly (source mode)**
+**方式 2 —— 直接编辑 `config.py`（源码模式）**
 
 ```python
-MODEL = "qwen2.5:14b"        # model name
-BATCH_SIZE = 20              # lines per batch
-WRAP_CHARS_MIN = 15          # lower wrap limit
-WRAP_CHARS_MAX = 17          # upper wrap limit
+MODEL = "qwen2.5:14b"        # 换模型
+BATCH_SIZE = 20              # 每批条数
+WRAP_CHARS_MIN = 15          # 换行重排（[map*]）下限
+WRAP_CHARS_MAX = 17          # 换行重排（[map*]）上限
+WRAP_MIN_GAP = 10            # 换行重排（[map*]）最小间隔
+WRAP_SPACE_MIN = 8           # 空格重排（其它区块）下限
+WRAP_SPACE_MAX = 10          # 空格重排（其它区块）上限
+WRAP_SPACE_MIN_GAP = 5       # 空格重排（其它区块）最小间隔
+API_MAX_TOKENS = 8192        # 云端 max_tokens 上限保护
 ```
 
-**Method 3 — Edit `user_config.json` (exe mode)**
+**方式 3 —— 编辑 `user_config.json`（exe 模式）**
 
-Create a `user_config.json` file next to the exe with any keys you want to override:
+在 exe 同目录创建 `user_config.json`，写想覆盖的项：
 
 ```json
 {
@@ -366,52 +816,57 @@ Create a `user_config.json` file next to the exe with any keys you want to overr
 }
 ```
 
-Restart the exe to apply.
+重启 exe 生效。
 
-## Logging
+## 日志
 
-- Console: `INFO` level
-- File: `logs/translate_YYYYMMDD.log` (includes `DEBUG`)
-- Debug mode: `set DEBUG_PH=1 && python main.py` (source) or `set DEBUG_PH=1 && 宝可梦同人工具.exe`
+- 控制台：`INFO` 级
+- 文件：`logs/translate_YYYYMMDD.log`（含 `DEBUG`）
+- 调试模式：源码 `set DEBUG_PH=1 && python main.py`，exe `set DEBUG_PH=1 && 宝可梦同人工具.exe`
 
-## Troubleshooting
+## 常见问题
 
-**Ollama is not running**
+**Ollama 没启动**
 
-The tool will try to launch it automatically. If that fails:
+工具会自动尝试启动。若失败：
 
-1. Check the system tray for the Ollama icon (Desktop version runs in background)
-2. Run `ollama serve` manually and check its output
-3. Check whether port 11434 is occupied: `netstat -ano | findstr :11434`
-4. See the log: `logs/ollama_launch.log`
+1. 检查系统托盘有没有 Ollama 图标（Desktop 版会自动运行）
+2. 手动运行 `ollama serve` 看报错
+3. 检查 11434 端口是否被占用：`netstat -ano | findstr :11434`
+4. 查看日志：`logs/ollama_launch.log`
 
-**Model not installed**
+**模型未安装**
 
 ```
 ollama pull qwen2.5:14b
 ```
 
-**Translation output contains raw English**
+**译文里混着英文**
 
-Run menu `3` to auto re-translate, or open `<output>_report.txt` and fix manually.
+选菜单 `2` 自动重翻，或打开 `<输出文件>_report.txt` 手动修正。
 
-**Placeholder lost**
+**控制码丢了**
 
-The tool retries and falls back automatically. If a line still fails, it is reported in the check report. Fix it manually or add the term to your terminology list.
+译文里缺失的控制码会**按原文原样补回**，并在检查报告里记为 `控制码回退`；  
+认不出来的写法记 `译文残留控制码`，前后数量对不上记 `符号不匹配`：
 
-**exe throws `FileNotFoundError: config.py`**
+- 在菜单 `3` 重翻检查报告里按类型查看；
+- 也可以**双击这一行**手工改（保存后该句归入「已编辑」）；
+- 若是本作特有的控制码写法，加进 `text_preserve/custom.json` 并点「重载规则」。
 
-Make sure you are using the latest release. The tool uses `user_config.json` in exe mode.
+**exe 报 `FileNotFoundError: config.py`**
 
-**Double-clicking the exe flashes and closes**
+请使用最新版本的 Release。exe 模式使用 `user_config.json`，不再读写 `config.py`。
 
-Open a Command Prompt in the exe folder and run it manually to see the error:
+**双击 exe 闪退**
+
+在 exe 所在目录打开命令行（cmd），手动运行看错误：
 
 ```cmd
 宝可梦同人工具.exe
 ```
 
-## Building the exe
+## 编译 exe
 
 ```bash
 pip install pyinstaller
@@ -421,22 +876,9 @@ pyinstaller --onefile --name "宝可梦同人工具" --icon=start.ico ^
     --hidden-import openpyxl --hidden-import tkinter --hidden-import PIL main.py
 ```
 
-The bundled font (`萝莉体.ttf`) is loaded privately via GDI at runtime, so
-the exe works on machines where the font is not installed. If you want to
-swap the font, just drop a different `萝莉体.ttf` next to the exe.
+（仓库里的 `宝可梦同人工具.spec` 已配好这些 hidden-import，直接  
+`pyinstaller 宝可梦同人工具.spec` 即可。）
 
-`LM操作指南/` (the LM Studio screenshots behind the "操作指南" button on
-menu 9) is bundled the same way. Lookup order is **next to the exe →
-inside the exe → source tree**, so dropping the folder next to the exe
-overrides the built-in copy. Because a one-file exe deletes its unpack
-directory on exit, the images are copied to `%TEMP%\pkmn_translator_guide\`
-before the viewer HTML is written.
-
-`打包程序.bat` already passes both `--add-data` flags and checks that the
-files exist first — a missing font or guide folder only produces a warning.
-
-Then copy `start.ico` next to the produced exe in `dist\`.
-
-## License
+## 许可
 
 MIT

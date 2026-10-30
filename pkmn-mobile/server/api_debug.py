@@ -132,7 +132,6 @@ def api_status(ctx):
         "dir": d.replace("\\", "/"),
         "version": rep.get("version") or "（读不到版本号）",
         "debug_on": rep.get("debug_on"),
-        "guarded": rep.get("guarded"),
         "has_main": rep.get("has_main"),
         "report": JU.clean(rep),
     })
@@ -193,9 +192,8 @@ def api_enable(ctx):
     if mode not in MODE_KEYS:
         return JU.err(f"未知的开启方式：{mode}（可选：{', '.join(MODE_KEYS)}）")
 
-    # 两个勾选项，默认值跟电脑版一致（都勾着）
+    # 勾选项（默认值跟电脑版一致）；「自动关闭全量编译」已取消：不再传 guard
     force = bool(body.get("force", True))
-    guard = bool(body.get("guard", True))
 
     # ★ 反调试怎么处理，由用户在弹窗里选（见 api_antidebug）：
     #     body["antidebug"] = {src_key: "comment" | "skip", ...}
@@ -237,13 +235,13 @@ def api_enable(ctx):
     def job(emit, progress, cancelled):
         emit(f"[DEBUG] 开始处理：{d}")
         emit(f"[DEBUG] 开启方式：{_mode_label(mode)}")
-        emit(f"[DEBUG] 编译闸门={guard}  忽略引擎改动={force}")
+        emit(f"[DEBUG] 忽略引擎改动={force}（全量编译不再自动关闭）")
 
         ad_plan = _build_antidebug_plan(DT, d, emit)
 
         rep = DT.enable_debug(
-            d, emit=emit, force=force, guard=guard,
-            # ★ 只有方式①（通用）才往 mainFunction 写 $DEBUG=true。
+            d, emit=emit, force=force,
+            # ★ 只有方式①（通用）才往 pbCallTitle 第一行写 $DEBUG=true。
             #   方式② 的做法本来就是把「需要 $DEBUG 才生效」的判定删掉，
             #   再写一个 $DEBUG=true 是画蛇添足；方式⑦ 更不能设 ——
             #   反调试里有 `exit if $DEBUG`。
@@ -285,7 +283,8 @@ def api_enable(ctx):
 
 
 def api_disable(ctx):
-    """关掉 DEBUG（从 mainFunction 里移除 $DEBUG=true），不动反调试和编译闸门。"""
+    """关掉 DEBUG（移除写进 pbCallTitle / 旧版 mainFunction 的 $DEBUG=true），
+    不动反调试。"""
     DT, _ET, _EB, _GS = _load_core()
     body = ctx["body"]
     d = _dir(body)

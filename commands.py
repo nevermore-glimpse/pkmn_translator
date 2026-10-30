@@ -27,7 +27,7 @@ import settings
 import translator as T
 from cache import Cache, atomic_replace, load_edits
 from logger import get_logger
-from translator import (OllamaClient, estimate_tokens, polish_with_retry,
+from translator import (OllamaClient, estimate_tokens,
                         resolve_concurrency, translate_with_retry)
 
 log = get_logger("commands")
@@ -885,17 +885,17 @@ def _announce_work_dir(paths):
     wd = enter_work_dir(paths)
     if wd:
         log.info("本次中间文件目录：%s", wd)
-        emit(f"  · 缓存 / 冲突 / 报告 / 润色稿等中间文件都放进：{wd}")
+        emit(f"  · 缓存 / 冲突 / 报告等中间文件都放进：{wd}")
     return wd
 
 
 def source_of(path):
     """
-    把「缓存文件 / 译文文件 / 检查报告 / 润色稿」换回它对应的**源文件**路径；
+    把「缓存文件 / 译文文件 / 检查报告」换回它对应的**源文件**路径；
     本来就是源文件的原样返回。
 
-    ★ 菜单 4（术语重翻）/ 6（中文润色）只允许选 `*_cache.json`、
-      菜单 7（换行重排）只允许选 `*_translated.txt`，而后面的流程都是按
+    ★ 菜单 4（术语重翻）只允许选 `*_cache.json`、
+      菜单 6（换行重排）只允许选 `*_translated.txt`，而后面的流程都是按
       **源文件**推导缓存与译文路径的（Runtime.set_input），所以要先换算一步，
       否则会拼出 `xxx_cache_cache.json` 这种鬼东西。
     ★ 中间文件若在「翻译中间文件」夹里，源文件在它的**上一层**。
@@ -1516,7 +1516,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
     """对单个文件执行完整翻译流程（Runtime 已设置好 input/output/cache）。
 
     batch_term_hook: 可选 callable(pairs) -> int，逐批术语回调；
-        默认 None（translate_paths / 术语重翻 / 润色等一律不传，行为不变）。
+        默认 None（translate_paths / 术语重翻等一律不传，行为不变）。
         只有术语提取页流程会传它，见 term_extract.run_extract。
     recover: 内部用。缺失/回显超过阈值时的整批重翻会再调本函数，那一层
         必须传 False，否则「缺失 > 阈值 → 重翻 → 又缺失 > 阈值」会无限递归。
@@ -2091,7 +2091,7 @@ def _drop_names_files(paths, action="该操作"):
     把**名字类文件**从待处理清单里剔除（返回 (保留, 跳过)）。
 
     ★ 名字文件（*_NAMES / 开头 [编号] 是名字区块的那批）归「术语提取」管，
-      翻译 / 检查报告 / 重翻 / 润色 / 换行重排都不该碰 —— 否则同一批名词
+      翻译 / 检查报告 / 重翻 / 换行重排都不该碰 —— 否则同一批名词
       会被两条流水线各翻一遍，译法还可能不一致。
     ★ 判定规则与 term_extract.find_names_files 完全一致（resolve_names），
        这里只做「是不是」的判断，不重复实现一套。
@@ -2388,10 +2388,12 @@ def analyze_terms():
 
 
 def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
-                            extra_terms=None):
+                            extra_terms=None, only_terms=None):
     """
     术语更新后重翻。
     extra_terms: GUI 刚编辑过的术语，会强制纳入「受影响术语」。
+    only_terms:  GUI「应用术语」里勾选的术语 —— 给了（含空列表）就**只重翻**
+               这一批术语，忽略快照比对出来的新增 / 修改（勾选即应用对象）。
     """
     _apply_lang_model(src_lang, tgt_lang, model)
 
@@ -2404,7 +2406,7 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
 
     current = TS.load_current_terms()
     if not current:
-        emit("术语表为空或不存在，请先运行菜单 8 生成")
+        emit("术语表为空或不存在，请先运行菜单 7 生成")
         return {"files": 0, "removed": 0}
 
     if not TS.snapshot_exists():
@@ -2416,22 +2418,32 @@ def retranslate_terms_paths(paths, src_lang=None, tgt_lang=None, model=None,
     added = list(added or [])
     modified = list(modified or [])
 
-    for t in (extra_terms or []):
-        if t not in added and t not in modified:
-            modified.append(t)
+    if only_terms is not None:
+        # ★ 勾选什么就重翻什么：不再看快照比对出的新增 / 修改
+        affected = [t for t in dict.fromkeys(str(x) for x in only_terms) if t]
+        emit(f"  当前术语：{len(current)} 条")
+        emit(f"  按勾选重翻：{len(affected)} 条术语")
+        if not affected:
+            emit("没有勾选任何术语，无需重翻")
+            TS.save_snapshot(current)
+            return {"files": 0, "removed": 0}
+    else:
+        for t in (extra_terms or []):
+            if t not in added and t not in modified:
+                modified.append(t)
 
-    emit(f"  当前术语：{len(current)} 条")
-    emit(f"  新增：{len(added)}  修改：{len(modified)}  删除：{len(removed or [])}")
+        emit(f"  当前术语：{len(current)} 条")
+        emit(f"  新增：{len(added)}  修改：{len(modified)}  删除：{len(removed or [])}")
 
-    affected = list(added) + list(modified)
-    if not affected:
-        emit("术语表没有变化，无需重翻")
-        TS.save_snapshot(current)
-        return {"files": 0, "removed": 0}
+        affected = list(added) + list(modified)
+        if not affected:
+            emit("术语表没有变化，无需重翻")
+            TS.save_snapshot(current)
+            return {"files": 0, "removed": 0}
 
-    if added:
-        emit("  新增示例：" + "、".join(
-            f"{t}→{current.get(t, '')}" for t in added[:8]))
+        if added:
+            emit("  新增示例：" + "、".join(
+                f"{t}→{current.get(t, '')}" for t in added[:8]))
 
     total_removed = 0
     files_done = 0
@@ -2671,388 +2683,6 @@ def apply_prefix_terms_paths(paths=None):
 
 
 # ================================================================
-# 核心 5：中文润色重翻
-# ================================================================
-# ================================================================
-# 中文润色：断点续翻进度 + 润色报告
-#   · 进度：<输入名>_polish_cache.json（与缓存同目录）
-#     {"version":1,"round":N,"updated_at":"...",
-#      "done":{原文: {"out": 润色后译文, "at": 时间}}, "stats":{...}}
-#     以「原文」为身份、以「缓存里的值 == 上次润色结果」为完成判据：
-#     用户中途改过译文 / 重翻过，那条会自动重新参与润色。
-#   · 报告：<输出名>_polished.txt（与输出文件同目录），逐条列出改动。
-# ================================================================
-POLISH_STATE_SUFFIX = "_polish_cache.json"
-POLISH_STATE_VERSION = 1
-
-
-def _polish_state_path():
-    """润色进度文件路径：与缓存同源，<输入名>_polish_cache.json"""
-    cache = getattr(config.Runtime, "cache_file", "") or ""
-    if cache:
-        stem = os.path.splitext(os.path.basename(cache))[0]
-        if stem.endswith("_cache"):
-            stem = stem[:-len("_cache")]
-        return os.path.join(os.path.dirname(cache) or ".",
-                            f"{stem}{POLISH_STATE_SUFFIX}")
-    d = os.path.dirname(config.Runtime.output_file) or "."
-    return os.path.join(d, f"polish{POLISH_STATE_SUFFIX}")
-
-
-def _load_polish_state(path):
-    """读润色进度；不存在 / 损坏都当作「没有进度」，不影响正常润色。"""
-    empty = {"version": POLISH_STATE_VERSION, "round": 0,
-             "done": {}, "stats": {}}
-    if not path or not os.path.exists(path):
-        return empty
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise ValueError("进度文件内容不是对象")
-        data.setdefault("done", {})
-        data.setdefault("round", 0)
-        data.setdefault("stats", {})
-        return data
-    except Exception as e:
-        log.warning("润色进度加载失败（当无进度处理）：%s", e)
-        return empty
-
-
-def _save_polish_state(path, state):
-    """落盘润色进度（原子写，Windows 上的临时文件占用与缓存同样处理）。"""
-    state["version"] = POLISH_STATE_VERSION
-    state["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        tmp = path + ".tmp"
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        atomic_replace(tmp, path)
-    except Exception as e:
-        log.warning("润色进度保存失败（不影响本次润色）：%s", e)
-
-
-def _polish_log_path():
-    """润色报告路径：中间文件 → 优先放「翻译中间文件」夹，名 <输出名>_polished.txt"""
-    out = config.Runtime.output_file
-    d = config.aux_dir(out) or "."
-    base = os.path.splitext(os.path.basename(out))[0]
-    return os.path.join(d, f"{base}_polished.txt")
-
-
-def _write_polish_report(path, records, stats, state_path, status="完成"):
-    """
-    records: [{"kind": "改动"/"未变"/"跳过", "src": 原文,
-               "old": 润色前, "new": 润色后}, ...]
-    写完后返回报告路径。
-    """
-    report_path = _polish_log_path()
-    groups = {"改动": [], "未变": [], "跳过": []}
-    for r in records:
-        groups.setdefault(r.get("kind", "改动"), []).append(r)
-
-    head = [
-        "# 中文润色报告",
-        f"# 状态：{status}",
-        f"# 时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"# 输入文件：{path}",
-        f"# 译文缓存：{config.Runtime.cache_file}",
-        f"# 输出文件：{config.Runtime.output_file}",
-        f"# 进度文件：{state_path}",
-        "#",
-        f"# 本轮：改动 {stats.get('changed', 0)} 条，"
-        f"未变 {stats.get('kept', 0)} 条，"
-        f"跳过（已完成）{stats.get('skipped', 0)} 条；"
-        f"累计已完成 {stats.get('done_total', 0)} 条"
-        f"（第 {stats.get('round', 1)} 轮）",
-        "=" * 70,
-        "",
-    ]
-
-    body = []
-    for kind in ("改动", "未变", "跳过"):
-        items = groups.get(kind) or []
-        if not items:
-            continue
-        body.append(f"## {kind}　{len(items)} 条")
-        body.append("-" * 70)
-        for i, r in enumerate(items, 1):
-            body.append(f"[{i}]")
-            body.append(f"  原文：{r.get('src', '')}")
-            if kind == "改动":
-                body.append(f"  润色前：{r.get('old', '')}")
-            if kind == "改动":
-                body.append(f"  润色后：{r.get('new', '')}")
-            body.append("")
-        body.append("")
-
-    try:
-        with open(report_path, "w", encoding="utf-8", newline="") as f:
-            f.write("\n".join(head + body))
-    except Exception as e:
-        log.warning("写润色报告失败：%s", e)
-        return None
-    return report_path
-
-
-def _flush_polish_report(path, records, state_path, round_no,
-                         changed=0, kept=0, skipped=0, done_total=None,
-                         status="完成"):
-    """收尾：刷新进度文件与统计，再写润色明细报告，返回报告路径。"""
-    state = _load_polish_state(state_path)
-    if done_total is None:
-        done_total = len(state.get("done") or {})
-    state["round"] = round_no
-    state["input"] = path
-    state["stats"] = {"round": round_no, "changed": changed, "kept": kept,
-                      "skipped": skipped, "done_total": done_total,
-                      "todo": changed + kept + skipped}
-    _save_polish_state(state_path, state)
-    return _write_polish_report(path, records, state["stats"], state_path,
-                                status=status)
-
-
-def _polish_core(path, lines=None, newline=None, show_header=True,
-                 reset=False, state_path=None):
-    """
-    对单个文件：把缓存里的中文译文再润色一遍，覆盖回缓存并重写输出文件。
-
-    reset=True 会清空本文件的润色进度（重新润色全部）。
-    """
-    out_path = config.Runtime.output_file
-    cache_path = config.Runtime.cache_file
-
-    # ★ 本文件的 section：润色时用它追加类别风格段（prompts/categories）
-    sec = _file_section(path)
-    if sec:
-        log.info("润色文件 section：%s", sec)
-
-    if show_header:
-        emit(f"\n{'=' * 55}")
-        emit(f"  中文润色：{path}")
-        emit(f"  输出：{out_path}")
-        emit(f"{'=' * 55}")
-
-    if lines is None:
-        lines, newline = P.read_file(path, config.INPUT_ENCODING)
-    newline = newline or "\n"
-
-    entries, _ = P.extract_entries(lines)
-    cache = Cache(cache_path)
-
-    # ---------- 断点续翻进度 ----------
-    state_path = state_path or _polish_state_path()
-    state = _load_polish_state(state_path)
-    round_no = int(state.get("round") or 0) + (0 if reset else 1)
-    done_map = {} if reset else (state.get("done") or {})
-    if reset:
-        state["done"] = {}
-
-    records = []          # 润色报告明细：每条一个 dict
-    min_len = getattr(config, "POLISH_MIN_LEN", 4)
-    seen, todo = set(), []
-    for _, txt in entries:
-        if txt in seen:
-            continue
-        seen.add(txt)
-        val = cache.get(txt)
-        if not val or val == txt:
-            continue                       # 没翻译过 / 纯控制符原样缓存
-        if len(val.strip()) < min_len or PR.is_pure_control(val):
-            continue
-        # ★ 断点续翻：缓存里的值仍是上次润色的结果 → 这条已完成，跳过
-        if done_map.get(txt, {}).get("out") == val:
-            records.append({"kind": "跳过", "src": txt, "old": val,
-                            "new": val})
-            continue
-        todo.append(txt)
-
-    skipped = sum(1 for r in records if r["kind"] == "跳过")
-    emit(f"[润色] 缓存 {len(cache)} 条  待润色 {len(todo)} 条"
-         f"  跳过已完成 {skipped} 条")
-    if not todo:
-        emit("没有需要润色的译文"
-             + (f"（已全部润色过，进度文件 {state_path}）" if skipped else
-                "（先运行一次翻译）"))
-        _flush_polish_report(path, records, state_path, round_no,
-                             skipped=skipped)
-        return {"changed": 0, "kept": 0, "todo": 0, "skipped": skipped}
-
-    client = OllamaClient()
-    batch_size = getattr(config, "POLISH_BATCH_SIZE", 8) or 8
-    changed = 0
-    kept = 0
-    total = len(todo)
-    done = 0
-    t0 = time.time()
-
-    def _mark_unchanged(t):
-        """润色没拿到有效结果 → 保留原译文，并记进报告。"""
-        nonlocal kept
-        kept += 1
-        old = cache.get(t)
-        records.append({"kind": "未变", "src": t, "old": old, "new": old})
-
-    # 润色同样按上下文预算分批：正文取译文，原文进参考块
-    polish_sys_tokens = _tokens_of(
-        T.load_template("system_polish.txt", T.POLISH_SYSTEM_PROMPT)
-        .replace("{tgt}", config.TARGET_LANG))
-    polish_batches = _make_batches(
-        todo, batch_size, budget=T.resolve_ctx_budget(),
-        sys_tokens=polish_sys_tokens,
-        ref_provider=lambda b: True,
-        body_provider=lambda t: cache.get(t) or "")
-
-    for bi, batch_texts in enumerate(polish_batches, 1):
-        if bridge.cancelled():
-            emit("\n[中断] 用户取消")
-            break
-
-        items, orig_dict, src_safe_dict = [], {}, {}
-        for k, txt in enumerate(batch_texts):
-            cur = cache.get(txt) or ""
-            items.append((k, cur, txt))
-            orig_dict[k] = cur
-            src_safe_dict[k] = txt
-
-        result = polish_with_retry(client, items, section=sec)
-
-        # 拿不到译文就保留原译文
-        for k, txt in enumerate(batch_texts):
-            raw = result.get(k)
-            if not raw or not raw.strip():
-                _mark_unchanged(txt)
-                continue
-
-            new_text = (raw or "").strip()
-            # ★ 控制码检测：润色前后控制码（含 \n）必须完全一致，
-            #   不一致说明模型改坏了 —— 一律保留原译文
-            if (PR.control_symbols(orig_dict[k], ignore_newline=False)
-                    != PR.control_symbols(new_text,
-                                          ignore_newline=False)):
-                log.warning("[润色 %d][%d] 控制码不一致，保留原译文",
-                            bi, k)
-                _mark_unchanged(txt)
-                continue
-            if not new_text:
-                _mark_unchanged(txt)
-                continue
-            if new_text == cache.get(txt):
-                _mark_unchanged(txt)
-                continue
-
-            cache.put(txt, new_text)
-            changed += 1
-            state["done"][txt] = {"out": new_text,
-                                  "at": time.strftime("%H:%M:%S")}
-            records.append({"kind": "改动", "src": txt,
-                            "old": cache.get(txt, ""), "new": new_text})
-
-        cache.tick()
-        ok = sum(1 for k in range(len(batch_texts))
-                 if (result.get(k) or "").strip())
-        done += len(batch_texts)
-        elapsed = time.time() - t0
-        rate = done / elapsed if elapsed > 0 else 0
-        eta = (total - done) / rate / 60 if rate > 0 else 0
-        log.info("[批 %d] 成功 %d/%d  累计 %d/%d  %.2f条/秒  ETA %.1f分",
-                 bi, ok, len(batch_texts), done, total, rate, eta)
-        state["stats"] = {"round": round_no, "changed": changed,
-                          "kept": kept, "skipped": skipped,
-                          "done_total": len(state["done"])}
-        _save_polish_state(state_path, state)
-        bridge.progress(min(bi * batch_size, total), total,
-                        f"润色 {min(bi * batch_size, total)}/{total}")
-
-    # ★ 跑完把 HTTP 连接池关掉（同翻译：别让长连接一直堆着）
-    client.close()
-    cache.save(force=True)
-
-    translations = {txt: cache.get(txt) for _, txt in entries if cache.get(txt)}
-    replaced = P.write_output(
-        lines, entries, translations,
-        out_path, newline, config.OUTPUT_ENCODING,
-    )
-    emit(f"\n✔ 润色完成：改动 {changed} 条，保持不变 {kept} 条")
-    emit(f"  回写 {replaced}/{len(entries)} 条 → {out_path}")
-
-    report_path = _flush_polish_report(
-        path, records, state_path, round_no,
-        changed=changed, kept=kept, skipped=skipped,
-        status="已中断" if bridge.cancelled() else "完成",
-    )
-    if report_path:
-        emit(f"  润色明细：{report_path}")
-
-    return {"changed": changed, "kept": kept, "todo": total,
-            "skipped": skipped, "report": report_path}
-
-
-def polish_paths(paths, model=None, reset=False):
-    # ★ 文本保护规则：润色也要按当前规则处理控制码
-    import text_rules
-    text_rules.ensure_applied()
-    _apply_lang_model(None, None, model)
-
-    _announce_work_dir(paths)
-
-    log.info("=" * 50)
-    log.info("中文润色重翻  共 %d 个文件", len(paths))
-
-    if not getattr(config, "POLISH_ENABLE", True):
-        emit("中文润色功能已关闭（POLISH_ENABLE=False）")
-        return {"files": 0, "changed": 0}
-
-    total_changed = 0
-    total_skipped = 0
-    files_done = 0
-
-    for i, path in enumerate(paths, 1):
-        if bridge.cancelled():
-            break
-        if not os.path.exists(path):
-            emit(f"[跳过] 文件不存在：{path}")
-            continue
-
-        # ★ 本菜单只允许选缓存文件（*_cache.json），先换回源文件
-        src_path = source_of(path)
-        if not os.path.exists(src_path):
-            emit(f"  找不到对应的源文件：{src_path}")
-            continue
-
-        config.Runtime.set_input(src_path)
-        bridge.progress(i - 1, len(paths), os.path.basename(src_path))
-
-        if not os.path.exists(config.Runtime.cache_file):
-            emit(f"  缺少缓存：{config.Runtime.cache_file}（先跑一次翻译）")
-            continue
-
-        try:
-            lines, newline = P.read_file(src_path, config.INPUT_ENCODING)
-        except Exception as e:
-            emit(f"  读取失败：{e}")
-            continue
-
-        if len(paths) > 1:
-            emit(f"\n[{i}/{len(paths)}] {os.path.basename(src_path)}")
-
-        try:
-            r = _polish_core(src_path, lines, newline,
-                             show_header=(len(paths) == 1), reset=reset)
-            total_changed += r.get("changed", 0)
-            total_skipped += r.get("skipped", 0)
-            files_done += 1
-        except bridge.CancelRequested:
-            emit("\n[中断] 用户取消")
-            break
-
-    bridge.progress(len(paths), len(paths), "完成")
-    return {"files": files_done, "changed": total_changed,
-            "skipped": total_skipped}
-
-
-# ================================================================
 # 核心 6：换行重排（纯本地，不调用模型）
 # ================================================================
 def _reflow_cfg(mode, cfg=None):
@@ -3129,7 +2759,7 @@ def scan_reflow_blocks(paths, preview=8):
     for path in paths:
         if not os.path.exists(path):
             continue
-        # ★ 菜单 7 只列译文文件，先换回源文件再读（译文与源文件行数一致，
+        # ★ 菜单 6 只列译文文件，先换回源文件再读（译文与源文件行数一致，
         #   但缓存 / 块名都挂在源文件上）
         src_path = source_of(path)
         if not os.path.exists(src_path):
@@ -3350,8 +2980,7 @@ def intl_extract_paths(game_dirs, out_path=None):
     return out
 
 
-def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True,
-                       lang_first=None):
+def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True):
     """
     编译文本：把 intl 格式的文本（单个文件、多个文件、或整个文件夹里的
     全部 .txt）编译成游戏语言文件 —— 等同于在游戏 debug 菜单里点
@@ -3361,7 +2990,6 @@ def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True,
       旧版 → Settings::LANGUAGES 里那条（一般是 Data/Chinese.dat）
       新版 → Data/messages_<语言>_core.dat 与 …_game.dat
     apply_language：编译完顺手把这条语言写进 Settings::LANGUAGES，省得自己改脚本。
-    lang_first：把中文放到语言表第一条（游戏默认语言）。留空取 config。
     """
     import intl_text as IT
     emit("\n" + "=" * 55)
@@ -3389,19 +3017,15 @@ def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True,
                 frag = rep["outs"][0].get("fragment")
             elif rep.get("out"):
                 frag = os.path.basename(rep["out"])
-            if lang_first is None:
-                lang_first = bool(getattr(config, "LANG_ENTRY_FIRST", True))
             rep["language"] = intl_apply_language(game_dir, fragment=frag,
-                                                  emit=emit,
-                                                  first=lang_first)
+                                                  emit=emit)
         except Exception as e:
             log.error("写入语言表失败：%s\n%s", e, traceback.format_exc())
             emit(f"  ⚠ 语言表没写成：{e}")
     return rep
 
 
-def intl_apply_language(game_dir, display="简体中文", fragment=None, emit=None,
-                        first=False):
+def intl_apply_language(game_dir, display="简体中文", fragment=None, emit=None):
     """
     编译完文本后调用：把这条语言写进游戏 Settings 的 LANGUAGES ——
     复制第一条语言条目、把 `English` 改成 `Chinese`（被注释的先取消注释）。
@@ -3409,8 +3033,7 @@ def intl_apply_language(game_dir, display="简体中文", fragment=None, emit=No
     """
     import game_scripts as GS
     return GS.apply_languages_entry(game_dir, display=display,
-                                    fragment=fragment, emit=emit,
-                                    first=first)
+                                    fragment=fragment, emit=emit)
 
 
 def script_intl_paths(game_dir, write=False, include_main=True,
@@ -3658,20 +3281,6 @@ def cmd_review_prefix_dict():
     apply_prefix_dict_paths(paths)
 
 
-def cmd_polish():
-    """菜单 6：中文润色重翻"""
-    paths = _select_scope_interactive("选择要润色的文件")
-    if not paths:
-        return
-    # 默认断点续翻（跳过上次已润色过的）；选 y 才清空进度整份重润
-    reset = False
-    try:
-        reset = input("是否清空润色进度、重新润色全部？(y/N): ").strip().lower() == "y"
-    except EOFError:
-        reset = False
-    polish_paths(paths, reset=reset)
-
-
 def _ask_reflow_params():
     """交互式修改两套重排参数：写回设置并热更新（回车跳过）。"""
     fields = [
@@ -3692,7 +3301,7 @@ def _ask_reflow_params():
 
 
 def cmd_reflow():
-    """菜单 7：换行重排"""
+    """菜单 6：换行重排"""
     emit("\n[换行重排] 当前配置")
     emit("-" * 55)
     emit(f"  [map*] 换行  ：{config.WRAP_CHARS_MIN}~{config.WRAP_CHARS_MAX} 字，"
@@ -3712,7 +3321,7 @@ def cmd_reflow():
 
 
 def cmd_build_terms():
-    """菜单 8：术语字典 —— Excel 转术语表（右侧卡片可切到字典列表）"""
+    """菜单 7：术语字典 —— Excel 转术语表（右侧卡片可切到字典列表）"""
     import filepicker
     import build_terms as BT
 
@@ -3828,7 +3437,7 @@ def _choose_language(prompt, default_key, exclude=None):
 
 
 def cmd_provider():
-    """菜单 10：本地模型服务（切换提供商 / 模型 / 部署）"""
+    """菜单 9：本地模型服务（切换提供商 / 模型 / 部署）"""
     import providers as PV
 
     while True:
@@ -3921,15 +3530,14 @@ def cmd_provider():
 
 
 def cmd_debug():
-    """菜单 11：开启 DEBUG（比对引擎 → 写 $DEBUG=true → 关掉启动时的全量编译）"""
+    """菜单 10：开启 DEBUG（比对引擎 → 写 $DEBUG=true）"""
     import filepicker
     import game_scripts as GS
     import debug_tool as DT
 
     emit("\n[开启 DEBUG]")
     emit("  ① 识别 Essentials 版本，比对引擎的基本函数有没有被改过；")
-    emit("  ② 往 mainFunction 里写 $DEBUG=true（等价于用调试模式启动游戏）；")
-    emit("  ③ 关掉 debug 启动时「删 Data/*.dat + 全量重编译」这两步。")
+    emit("  ② 往 pbCallTitle 第一行写 $DEBUG=true（等价于用调试模式启动游戏）。")
 
     folder = filepicker.pick_dir(
         initial_dir=config.Runtime.last_dir or config.BASE_DIR,
@@ -3952,7 +3560,7 @@ def cmd_debug():
 
 
 def cmd_show_logs():
-    """菜单 12：日志 / 环境检查"""
+    """菜单 11：日志 / 环境检查"""
     import env_check
 
     log_dir = os.path.join(config.BASE_DIR, "logs")

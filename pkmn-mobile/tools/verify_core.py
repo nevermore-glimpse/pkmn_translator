@@ -146,7 +146,7 @@ def part4_debug_chain():
 
     try_call("DT.list_backups(备份列表)", lambda: DT.list_backups(d))
 
-    # DT.status 的报告字段是 version/has_main/debug_on/guarded/...，不含 ok
+    # DT.status 的报告字段是 version/has_main/debug_on/...，不含 ok
     if isinstance(rep, dict):
         report("has_main" in rep and "debug_on" in rep,
                "status() 返回结构化报告",

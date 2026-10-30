@@ -1192,7 +1192,7 @@ def _zh_fragment(frag, first_display=""):
     return "Chinese"
 
 
-def _patch_languages(text, display=None, fragment=None, first=False):
+def _patch_languages(text, display=None, fragment=None):
     """
     在 LANGUAGES 数组里加一条中文语言。做法（按需求定的三步）：
 
@@ -1226,9 +1226,6 @@ def _patch_languages(text, display=None, fragment=None, first=False):
 
     ★ 数组里已经有中文条目（中文 / Chinese / 简中…）就不再重复加，
       只校正它的文件名（补上可能缺失的 .dat）。
-    ★ first=True 时把中文那条插到**第一条之前**（成为 LANGUAGES[0]）——
-      游戏的语言就是列表下标（`$PokemonSystem.language` 默认 0），
-      不排到第一位就得进游戏手动切语言。
     返回 (新文本, info)。
     """
     m = _LANG_ARRAY_RE.search(text)
@@ -1274,16 +1271,6 @@ def _patch_languages(text, display=None, fragment=None, first=False):
                         + body[em2.end("frag"):])
                 info["fixed"] = (cur, want)
                 new_lines = lines[:k] + [body + cr] + lines[k + 1:]
-        # ①-b 排到第一位：游戏默认语言就是 LANGUAGES 的下标 0，
-        #      中文不在第一位时，有存档（language=0）的玩家进去永远是英文。
-        if first and k != entries[0][0]:
-            base = new_lines if new_lines is not None else lines
-            moved = base[k]
-            rest = base[:k] + base[k + 1:]
-            pos = entries[0][0]
-            new_lines = rest[:pos] + [moved] + rest[pos:]
-            info["moved"] = True
-            info["first"] = True
         if new_lines is None:
             return text, info
         info["changed"] = True
@@ -1323,18 +1310,14 @@ def _patch_languages(text, display=None, fragment=None, first=False):
     info["added"] = True
     info["display"] = disp
     info["fragment"] = frag_new
-    info["first"] = bool(first)
     info["template"] = body.strip()
     info["entry"] = dup.strip()
-    if first:                       # 中文排第一 → 游戏默认就是中文
-        new_lines = lines[:k0] + [dup + cr, body + cr] + lines[k0 + 1:]
-    else:
-        new_lines = lines[:k0] + [body + cr, dup + cr] + lines[k0 + 1:]
+    new_lines = lines[:k0] + [body + cr, dup + cr] + lines[k0 + 1:]
     return "\n".join(new_lines), info
 
 
 def apply_languages_entry(game_dir, display="简体中文", fragment=None,
-                          emit=None, first=False):
+                          emit=None):
     """
     把一条语言写进游戏 Settings 的 LANGUAGES。
     返回 {"ok", "changed", "mode", "where", "backup", "targets", ...}
@@ -1364,11 +1347,10 @@ def apply_languages_entry(game_dir, display="简体中文", fragment=None,
         frag = _ensure_dat(have) if have else None
     out = {"ok": True, "changed": False, "fragment": frag, "targets": [],
            "display": display}
-    first_info = None            # 第一份脚本的 info（别和参数 first 撞名）
+    first_info = None            # 第一份脚本的 info
     for src in srcs:
         try:
-            new_text, info = _patch_languages(src["text"], display, frag,
-                                              first=first)
+            new_text, info = _patch_languages(src["text"], display, frag)
         except ValueError as e:
             say(f"[语言] ⚠ {_loc(src)} 里的 LANGUAGES 读不出来：{e}")
             continue
@@ -1404,19 +1386,16 @@ def apply_languages_entry(game_dir, display="简体中文", fragment=None,
             old, new = info["fixed"]
             say(f"[语言] {_loc(src)} 语言文件名已校正：{old} → {new}"
                 f"（少了 .dat 整份译文都会加载不到）")
-        if info.get("moved"):
-            say(f"[语言] {_loc(src)} 中文已排到第一位"
-                f"（游戏默认语言就是 LANGUAGES 的下标 0）")
-        elif info.get("added"):
+        if info.get("added"):
             say(f"[语言] {_loc(src)} 已加入 "
                 f"{info.get('entry') or '[\"Chinese\", …]'}"
-                f"（{'排第一位，游戏默认语言' if info.get('first') else '复制第一条并改名'}）")
+                "（复制第一条并改名）")
         say(f"[语言] 原文件已备份：{os.path.basename(bak)}")
 
     if first_info:
         for k in ("display", "fragment", "entry", "template",
-                  "exists", "added", "uncommented", "first",
-                  "fixed", "moved", "changed"):
+                  "exists", "added", "uncommented",
+                  "fixed", "changed"):
             if k in first_info:
                 out.setdefault(k, first_info[k])
     # 兼容旧字段：取第一处当代表
@@ -1744,7 +1723,7 @@ def unpack_plugin_scripts(game_dir, out_dir=None, emit=None):
 def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
                                 backup=True):
     """
-    把 Plugins-p 里改过的 .rb **就地写回** Data/PluginScripts.rxdata。
+    把 Plugins-p 里的 .rb **无条件写回** Data/PluginScripts.rxdata。
 
     ★ 不做「从 Plugins-p 整体重建容器」：那会丢掉每个插件的 meta(Hash)、
       原始文件名与顺序，也丢掉插件名（Plugins-p 的目录名经过 sanitize，
@@ -1752,10 +1731,13 @@ def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
       这里只把每个条目[文件下标][1] 换成新的 zlib 压缩源码，其余原样搬回。
     ★ 定位靠解包时写下的 `_pkmn_unpack_manifest.json`；清单缺失时退化为
       「用同一个 _plugin_safe_name 反推路径」并给出警告。
-    ★ 写容器前先备份成 `PluginScripts.rxdata.<时间戳>.bak`（与
-      plugin_tools.compile_plugins 的备份风格一致），再「写临时文件 +
-      os.replace」原子替换。只碰 Data/PluginScripts.rxdata 与它的 .bak，
-      不动松散 Plugins/ 与 Scripts/。
+    ★ 备份是**固定名** `PluginScripts.rxdata.bak`（后面加一个 .bak），
+      且只在备份还不存在时才备份一次 —— 已有备份就不再覆盖，
+      保住的永远是最初那份原版容器。备份失败 → 中止写入。
+    ★ **无条件编译**：哪怕 Plugins-p 里一个文件都没改，也照样重写容器
+      （幂等：内容不变写出来也一样），不再因为「没有改动」就空手而归。
+      写容器走「写临时文件 + os.replace」原子替换。只碰
+      Data/PluginScripts.rxdata 与它的 .bak，不动松散 Plugins/ 与 Scripts/。
     ★ 容器不存在 / 读不出来 / Plugins-p 不存在 → ok=False，**不抛异常**。
 
     参数：
@@ -1765,10 +1747,9 @@ def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
       backup    写回前是否备份（默认 True）
 
     返回：
-      {"ok": bool, "container": 容器路径, "updated": 已写回文件数,
+      {"ok": bool, "container": 容器路径, "updated": 实际写回的文件数,
        "skipped": 内容没变的文件数, "missing": 对应的松散文件不存在的条目数,
        "backup": 备份路径 | None, "errors": [错误文本, ...]}
-      ★ 一个文件都不需要更新时 → ok=True、updated=0（幂等重跑走这里）。
     """
     game_dir = str(game_dir or "")
     root = str(src_dir) if src_dir else os.path.join(game_dir, "Plugins-p")
@@ -1896,25 +1877,27 @@ def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
                 consider(pi, fi, [pname] + parts,
                          "插件 %s 第 %s 个文件" % (pname, fi))
 
-    if not plan:
-        res["ok"] = True
-        say("没有需要更新的文件（改了 %s 里的 .rb 再来点这个按钮）" % root)
-        return res
+    # 无条件编译：哪怕一个文件都没改，也照样重写容器（不再提前返回）。
 
     for pi, fi, data, src in plan:
         obj[pi][2][fi][1] = zlib.compress(data)
 
     bak = None
     if backup:
-        try:
-            bak = "%s.%s.bak" % (path, time.strftime("%Y%m%d-%H%M%S"))
-            shutil.copyfile(path, bak)
-            res["backup"] = bak
-            say("原容器已备份：%s" % os.path.basename(bak))
-        except OSError as e:
-            res["errors"].append("备份 %s 失败（已中止写入）：%s" % (path, e))
-            say("✘ 备份失败，已中止写入：%s" % e)
-            return res
+        bak = path + ".bak"
+        if os.path.isfile(bak):
+            # 固定名备份已存在 → 不再备份，保住最初那份原版容器。
+            bak = None
+            say("已有备份 %s.bak，跳过备份（不覆盖旧备份）" % os.path.basename(path))
+        else:
+            try:
+                shutil.copyfile(path, bak)
+                res["backup"] = bak
+                say("原容器已备份：%s" % os.path.basename(bak))
+            except OSError as e:
+                res["errors"].append("备份 %s 失败（已中止写入）：%s" % (path, e))
+                say("✘ 备份失败，已中止写入：%s" % e)
+                return res
 
     tmp = path + ".tmp"
     try:
@@ -1935,7 +1918,12 @@ def compile_back_plugin_scripts(game_dir, src_dir=None, emit=None,
     res["ok"] = True
     for _pi, _fi, _data, src in plan:
         say("  ✔ %s" % os.path.relpath(src, root))
-    say("完成：更新 %s 个文件 → %s%s"
-        % (res["updated"], path,
-           "（备份 %s）" % os.path.basename(bak) if bak else ""))
+    if plan:
+        say("完成：更新 %s 个文件 → %s%s"
+            % (res["updated"], path,
+               "（已有备份，未重新备份）" if res["backup"] is None and backup
+               else ("（备份 %s）" % os.path.basename(res["backup"])
+                     if res["backup"] else "")))
+    else:
+        say("完成：Plugins-p 无改动，容器已原样重写 → %s" % path)
     return res

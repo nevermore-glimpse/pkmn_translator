@@ -29,7 +29,7 @@ USER_CONFIG_PATH = config.USER_CONFIG_FILE
 # key, 显示名, 类型, 说明
 # 顺序对应菜单里显示的序号
 EDITABLE = [
-    # ---------- 本地服务提供商（菜单 10 一键切换） ----------
+    # ---------- 本地服务提供商（菜单 9 一键切换） ----------
     ("PROVIDER",           "服务提供商",        "str",   "ollama / llamacpp / lmstudio"),
     ("LLAMACPP_URL",       "llama.cpp 地址",    "str",   "OpenAI 兼容，如 http://127.0.0.1:8080/v1"),
     ("LLAMACPP_DIR",       "llama.cpp 目录",    "str",   "llama-server.exe 所在文件夹"),
@@ -96,8 +96,6 @@ EDITABLE = [
 
     # ---------- 提示词与替换 ----------
     # 输出格式固定为 JSON（{"id":N,"text":"...","terms":{...}}），不再可选
-    ("LANG_ENTRY_FIRST",   "中文设为默认语言", "bool",
-     "编译后把中文放到游戏语言表第一条（游戏默认语言）"),
     ("TEXT_PRESERVE_MODE", "文本保护规则模式", "str",
      "off=只用内置 / smart=内置+自带规则集 / custom=叠加自定义（见 text_preserve/README.md）"),
     ("THINKING_BLOCK", "思考块",           "bool",
@@ -116,7 +114,7 @@ EDITABLE = [
      "翻译时统计术语命中，写 terms_stats.json"),
 
     # ---------- 换行重排 ----------
-    ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "菜单 7 是否可用（翻译后不再自动重排）"),
+    ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "菜单 6 是否可用（翻译后不再自动重排）"),
     ("WRAP_CHARS_MIN",     "换行下限(字)",      "int",   ""),
     ("WRAP_CHARS_MAX",     "换行上限(字)",      "int",   ""),
     ("WRAP_MIN_GAP",       "换行最小间隔(字)",  "int",   "换行后至少 N 字才换"),
@@ -134,12 +132,6 @@ EDITABLE = [
     ("TERM_EXTRACT_BATCH", "术语提取每批条数", "int",
      "「术语提取」页预览显示用；实际分批按 BATCH_SIZE（与正常翻译一致）"),
     ("AUTO_EXTRACT_MIN_LEN", "术语最短长度", "int", ""),
-
-    # ---------- 中文润色 ----------
-    ("POLISH_ENABLE",      "启用中文润色",     "bool",  "菜单 6 是否可用"),
-    ("POLISH_BATCH_SIZE",  "润色每批条数上限", "int",   "同 BATCH_SIZE：由上下文预算决定"),
-    ("POLISH_TEMPERATURE", "润色采样温度",     "float", "略高于翻译，给润色自由度"),
-    ("POLISH_MIN_LEN",     "润色最短长度",     "int",   "短于该长度不润色"),
 ]
 
 
@@ -158,7 +150,6 @@ HIDDEN_KEYS = {
     "SKIP_PURE_CONTROL",       # 跳过纯控制符：开
     "PURE_CONTROL_MIN_LEN",    # 纯控制符阈值：2
     "SKIP_PATH_LINES",         # 跳过资源路径：开
-    "LANG_ENTRY_FIRST",        # 中文设为默认语言：关
     "PRE_REPLACEMENT_PRESETS",  # 启用的译前预设：空
     "POST_REPLACEMENT_PRESETS",  # 启用的译后预设：空
     "TERM_STATS_ENABLE",       # 术语命中统计：关
@@ -166,7 +157,6 @@ HIDDEN_KEYS = {
     "APPLY_TERMS",             # 启用术语替换：开
     "WHOLE_TERM_MATCH",        # 整句术语直译：开
     "EXCEL_APPEND",            # Excel 追加式写入：开
-    "POLISH_ENABLE",           # 启用中文润色：开
 }
 
 # 只属于云端服务：本地服务下不出现

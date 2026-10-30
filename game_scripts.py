@@ -1192,7 +1192,7 @@ def _zh_fragment(frag, first_display=""):
     return "Chinese"
 
 
-def _patch_languages(text, display=None, fragment=None, first=False):
+def _patch_languages(text, display=None, fragment=None):
     """
     在 LANGUAGES 数组里加一条中文语言。做法（按需求定的三步）：
 
@@ -1226,9 +1226,6 @@ def _patch_languages(text, display=None, fragment=None, first=False):
 
     ★ 数组里已经有中文条目（中文 / Chinese / 简中…）就不再重复加，
       只校正它的文件名（补上可能缺失的 .dat）。
-    ★ first=True 时把中文那条插到**第一条之前**（成为 LANGUAGES[0]）——
-      游戏的语言就是列表下标（`$PokemonSystem.language` 默认 0），
-      不排到第一位就得进游戏手动切语言。
     返回 (新文本, info)。
     """
     m = _LANG_ARRAY_RE.search(text)
@@ -1274,16 +1271,6 @@ def _patch_languages(text, display=None, fragment=None, first=False):
                         + body[em2.end("frag"):])
                 info["fixed"] = (cur, want)
                 new_lines = lines[:k] + [body + cr] + lines[k + 1:]
-        # ①-b 排到第一位：游戏默认语言就是 LANGUAGES 的下标 0，
-        #      中文不在第一位时，有存档（language=0）的玩家进去永远是英文。
-        if first and k != entries[0][0]:
-            base = new_lines if new_lines is not None else lines
-            moved = base[k]
-            rest = base[:k] + base[k + 1:]
-            pos = entries[0][0]
-            new_lines = rest[:pos] + [moved] + rest[pos:]
-            info["moved"] = True
-            info["first"] = True
         if new_lines is None:
             return text, info
         info["changed"] = True
@@ -1323,18 +1310,14 @@ def _patch_languages(text, display=None, fragment=None, first=False):
     info["added"] = True
     info["display"] = disp
     info["fragment"] = frag_new
-    info["first"] = bool(first)
     info["template"] = body.strip()
     info["entry"] = dup.strip()
-    if first:                       # 中文排第一 → 游戏默认就是中文
-        new_lines = lines[:k0] + [dup + cr, body + cr] + lines[k0 + 1:]
-    else:
-        new_lines = lines[:k0] + [body + cr, dup + cr] + lines[k0 + 1:]
+    new_lines = lines[:k0] + [body + cr, dup + cr] + lines[k0 + 1:]
     return "\n".join(new_lines), info
 
 
 def apply_languages_entry(game_dir, display="简体中文", fragment=None,
-                          emit=None, first=False):
+                          emit=None):
     """
     把一条语言写进游戏 Settings 的 LANGUAGES。
     返回 {"ok", "changed", "mode", "where", "backup", "targets", ...}
@@ -1364,11 +1347,10 @@ def apply_languages_entry(game_dir, display="简体中文", fragment=None,
         frag = _ensure_dat(have) if have else None
     out = {"ok": True, "changed": False, "fragment": frag, "targets": [],
            "display": display}
-    first_info = None            # 第一份脚本的 info（别和参数 first 撞名）
+    first_info = None            # 第一份脚本的 info
     for src in srcs:
         try:
-            new_text, info = _patch_languages(src["text"], display, frag,
-                                              first=first)
+            new_text, info = _patch_languages(src["text"], display, frag)
         except ValueError as e:
             say(f"[语言] ⚠ {_loc(src)} 里的 LANGUAGES 读不出来：{e}")
             continue
@@ -1404,19 +1386,16 @@ def apply_languages_entry(game_dir, display="简体中文", fragment=None,
             old, new = info["fixed"]
             say(f"[语言] {_loc(src)} 语言文件名已校正：{old} → {new}"
                 f"（少了 .dat 整份译文都会加载不到）")
-        if info.get("moved"):
-            say(f"[语言] {_loc(src)} 中文已排到第一位"
-                f"（游戏默认语言就是 LANGUAGES 的下标 0）")
-        elif info.get("added"):
+        if info.get("added"):
             say(f"[语言] {_loc(src)} 已加入 "
                 f"{info.get('entry') or '[\"Chinese\", …]'}"
-                f"（{'排第一位，游戏默认语言' if info.get('first') else '复制第一条并改名'}）")
+                "（复制第一条并改名）")
         say(f"[语言] 原文件已备份：{os.path.basename(bak)}")
 
     if first_info:
         for k in ("display", "fragment", "entry", "template",
-                  "exists", "added", "uncommented", "first",
-                  "fixed", "moved", "changed"):
+                  "exists", "added", "uncommented",
+                  "fixed", "changed"):
             if k in first_info:
                 out.setdefault(k, first_info[k])
     # 兼容旧字段：取第一处当代表

@@ -66,7 +66,7 @@ def _prepare(home=None, web_dir=None, data_dir=None):
     if data_dir:
         os.environ["PKMN_DATA_DIR"] = data_dir
 
-    os.environ.setdefault("PKMN_VERSION", "1.6.1-mobile")
+    os.environ.setdefault("PKMN_VERSION", "1.8.0-mobile")
 
     if root not in sys.path:
         sys.path.insert(0, root)

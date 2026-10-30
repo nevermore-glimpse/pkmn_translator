@@ -223,7 +223,7 @@ GitHub `nevermore-glimpse/pkmn_translator`、Bilibili `space.bilibili.com/354660
 
 | 方式 | 落点 | 调的 core 函数 |
 |---|---|---|
-| ① 通用 | 写 Main 的 `mainFunction` | `debug_tool.enable_debug(write_debug=True)` |
+| ① 通用 | 写 Main 的 `pbCallTitle` 第一行 | `debug_tool.enable_debug(write_debug=True)` |
 | ② 删条件 | `Game_Player` / `Scene_Map` / 队伍 / 背包 | `engine_tools.patch_remove_debug_conditions` |
 | ③ F6 键（提示） | `Scene_Map` | `engine_tools.patch_special_key` |
 | ④ F6 键（菜单） | `Scene_Map` | 同上，`mode="special_menu"` |
@@ -234,8 +234,9 @@ GitHub `nevermore-glimpse/pkmn_translator`、Bilibili `space.bilibili.com/354660
 ★ **只有方式① 会写 `$DEBUG=true`**，②–⑦ 一律不写 ——
 方式⑦ 的整套设计前提就是「全程不设 $DEBUG」，反调试里有 `exit if $DEBUG`，
 一设就被踢出游戏。这条规则原来只在电脑版里，现在两端一致，并由
-`tools/test_debug_modes.py` 逐方式断言。UI 上还补了电脑版的那两个勾选项
-（引擎被改过也继续写入 / 自动关闭全量编译）。
+`tools/test_debug_modes.py` 逐方式断言。UI 上还保留了电脑版的勾选项
+（引擎被改过也继续写入；「自动关闭全量编译」已随电脑版一同删除，
+现在不再给 Compiler 装编译闸门）。
 
 ### ④ 关于页「基准数据：缺失」
 
@@ -586,7 +587,7 @@ TTF 渲染路径 —— 这是 Essentials 生态公认的解法，电脑版实�
 
 ```bash
 python tools/verify_core.py           # 26 项：模块加载 + 数值函数 + 坏档识别
-python tools/test_debug_e2e.py        # 13 项：$DEBUG 真写进 mainFunction、幂等、还原
+python tools/test_debug_e2e.py        # 13 项：$DEBUG 真写进 pbCallTitle、幂等、还原
 python tools/test_overwrite_font.py   # 30 项：覆盖真改文件 + 还原、字体真装进 Fonts/
 python tools/smoke_api.py             # 接口冒烟 + SSE 实时日志
 python tools/check_16kb.py            # APK 原生库 16KB 对齐检查

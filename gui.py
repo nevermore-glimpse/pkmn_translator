@@ -155,15 +155,13 @@ HANHUA_SUBMENUS = [
     ("report", "重翻检查报告",
      "按问题类型筛选，把有问题的句子重新翻一遍。"),
     ("terms", "术语更新后重翻",
-     "术语表改过之后，只重翻受影响的句子。"),
+     "术语表改过之后，只重翻已勾选术语相关的句子（新增/修改/删除自动勾选）。"),
     ("prefix", "前缀字典",
      "按前缀批量替换 / 校对译文。"),
-    ("polish", "中文润色",
-     "对已有译文再润色一遍。"),
     ("reflow", "换行重排",
      "把游戏里过长的一行重新断行。"),
     ("excel", "术语字典 / Excel 转换",
-     "查看并编辑术语字典，或从 Excel 导进术语。"),
+     "首页是术语字典：查看并编辑术语字典，也可切到 Excel 导进术语。"),
 ]
 
 # ★ 「游戏汉化」页右侧的翻译流程说明（原文照抄，不要改写 / 不要另加序号）。
@@ -174,10 +172,9 @@ HANHUA_FLOW_STEPS = [
     "第三步：翻译，翻译非术语文件",
     "第四步：重翻检查报告，修正有问题的句子",
     "第五步：检查术语，看是否要更新术语并修正相关句子",
-    "第六步：查看前缀字典，只翻译\\tg[]里的",
-    "第七步：中文润色，提供翻译质量",
-    "第八步：换行重排，重新设置句子的换行",
-    "第九步：翻译全部完成后，在9.术语字典里删除自动提取术语",
+    "第六步：查看前缀字典，只翻译\\\\tg[]里的",
+    "第七步：换行重排，重新设置句子的换行",
+    "第八步：翻译全部完成后，在8.术语字典里删除自动提取术语",
 ]
 
 # ★ 「翻译流程」说明的字号（手动调整就改这两个数字，单位 pt）。
@@ -1239,7 +1236,7 @@ class FilePanel(tk.Frame):
     mode:
       "source"     —— 翻译页：源文件，不限格式，只跳过译文与检查报告
       "report"     —— 重翻检查报告页：只识别 *_translated_report.txt
-      "cache"      —— 术语重翻 / 中文润色页：只识别翻译缓存 *_cache.json
+      "cache"      —— 术语重翻页：只识别翻译缓存 *_cache.json
       "translated" —— 换行重排页：只识别译文 *_translated.txt
       "dict"       —— 前缀字典页：固定用工具目录下的 prefix_dict.json，不给选
     """
@@ -4090,7 +4087,6 @@ class App:
         self._page_report()
         self._page_terms()
         self._page_prefix()
-        self._page_polish()
         self._page_reflow()
         self._page_excel()
         self._page_settings()
@@ -4272,7 +4268,7 @@ class App:
         菜单 2–7 的公共入口：把**名字类文件**从待处理清单里剔除。
 
         名字文件（*_NAMES / 开头 [编号] 是名字区块的那批）归「术语提取」管，
-        翻译 / 检查报告 / 术语重翻 / 中文润色 / 换行重排都不该碰它们 ——
+        翻译 / 检查报告 / 术语重翻 / 换行重排都不该碰它们 ——
         否则同一批名词会被两条流水线各翻一遍，译法还可能不一致。
 
         返回过滤后的清单；有跳过时弹一次提示（最多列 5 个文件名）。
@@ -4295,13 +4291,13 @@ class App:
 
         ★ 各菜单认的文件不一样，这里统一做一次换算：
             重翻检查报告 → 检查报告 *_translated_report.txt
-            术语重翻 / 中文润色 → 翻译缓存 *_cache.json
+            术语重翻 → 翻译缓存 *_cache.json
             换行重排 → 译文 *_translated.txt
             前缀字典 → 字典文件固定，不同步
           源文件的换算走 commands.source_of()，所以把缓存 / 译文直接拖进来也能认。
         """
         paths = list(paths or [])
-        # ★ 先统一换回源文件：术语重翻 / 润色里勾的是缓存、换行重排里勾的是译文，
+        # ★ 先统一换回源文件：术语重翻里勾的是缓存、换行重排里勾的是译文，
         #   直接同步过去会把这些文件塞进翻译页，翻译时会当成文本去读。
         base = [commands.source_of(p) for p in paths]
         for fp in self.file_panels:
@@ -4504,7 +4500,8 @@ class App:
                     self.prog_var.set(100)
                     self._append_log(f"\n=== {label} ===\n")
                 elif kind == "term_reload":
-                    self._reset_term_pending(keep_added=bool(payload))
+                    self._reset_term_pending(keep_added=bool(payload),
+                                             keep_checks=bool(payload))
                 elif kind == "report":
                     self.set_busy(False, "检查完成")
                     self._fill_report(payload)
@@ -4632,8 +4629,6 @@ class App:
                                ((r.get("antidebug") or {}).get("targets")
                                 or [])):
                             what.append("注释反调试代码")
-                        if (r.get("guard") or {}).get("added"):
-                            what.append("关闭启动时的全量编译")
                         mres = r.get("mode_res") or {}
                         mode = r.get("mode") or "main"
                         mname = {"main": "通用", "keys": "方式二",
@@ -5193,7 +5188,7 @@ class App:
     def _page_hanhua(self):
         """
         把原来分散的菜单（翻译 / 重翻检查报告 / 术语更新后重翻 / 前缀字典 /
-        中文润色 / 换行重排 / 术语字典）收进这一个菜单：右侧列出各步骤，
+        换行重排 / 术语字典）收进这一个菜单：右侧列出各步骤，
         点一项就跳到对应界面，界面顶部有「← 返回游戏汉化」可以回来。
         """
         page = self.pages["hanhua"]
@@ -5593,16 +5588,6 @@ class App:
             activebackground=CARD, activeforeground=TEXT,
             selectcolor="#FFFFFF", font=FONT_SMALL,
             cursor="hand2").pack(side="left", padx=12)
-        row3b = tk.Frame(c2.body, bg=CARD)
-        row3b.pack(fill="x", pady=(6, 0))
-        self.intl_lang_first_var = tk.BooleanVar(
-            value=bool(getattr(config, "LANG_ENTRY_FIRST", True)))
-        tk.Checkbutton(
-            row3b, text="中文设为默认语言（排语言表第一条）",
-            variable=self.intl_lang_first_var, bg=CARD, fg=TEXT,
-            activebackground=CARD, activeforeground=TEXT,
-            selectcolor="#FFFFFF", font=FONT_SMALL,
-            cursor="hand2").pack(side="left")
         self.intl_compile_lbl = tk.Label(c2.body, text="", bg=CARD,
                                          fg=C_KEY, font=FONT_SMALL,
                                          justify="left", wraplength=560)
@@ -5914,12 +5899,11 @@ class App:
                 return
             srcs = paths
         apply_lang = bool(self.intl_lang_var.get())
-        lang_first = bool(self.intl_lang_first_var.get())
         self.show("log")
 
         def work():
             res = commands.intl_compile_paths(
-                d, srcs, apply_language=apply_lang, lang_first=lang_first)
+                d, srcs, apply_language=apply_lang)
             self.q.put(("intl_compile_done", res))
             return res
 
@@ -5993,7 +5977,7 @@ class App:
         # ★ 行 1（名字文件卡）吃掉剩余高度。RoundCard 默认请求高度只有 10
         #   （防 Canvas 默认 378x265 撑爆布局），pack(fill="x") 不撑高度 →
         #   卡片塌成一条线、内容全看不见。必须 grid + 行权重，写法对齐
-        #   _page_translate / _page_terms / _page_polish。
+        #   _page_translate / _page_terms。
         left.grid_rowconfigure(1, weight=1)
 
         # ---- 卡 1：说明 ----
@@ -6012,26 +5996,18 @@ class App:
                  bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=560).pack(anchor="w", pady=(4, 0))
 
-        # ---- 卡 2：识别到的名字文件 ----
+        # ---- 卡 2：模型与模式（与「翻译」页同一个模块） ----
         c2 = RoundCard(left, radius=16, pad=16)
         c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
-        tk.Label(c2.body, text="识别到的名字文件", bg=CARD, fg=C_TITLE,
-                 font=FONT_B).pack(anchor="w")
-        # ★ 整套文本夹能识别出几十个名字文件，列表放滚动区里，不会溢出卡片
-        scr_outer, scr_inner = make_scroll_area(c2.body, bg=CARD)
-        scr_outer.pack(fill="both", expand=True, pady=(6, 0))
-        self.te_files_lbl = tk.Label(
-            scr_inner, text="（还没选文件）", bg=CARD, fg=TEXT,
-            font=FONT_SMALL, justify="left", anchor="w", wraplength=560)
-        self.te_files_lbl.pack(anchor="w")
+        tk.Label(c2.body, text="模型与模式", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(anchor="w")
+        self._mode_row(c2.body)
+        self._model_row(c2.body)
         tk.Label(c2.body,
-                 text="读法（区块号优先）：① 开头的 [编号] 是名字区块（如 "
-                      "[1] 宝可梦名 / [5] 招式 / [7] 道具 / [12] 属性 / [30] 昵称）；"
-                      "② 文件名含独立的 NAME / NAMES / NICKNAMES 词。\n"
-                      "不读：「翻译中间文件」夹、*_translated 译文、描述 / 正文 / "
-                      "图鉴类文件。",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
-                 wraplength=560).pack(anchor="w", pady=(6, 0))
+                 text="本地模式自动检测已安装的 Ollama 模型；"
+                      "云端模式填写 API 地址与密钥后可用。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
+                 justify="left", wraplength=560).pack(anchor="w", pady=(10, 0))
 
         # ---- 卡 3：预览 / 开始 ----
         c3 = RoundCard(left, radius=16, pad=18, auto_height=True)
@@ -6122,28 +6098,13 @@ class App:
         target = getattr(self, "te_target", "")
         if not target:
             self.te_info_lbl.config(text="先选文本文件或文件夹。")
-            self.te_files_lbl.config(text="（还没选文件）")
             return
         try:
             p = TE.plan(target)
         except Exception as e:
             self.te_stat_lbl.config(text=f"读文本文件失败：{e}")
             self.te_info_lbl.config(text="")
-            self.te_files_lbl.config(text="（读取失败）")
             return
-
-        if p["files"]:
-            rows = []
-            for f in p["files"]:
-                blk = (f"区块 {f['block']}" if f["block"] is not None
-                       else "无区块")
-                rows.append(f"· {os.path.basename(f['path'])}"
-                            f"　[{f['label']}／{blk}]　{f['count']} 条")
-            self.te_files_lbl.config(text="\n".join(rows))
-        else:
-            self.te_files_lbl.config(
-                text="（没找到名字文件：文件名需含 NAME / NAMES / NICKNAMES 词，"
-                     "或开头 [编号] 是名字区块）")
 
         warn = ""
         if p["problems"]:
@@ -6203,6 +6164,7 @@ class App:
                 return
             messagebox.showinfo("提示", msg)
             return
+        commands._apply_lang_model(None, None, self.model_var.get())
         resume = ""
         if p.get("in_cache"):
             resume = (f"\n其中 {p['in_cache']} 条上次已翻过（有缓存），"
@@ -7866,7 +7828,7 @@ class App:
         ent.bind("<KeyRelease>", lambda e: self._filter_terms())
         self.term_filter = tk.StringVar(value="全部")
         for lab, val in (("全部", "全部"), ("自动提取", "AUTO"),
-                         ("本次新增", "新增")):
+                         ("本次新增", "新增"), ("被修改", "修改")):
             tk.Radiobutton(bar, text=lab, value=val,
                            variable=self.term_filter, bg=CARD, fg=TEXT,
                            activebackground=CARD, selectcolor="#FFFFFF",
@@ -7918,7 +7880,7 @@ class App:
         hint_row = tk.Frame(c2.body, bg=CARD)
         hint_row.pack(fill="x", pady=(10, 0))
         tk.Label(hint_row,
-                 text="改动会写入术语字典；双击译文可编辑；右键可复制",
+                 text="「应用术语」只重翻已勾选的术语；双击译文可编辑；右键可复制",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(side="left")
 
         bottom = tk.Frame(c2.body, bg=CARD)
@@ -7958,22 +7920,33 @@ class App:
         except Exception:
             auto = []
         try:
-            _cur, added, _rm, _modified, _ok = commands.analyze_terms()
+            _cur, added, _rm, modified, _ok = commands.analyze_terms()
         except Exception:
             added = None
+            modified = None
 
         added_set = {str(a) for a in (added or [])}
+        modified_set = {str(m) for m in (modified or [])}
 
         rows = []
         for k, v in auto:
-            rows.append(("新增" if k in added_set else "AUTO", k, v))
-        for k in added_set:
+            if k in added_set:
+                rows.append(("新增", k, v))
+            elif str(k) in modified_set:
+                rows.append(("修改", k, v))
+            else:
+                rows.append(("AUTO", k, v))
+        for k in added_set | modified_set:
             if any(r[1] == k for r in rows):
                 continue
-            rows.append(("新增", k,
+            rows.append(("新增" if k in added_set else "修改", k,
                          _cur.get(k, "") if isinstance(_cur, dict) else ""))
 
         self._term_all = rows
+        # ★ 新增 / 被修改过的术语自动勾选：「应用术语」的对象就是勾选的术语
+        for _origin, k, _v in rows:
+            if _origin in ("新增", "修改"):
+                self.term_checks.add(k)
         self._filter_terms()
 
     def _filter_terms(self):
@@ -8024,7 +7997,9 @@ class App:
             origin = str(item["values"][1]).replace("·改", "")
             self.term_edits[src] = value
             self.term_deletes.discard(src)  # 编辑与删除冲突时，编辑优先
+            self.term_checks.add(src)       # ★ 改过的术语自动勾选
             self.term_tree.set(row, "origin", origin + "·改")
+            self._sync_term_all_state()
         except Exception:
             pass
 
@@ -8038,6 +8013,7 @@ class App:
         for k in keys:
             self.term_edits.pop(k, None)
         self.term_deletes.update(keys)
+        self.term_checks.update(keys)     # ★ 删除的术语自动勾选（重翻相关句子）
         self.term_delete_stack.append(set(keys))
         self._filter_terms()
         self.q.put(("log", f"已标记删除 {len(keys)} 条术语（应用前可撤回）\n"))
@@ -8072,8 +8048,7 @@ class App:
                 "（在「应用术语」之前都可以点「撤回」取消）"):
             return
         self._mark_delete(keys)
-        # 已删除的术语从勾选集合里移除，再刷新列表与全选状态
-        self.term_checks.difference_update(keys)
+        # ★ 勾选保留：待删除的术语同样是「应用术语」的重翻对象
         self._filter_terms()
 
     # ---------- 勾选：行复选框 / 表头全选 ----------
@@ -8148,6 +8123,11 @@ class App:
             return
         last = self.term_delete_stack.pop()
         self.term_deletes.difference_update(last)
+        # 撤回删除的术语：没别的改动就退回未勾选
+        for k in last:
+            if (k not in self.term_deletes and k not in self.term_edits
+                    and k not in self.term_added):
+                self.term_checks.discard(k)
         self._filter_terms()
         self.q.put(("log", f"已撤回上一次删除（恢复 {len(last)} 条）\n"))
 
@@ -8209,19 +8189,24 @@ class App:
             pass
         if key and key not in self.term_added:
             self.term_added.append(key)
+        if key:
+            self.term_checks.add(key)       # ★ 新增的术语自动勾选
         self._load_term_rows()
         self.q.put(("log", f"{msg}（点「应用术语」即会重翻相关句子）\n"))
 
-    def _reset_term_pending(self, keep_added=False):
+    def _reset_term_pending(self, keep_added=False, keep_checks=False):
         """
         清空编辑/删除的待应用状态，并重新载入术语列表。
         keep_added=True 时保留「本次新增术语」记录（新增还得靠重翻才生效，
         所以未选文件时会先留着，等下次带文件「应用术语」再重翻）。
+        keep_checks=True 时另保留勾选集合（未选文件的「应用术语」会把改动
+        留在字典里，勾选要留着等下次带文件重翻）。
         """
         self.term_edits.clear()
         self.term_deletes.clear()
         self.term_delete_stack.clear()
-        self.term_checks.clear()
+        if not keep_checks:
+            self.term_checks.clear()
         if not keep_added:
             self.term_added.clear()
         try:
@@ -8232,9 +8217,11 @@ class App:
     def _do_apply_terms(self):
         edits = dict(self.term_edits)
         deletes = set(self.term_deletes)
-        added = list(dict.fromkeys(self.term_added))   # 本次添加的术语（去重保序）
-        if not (edits or deletes or added):
-            messagebox.showinfo("提示", "没有需要应用的术语新增、改动或删除")
+        # ★ 应用术语的对象 = 复选框里勾选的术语（不再区分新增 / 修改；
+        #   新增、修改、删除的术语在列表刷新 / 编辑 / 删除时已自动勾选）
+        checked = [k for k in dict.fromkeys(self.term_checks) if str(k).strip()]
+        if not (edits or deletes or checked):
+            messagebox.showinfo("提示", "没有勾选要应用的术语，也没有其它改动")
             return
 
         src, tgt, model = self.src_var.get(), self.tgt_var.get(), self.model_var.get()
@@ -8249,12 +8236,11 @@ class App:
                     PR.load_terms(force=True)
                 except Exception:
                     pass
-                if added:
-                    # ★ 新增术语只有重翻才会生效，所以先不推进基准，
-                    #   否则下次「应用术语」就不会再把它们算作新增了
+                if edits or deletes:
+                    # ★ 有字典改动就先不推进基准，否则下次「应用术语」
+                    #   就不会再把它们算作新增 / 修改
                     self.q.put(("log",
-                                f"新增的 {len(added)} 条术语已写入字典；"
-                                "本次未选择文件，未重翻受影响的句子。\n"
+                                "本次未选择文件，未重翻勾选术语相关的句子。\n"
                                 "选好文件后再点一次「应用术语」即可重翻。\n"))
                 else:
                     try:
@@ -8263,13 +8249,11 @@ class App:
                         pass
                 self.q.put(("log", f"术语字典已写入 {changed} 条修改、"
                                    f"删除 {removed} 条\n"))
-                self.q.put(("term_reload", True))   # 保留新增记录，等下次重翻
+                self.q.put(("term_reload", True))   # 保留勾选，等下次带文件应用
             self.show("log")
             self.run_async(work_no_paths, label="写入术语字典…",
                           done_label="术语字典已更新")
             return
-
-        extra = list(edits.keys()) + list(deletes) + added
 
         def work():
             changed = TS.save_term_values(edits) if edits else 0
@@ -8283,7 +8267,7 @@ class App:
             self.q.put(("log", f"术语字典已写入 {changed} 条修改、"
                                f"删除 {removed} 条\n"))
             result = commands.retranslate_terms_paths(
-                paths, src, tgt, model, extra_terms=extra)
+                paths, src, tgt, model, only_terms=checked)
             self.q.put(("term_reload", None))
             return result
 
@@ -8308,8 +8292,8 @@ class App:
 
         head = tk.Frame(c.body, bg=CARD)
         head.pack(fill="x")
-        tk.Label(head, text="前缀字典", bg=CARD, fg=C_TITLE,
-                 font=FONT_TITLE).pack(side="left")
+        tk.Label(head, text="前缀字典（只展示 \\tg 类型）", bg=CARD,
+                 fg=C_TITLE, font=FONT_TITLE).pack(side="left")
         self.prefix_stat = tk.Label(head, text="", bg=CARD, fg=C_KEY,
                                     font=FONT_BIG)
         self.prefix_stat.pack(side="right")
@@ -8386,7 +8370,9 @@ class App:
             data = PFD.all_entries()
         except Exception:
             data = {}
-        self._prefix_all = list(data.items())
+        # ★ 只展示 \tg 类型的前缀（其它控制码前缀不显示、不编辑）
+        self._prefix_all = [(k, v) for k, v in data.items()
+                            if "\\tg[" in str(k)]
         self._filter_prefix()
 
     def _filter_prefix(self):
@@ -8482,72 +8468,6 @@ class App:
         self.show("log")
         self.run_async(work, label="前缀应用术语…",
                        done_label="前缀术语已应用")
-
-    # ================================================================
-    # 页面 5：中文润色
-    # ================================================================
-    def _page_polish(self):
-        page = self.pages["polish"]
-        page.grid_columnconfigure(0, weight=1)
-        page.grid_rowconfigure(0, weight=1)
-
-        left = tk.Frame(page, bg=BG_BASE)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        left.grid_rowconfigure(1, weight=1)
-        left.grid_columnconfigure(0, weight=1)
-
-        c1 = RoundCard(left, radius=16, pad=18, auto_height=True)
-        c1.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        tk.Label(c1.body, text="模型与模式", bg=CARD, fg=C_TITLE,
-                 font=FONT_TITLE).pack(anchor="w")
-        self._mode_row(c1.body)
-        self._model_row(c1.body)
-        tk.Label(c1.body,
-                 text="中文润色不需要选择语言：直接把缓存里的中文译文再润色一遍；"
-                      "已润色过的条目会自动跳过，中断后重跑会接着来",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL,
-                 justify="left", wraplength=560).pack(anchor="w", pady=(10, 0))
-
-        c2 = RoundCard(left, radius=16, pad=18)
-        c2.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
-        tk.Label(c2.body, text="说明", bg=CARD, fg=C_TITLE,
-                 font=FONT_TITLE).pack(anchor="w")
-        txt = ("· 逐条读取缓存中的中文译文，交给模型润色后覆盖原缓存\n"
-               "· 保留全部控制码；控制码不一致的条目保留原译文\n"
-               "· 短句、纯控制符句不参与润色\n"
-               "· 断点续翻：进度存在 *_polish_cache.json，润色过的会跳过，"
-               "中途改动的译文会自动重润（CLI 菜单 6 答 y 可清空进度全量重做）\n"
-               "· 润色完成后自动重写 *_translated.txt，并生成 <输出名>_polished.txt "
-               "明细报告（改动 / 未变 / 跳过三段逐条列出）")
-        tk.Label(c2.body, text=txt, bg=CARD, fg=TEXT_DIM, font=FONT_SMALL,
-                 justify="left", wraplength=600).pack(anchor="w", pady=(10, 0))
-
-        c3 = RoundCard(left, radius=16, pad=18)
-        c3.configure(height=136)
-        c3.pack_propagate(False)
-        c3.grid(row=2, column=0, sticky="ew")
-        GlassButton(c3.body, "开始润色", width=200, height=52, primary=True,
-                    bg=CARD, command=self._do_polish).pack(anchor="w")
-        tk.Label(c3.body, text="点击后跳转到日志页，实时查看进度",
-                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(anchor="w",
-                                                           pady=(8, 0))
-
-        fp_holder = RoundCard(page, radius=16, pad=8, width=272,
-                                scrollable=True)
-        fp_holder.grid(row=0, column=1, sticky="nsew")
-        fp_holder.grid_propagate(False)
-        fp = self._make_file_panel(fp_holder, "cache")
-        self.fp_polish = fp
-
-    def _do_polish(self):
-        paths = self.fp_polish.ensure()
-        if not paths:
-            messagebox.showwarning("提示", "请先选择要润色的文件")
-            return
-        model = self.model_var.get()
-        self.show("log")
-        self.run_async(lambda: commands.polish_paths(paths, model),
-                       label="中文润色中…", done_label="润色完成")
 
     # ================================================================
     # 页面 7：换行重排 + 中文文本处理插件
@@ -9141,7 +9061,9 @@ class App:
         self._excel_ready = False
 
     def _excel_lazy_load(self):
-        """进 Excel 页时补做两件启动时不值得做的事：数术语条数 + 读工作表。"""
+        """进本页时补做启动时不值得做的事：切到术语字典首页 +
+        数术语条数 / 读工作表（Excel 视图在后台照样准备好）。"""
+        self._show_termdict_view()
         self._refresh_excel_hint()
         if getattr(self, "_excel_ready", False):
             return
@@ -9267,7 +9189,7 @@ class App:
         view.grid_columnconfigure(0, weight=1)
         view.grid_rowconfigure(0, weight=1)
         self.termdict_view = view
-        view.grid_remove()          # 默认显示 Excel 转换视图
+        self.excel_view.grid_remove()   # ★ 首页是术语字典（Excel 转换在后面）
 
         left = tk.Frame(view, bg=BG_BASE)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
@@ -9281,7 +9203,7 @@ class App:
         head.pack(fill="x")
         tk.Label(head, text="术语字典", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(side="left")
-        GlassButton(head, "返回 Excel 转换", width=150, height=34, bg=CARD,
+        GlassButton(head, "Excel 转换", width=130, height=34, bg=CARD,
                     font=FONT_SMALL,
                     command=self._show_excel_view).pack(side="right")
         self.dict_stat = tk.Label(head, text="", bg=CARD, fg=C_KEY,
@@ -11131,8 +11053,6 @@ class App:
         self.debug_modes_locked = False  # ★ 无 Data 时锁成「调试启动器」
         # ★ 用户要求：引擎被改过也**默认继续写入**，所以默认勾上。
         self.debug_force = tk.BooleanVar(value=True)
-        # ★ 自动关闭全量编译：默认勾上（给 Compiler 装编译闸门）。
-        self.debug_guard = tk.BooleanVar(value=True)
         page = self.pages["debug"]
         page.grid_columnconfigure(0, weight=1)
         page.grid_rowconfigure(0, weight=1)
@@ -11213,15 +11133,6 @@ class App:
             activebackground=CARD, activeforeground=TEXT,
             selectcolor="#FFFFFF", font=FONT_SMALL,
             cursor="hand2").pack(side="left")
-        # ★ 自动关闭全量编译（默认勾上）：给 Compiler 的 main 装一道闸，
-        #   数据已编译好就直接 return（不删 Data/*.dat、不全量重编译）；
-        #   取消勾选就保持引擎原样（调试启动时会真的全量编译一次）。
-        tk.Checkbutton(
-            row2c, text="自动关闭全量编译（默认）",
-            variable=self.debug_guard, bg=CARD, fg=TEXT,
-            activebackground=CARD, activeforeground=TEXT,
-            selectcolor="#FFFFFF", font=FONT_SMALL,
-            cursor="hand2").pack(side="left", padx=(18, 0))
 
         # ★ 任务5/任务2：开启方式改下拉框（容纳六种方式）
         row2b = tk.Frame(c2.body, bg=CARD)
@@ -11259,8 +11170,7 @@ class App:
         attach_label_copy(self.dbg_do_lbl, self, "开启结果")
         tk.Label(c2.body,
                  text="另外会自动清掉脚本里的反调试代码（含插件脚本 "
-                      "Data/PluginScripts.rxdata）、给 Compiler 装一道编译闸门"
-                      "（不想装就取消勾选「自动关闭全量编译」）；改动前先备份成 "
+                      "Data/PluginScripts.rxdata）；改动前先备份成 "
                       ".bak（可随时「还原」）；方式②一个 $DEBUG "
                       "条件都没认出来时，会问你要不要按官方基准补行。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
@@ -11273,8 +11183,8 @@ class App:
             c3.body,
             text="· 没有 Data 文件夹的游戏只能用「方式⑧ 调试启动器」\n"
                  "· 改完 PBS 想重新编译时，按住 Ctrl 启动游戏即可\n"
-                 "· 只动 Main / Compiler / 反调试三处脚本（不勾「自动关闭全量编译」"
-                 "就不动 Compiler），改动前各备份一份 .bak",
+                 "· 只动 Main / 反调试两处脚本（不再关闭全量编译），"
+                 "改动前各备份一份 .bak",
             bg=CARD, fg=C_HINT, font=FONT_SMALL,
             justify="left", wraplength=560)
         self.dbg_hint_lbl.pack(anchor="w", pady=(6, 0))
@@ -11558,7 +11468,7 @@ class App:
 
 
     def _dbg_refresh_folder_info(self):
-        """重新显示右侧的「运行库 / $DEBUG / 编译闸门」状态。"""
+        """重新显示右侧的「运行库 / $DEBUG / 反调试」状态。"""
         d = getattr(self, "debug_folder", None)
         if not d:
             return
@@ -11577,7 +11487,7 @@ class App:
             payload = ("\n⚠ 这像是游戏的**内层**目录，根目录很可能是上一层：\n"
                        f"  {os.path.dirname(os.path.abspath(d))}")
         if not has_data:
-            # 没有 Data：谈不上「$DEBUG 写没写 / 编译闸门」，只报运行库
+            # 没有 Data：谈不上「$DEBUG 写没写」，只报运行库
             self.dbg_info_lbl.config(
                 text=f"⚠ 无 Data 文件夹 → 只能用调试启动器\n"
                      f"运行库：{rl}\n"
@@ -11590,15 +11500,12 @@ class App:
             st = DT.status(d)
             dbg_w = ("已写" if st["debug_on"]
                      else ("只写了一半" if st.get("debug_partial") else "未写"))
-            gd_w = ("已装" if st["guarded"]
-                    else ("只装了一半" if st.get("guarded_partial") else "未装"))
             ad_w = ("已清除" if st.get("antidebug_fixed")
                     else ("⚠ 待处理" if st.get("antidebug") else "无"))
             self.dbg_info_lbl.config(
                 text=f"✔ Essentials {st['version'] or '（读不到）'}\n"
                      f"运行库：{rl}\n"
                      f"$DEBUG=true：{dbg_w}\n"
-                     f"编译闸门：{gd_w}\n"
                      f"反调试代码：{ad_w}",
                 fg=C_KEY)
         except Exception:
@@ -11920,7 +11827,6 @@ class App:
             return
         self.show("log")
         force = bool(self.debug_force.get())
-        guard = bool(getattr(self, "debug_guard", tk.BooleanVar(value=True)).get())
 
         # ---------- 反调试复核：注释之前先把代码摆给用户看 ----------
         ad_plan = {}
@@ -11969,9 +11875,7 @@ class App:
                 res = DT.enable_debug(
                     d, emit=lambda s: self._emit_log(s), force=force,
                     antidebug_plan=ad_plan,
-                    # ★ 「自动关闭全量编译」的勾选：不勾就不装编译闸门
-                    guard=guard,
-                    # ★ 只有方式①（通用）才往 mainFunction 写 `$DEBUG=true`
+                    # ★ 只有方式①（通用）才往 pbCallTitle 第一行写 `$DEBUG=true`
                     #   —— 那本来就是方式① 的功能。
                     #   方式②（删条件）的做法本来就是把「需要 $DEBUG 才生效」
                     #   的判定**删掉**，再写一个 $DEBUG=true 属于画蛇添足；

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-「开启 DEBUG」—— 往游戏里写 $DEBUG=true，并把 debug 启动时会炸的那两件事关掉。
+「开启 DEBUG」—— 往游戏里写 $DEBUG=true（写在 Main 的 `pbCallTitle` 第一行）。
 
 为什么需要
 ----------
@@ -12,22 +12,24 @@ Essentials 的调试模式（$DEBUG）才能用游戏里的「Extract Text / Com
       → compile_all(true) 全量重编译  ← ② 全量编译
 
 编译一旦失败（PBS 有坑、插件打架，同人游戏里太常见），rescue 分支会**再删一遍
-Data/*.dat**，游戏直接变砖。所以开 DEBUG 的同时必须把这两步关掉。
+Data/*.dat**，游戏直接变砖。（以前本工具会顺手把这两步关掉；现在**不再动
+Compiler**，全量编译按引擎原逻辑走。）
 
 本模块做的事
 ------------
   ① 版本识别 + 基本函数比对（见 essentials_base）—— 作者改过引擎就先警告；
-  ② Main 脚本的 `mainFunction` 里插一行 `$DEBUG=true`；
+  ② Main 脚本的 `pbCallTitle` 里插一行 `$DEBUG=true`（函数第一行）；
   ③ 清掉脚本里的「反调试」代码：有些同人游戏在 Scene_Map#update 里塞了
      `if $DEBUG → $scene=nil`、`$DEBUG = false`，每帧把 $DEBUG 摁回 false，
      我们写的 $DEBUG=true 活不过一帧 —— 不改掉它开 DEBUG 等于没开。这里把
      这些行**整段注释掉**（原文留着，随时能还原）；
-  ④ Compiler 脚本的 `main` 开头插一道闸：数据已经编译好就**直接 return**
-     （不删 dat、不全量编译）；按住 Ctrl 启动仍然走原逻辑，随时能真编译；
-  ⑤ 改动前备份（**只在第一次改动前备份一次**，之后复用同一份 .bak），
+  ④ 改动前备份（**只在第一次改动前备份一次**，之后复用同一份 .bak），
      随时「还原」。
 
-★ ②③④ 都是纯文本改，不解包 / 不进游戏。脚本有两种存放形态：
+★ 全量编译**不再自动关闭**：本工具不给 Compiler 装闸门，启动时数据比 PBS 旧 /
+  缺 dat 仍按引擎原逻辑编译（按住 Ctrl 必编译）。
+
+★ ②③ 都是纯文本改，不解包 / 不进游戏。脚本有两种存放形态：
   「已解包」Data/Scripts/**.rb、「未解包」Data/Scripts.rxdata；
   **两处并存时两处都改**（Game.ini 的 Scripts= 指向哪份哪份才算数，
   只改一处就会出现「改了没效果」）。
@@ -54,26 +56,8 @@ BAK_MARK = ".pkmn-debug-"
 
 # 插进 mainFunction 的那一行
 DEBUG_LINE = "$DEBUG=true"
-# 插进 Compiler.main 的闸门
-# ★ 每一行都带上 [pkmn-debug] 标记 —— 包括真正执行的那两行：
-#   它们会改变 Compiler.main 的函数体，只标注释行的话比对仍会报「改过」。
-# ★ 标记要够独特：游戏代码里就有叫 pkmn 的变量（[pkmn] / newPokemon[pkmn]），
-#   用 [pkmn] 当标记会把人家的正常代码整行删掉。
-_GUARD_LINES = (
-    f"# {EB.PATCH_MARK} 翻译工具注入：数据已编译好时不再删 Data/*.dat、"
-    "不再全量重编译。",
-    f"# {EB.PATCH_MARK} （按住 Ctrl 启动仍然会编译 —— 与原版行为一致；"
-    "删掉这几行即可还原）",
-    f"Input.update  # {EB.PATCH_MARK}",
-    "return if !Input.press?(Input::CTRL) && FileTest.exist?(\"Data/species.dat\")"
-    f" && FileTest.exist?(\"Data/moves.dat\")  # {EB.PATCH_MARK}",
-)
-GUARD_MARK = f"{EB.PATCH_MARK} 翻译工具注入"
-
 _MAIN_FUNC_RE = re.compile(r"^([ \t]*)def\s+mainFunction\b", re.M)
-_COMPILER_MAIN_RE = re.compile(r"^([ \t]*)def\s+main\s*(?:#.*)?$", re.M)
-_NO_DEBUG_RE = re.compile(r"^([ \t]*)return\s+if\s+!\$DEBUG\s*(?:#.*)?$", re.M)
-_MODULE_COMPILER_RE = re.compile(r"^module\s+Compiler\b", re.M)
+_PB_CALL_TITLE_RE = re.compile(r"^([ \t]*)def\s+pbCallTitle\b", re.M)
 
 # ★ Ruby 的「块注释」= `=begin` … `=end`：两个标记都必须**顶格**（第 0 列），
 #   中间整段不参与语法解析。有作者会把**废弃的旧 `def mainFunction`** 原样
@@ -219,8 +203,17 @@ def _search_outside_comment(regex, text):
 
 
 # ================================================================
-# 主脚本：mainFunction 里写 $DEBUG=true
+# 主脚本：pbCallTitle 第一行写 $DEBUG=true
 # ================================================================
+def _find_debug_target(text):
+    """返回 (match, rx)：优先 `def pbCallTitle`，没有再退 `def mainFunction`。"""
+    m = _search_outside_comment(_PB_CALL_TITLE_RE, text)
+    if m:
+        return m, _PB_CALL_TITLE_RE
+    m = _search_outside_comment(_MAIN_FUNC_RE, text)
+    return (m, _MAIN_FUNC_RE) if m else (None, None)
+
+
 def find_main_sources(game_dir):
     """
     找出**所有**要写 `$DEBUG=true` 的脚本 —— **按脚本名找 Main**
@@ -230,8 +223,8 @@ def find_main_sources(game_dir):
       「Data/Scripts.rxdata（运行时读的那份）」并存，**两处都要写**，
       否则改了不生效的那份（Game.ini 的 Scripts= 指向哪份，哪份才算数）。
 
-    Main 里没有 `def mainFunction` 时（极少见，作者可能改名了），
-    退回「第一份带 mainFunction 的脚本」。
+    ★ `$DEBUG=true` 写在 `pbCallTitle` 的第一行；Main 里没有 pbCallTitle 时
+      （极少见，作者可能改名了）退回 `def mainFunction` 那份脚本、写它下面。
 
     ★ 定位一律**跳过 `=begin`/`=end` 注释区间**（见 _search_outside_comment）：
       不少游戏把废弃的旧 `def mainFunction` 原样留在块注释里，直接 `.search`
@@ -242,11 +235,11 @@ def find_main_sources(game_dir):
     named, fallback = [], []
     for mode, key, path, name, text in GS.iter_named_scripts(game_dir,
                                                             both=True):
-        m = _search_outside_comment(_MAIN_FUNC_RE, text)
+        m, rx = _find_debug_target(text)
         if not m:
             continue
         src = {"mode": mode, "key": key, "path": path, "text": text,
-               "name": name, "match": m}
+               "name": name, "match": m, "rx": rx}
         if _norm_name(name) == "main":
             named.append(src)
         else:
@@ -262,17 +255,17 @@ def find_main_source(game_dir):
     return srcs[0] if srcs else None
 
 
-def patch_main_function(text):
+def patch_pb_call_title(text):
     """
-    在 `def mainFunction` 的下一行插入 `$DEBUG=true`。
-    返回 (新文本, {"added": bool, "existed": bool})；找不到 mainFunction 抛 ValueError。
+    在 `def pbCallTitle` 的**第一行**插入 `$DEBUG=true`。
+    返回 (新文本, {"added": bool, "existed": bool})；找不到 pbCallTitle 抛 ValueError。
 
     ★ 定位的是**不在 `=begin`/`=end` 里**的那个定义（真正生效的那个）；
       所有定义都在块注释里 → 同样抛 ValueError（上层会如实报「没找到」）。
     """
-    m = _search_outside_comment(_MAIN_FUNC_RE, text)
+    m = _search_outside_comment(_PB_CALL_TITLE_RE, text)
     if not m:
-        raise ValueError("脚本里没有 `def mainFunction`（Main 脚本不对？）")
+        raise ValueError("脚本里没有 `def pbCallTitle`（Main 脚本不对？）")
     lines = text.split("\n")
     i = _line_index(text, m.start())
     # 已经写过了 → 不动（幂等）
@@ -285,17 +278,54 @@ def patch_main_function(text):
     return "\n".join(new_lines), {"added": True, "existed": False}
 
 
+def patch_main_function(text):
+    """
+    （兜底：脚本没有 pbCallTitle 时）在 `def mainFunction` 的下一行插入
+    `$DEBUG=true`。返回 (新文本, {"added": bool, "existed": bool})。
+    """
+    m = _search_outside_comment(_MAIN_FUNC_RE, text)
+    if not m:
+        raise ValueError("脚本里没有 `def mainFunction`（Main 脚本不对？）")
+    lines = text.split("\n")
+    i = _line_index(text, m.start())
+    for j in range(i, min(i + 4, len(lines))):
+        if _DEBUG_SET_RE.search(lines[j]):
+            return text, {"added": False, "existed": True}
+    indent = m.group(1) or ""
+    eol = _eol_of(lines[i])
+    new_lines = _insert_after(lines, i, [indent + "  " + DEBUG_LINE], eol)
+    return "\n".join(new_lines), {"added": True, "existed": False}
+
+
+def _strip_debug_line_near(text, rx):
+    """删掉紧跟 `def <rx 命中的函数>` 前几行里、值为 true 的那一行。
+    命中返回 (新文本)，没命中返回 None。（每次都重新定位，前一次删除
+    移位不影响后一次。）"""
+    m = _search_outside_comment(rx, text)
+    if not m:
+        return None
+    lines = text.split("\n")
+    i = _line_index(text, m.start())
+    for j in range(i, min(i + 4, len(lines))):
+        if _DEBUG_SET_RE.search(lines[j]):
+            del lines[j]
+            return "\n".join(lines)
+    return None
+
+
 def remove_debug_from_main(game_dir, emit=None):
     """
-    把 Main 的 `mainFunction` 里 `$DEBUG = true` 那行**删掉**。返回 {"removed", "targets"}。
+    把 Main 里我们写过的 `$DEBUG = true` 那行**删掉**（`pbCallTitle` 第一行
+    与旧版 `mainFunction` 的位置都查）。返回 {"removed", "targets"}。
 
     ★ 什么时候用：用户选了「不设 $DEBUG」的方式（②–⑦），但之前用方式① 写过，
       换方式后那行还留在 Main 里 —— 它和用户的选择直接矛盾，而且方式⑦ 会被
       反调试的 `exit if $DEBUG` 每帧踢出游戏。
-    ★ 只删**紧跟 `def mainFunction` 的那几行内、且值为 true** 的一行：
-      这正是 `patch_main_function` 插入的位置和内容 → 能精确对应「是我们插的」，
-      不会碰到脚本里其它地方写 `$DEBUG` 的代码，也不会碰 `$DEBUG = false`。
-    ★ 定位用的是与 `patch_main_function` **同一套**逻辑（跳过 `=begin`/`=end`），
+    ★ 只删**紧跟函数定义行的那几行内、且值为 true** 的一行：
+      这正是 `patch_pb_call_title`（旧版 `patch_main_function`）插入的位置
+      和内容 → 能精确对应「是我们插的」，不会碰到脚本里其它地方写 `$DEBUG`
+      的代码，也不会碰 `$DEBUG = false`。
+    ★ 定位用的是与补丁**同一套**逻辑（跳过 `=begin`/`=end`），
       否则「写了哪一处、还原就清哪一处」对不上，会清错地方（甚至删掉别人
       代码里的 `$DEBUG=true`）。
     """
@@ -310,19 +340,13 @@ def remove_debug_from_main(game_dir, emit=None):
         say(f"[DEBUG] ⚠ 找 Main 脚本失败：{e}")
         return rep
     for src in mains:
-        lines = src["text"].split("\n")
-        m = _search_outside_comment(_MAIN_FUNC_RE, src["text"])
-        if not m:
+        new_text = src["text"]
+        for rx in (_PB_CALL_TITLE_RE, _MAIN_FUNC_RE):
+            stripped = _strip_debug_line_near(new_text, rx)
+            if stripped is not None:
+                new_text = stripped
+        if new_text == src["text"]:
             continue
-        i = _line_index(src["text"], m.start())
-        hit = -1
-        for j in range(i, min(i + 4, len(lines))):
-            if _DEBUG_SET_RE.search(lines[j]):
-                hit = j
-                break
-        if hit < 0:
-            continue
-        new_text = "\n".join(lines[:hit] + lines[hit + 1:])
         try:
             _write_text(src["mode"], src["path"], src["key"], new_text,
                         old_text=src["text"], emit=emit)
@@ -331,72 +355,11 @@ def remove_debug_from_main(game_dir, emit=None):
             continue
         rep["removed"] += 1
         rep["targets"].append({"mode": src["mode"], "where": str(src["key"])})
-        say(f"[DEBUG] ✔ 已移除 {_where(src)} mainFunction 里残留的 "
+        say(f"[DEBUG] ✔ 已移除 {_where(src)} 里残留的 "
             f"{DEBUG_LINE}（本方式不需要它）")
     if not rep["removed"]:
         say("[DEBUG] · Main 里本来就没有多余的 $DEBUG=true，不用清理")
     return rep
-
-
-# ================================================================
-# Compiler 脚本：去掉「删 dat + 全量编译」
-# ================================================================
-def find_compiler_sources(game_dir):
-    """
-    找出**所有**要装闸门的脚本 —— **按脚本名找 Compiler**，并且它得有
-    `module Compiler` + `def main`（v19 起才有这一段）。
-
-    ★ 返回列表：Data/Scripts/**.rb 与 Data/Scripts.rxdata 两处都要装。
-    ★ 别认错：LUTS 也有个脚本文件叫 Compiler
-      （`058_Utilities/…/002_Compiler.rb`），它没有 `module Compiler`，
-      靠这个条件挡掉。
-
-    脚本名对不上时退回「第一份含 module Compiler 的脚本」。
-    """
-    named, fallback = [], []
-    for mode, key, path, name, text in GS.iter_named_scripts(game_dir,
-                                                            both=True):
-        if not _MODULE_COMPILER_RE.search(text):
-            continue
-        m = _COMPILER_MAIN_RE.search(text)
-        if not m:
-            continue
-        src = {"mode": mode, "key": key, "path": path, "text": text,
-               "name": name, "match": m}
-        if _norm_name(name) == "compiler":
-            named.append(src)
-        elif not fallback:
-            fallback.append(src)
-    return named or fallback
-
-
-def find_compiler_source(game_dir):
-    """（兼容旧调用）第一份 Compiler。"""
-    srcs = find_compiler_sources(game_dir)
-    return srcs[0] if srcs else None
-
-
-def patch_compiler_main(text):
-    """
-    在 Compiler.main 的开头插一道闸（数据已编译好就直接 return）。
-    返回 (新文本, {"added": bool, "existed": bool})。
-    """
-    m = _COMPILER_MAIN_RE.search(text)
-    if not m:
-        raise ValueError("没找到 Compiler 的 `def main`")
-    if GUARD_MARK in text:
-        return text, {"added": False, "existed": True}
-    lines = text.split("\n")
-    i = text.count("\n", 0, m.start())
-    # 有 `return if !$DEBUG` 就插在它后面，否则紧跟 def main
-    j = i
-    mm = _NO_DEBUG_RE.match(lines[i + 1]) if i + 1 < len(lines) else None
-    if mm:
-        j = i + 1
-    indent = m.group(1) or ""
-    body = [indent + "  " + x for x in _GUARD_LINES]
-    new_lines = _insert_after(lines, j, body, _eol_of(lines[j]))
-    return "\n".join(new_lines), {"added": True, "existed": False}
 
 
 # ================================================================
@@ -812,18 +775,16 @@ def _write_text(mode, path, key, new_text, old_text=None, emit=None):
 def status(game_dir):
     """
     看看这个游戏现在什么状态 → dict：
-      version / has_main / has_compiler / debug_on / guarded
-      / debug_partial / guarded_partial / antidebug / antidebug_fixed
-      / backups（本工具做的备份文件列表）
+      version / has_main / debug_on / debug_partial
+      / antidebug / antidebug_fixed / backups（本工具做的备份文件列表）
 
-    ★ debug_on / guarded 是「**两处都**已处理」才算 True —— 解包 .rb 与
-      Scripts.rxdata 并存时，只写了一处的话对应 partial 为 True。
+    ★ debug_on 是「**两处都**已处理」才算 True —— 解包 .rb 与
+      Scripts.rxdata 并存时，只写了一处的话 debug_partial 为 True。
     ★ antidebug：脚本里还残留着没处理的「反调试」代码（`$DEBUG = false`
       之类）；antidebug_fixed：已经被本工具注释掉了。
     """
     out = {"version": EB.detect_version(game_dir), "has_main": False,
-           "has_compiler": False, "debug_on": False, "guarded": False,
-           "debug_partial": False, "guarded_partial": False,
+           "debug_on": False, "debug_partial": False,
            "antidebug": False, "antidebug_fixed": False, "backups": []}
     mains = find_main_sources(game_dir)
     if mains:
@@ -835,12 +796,6 @@ def status(game_dir):
             flags.append(bool(_DEBUG_SET_RE.search(body)))
         out["debug_on"] = all(flags)
         out["debug_partial"] = any(flags) and not all(flags)
-    comps = find_compiler_sources(game_dir)
-    if comps:
-        out["has_compiler"] = True
-        flags = [GUARD_MARK in src["text"] for src in comps]
-        out["guarded"] = all(flags)
-        out["guarded_partial"] = any(flags) and not all(flags)
     out["antidebug"] = bool(find_antidebug_sources(game_dir))
     out["antidebug_fixed"] = antidebug_fixed(game_dir)
     out["backups"] = list_backups(game_dir)
@@ -913,29 +868,26 @@ def restore(game_dir, emit=None):
 # 一键开启
 # ================================================================
 def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
-                 write_debug=True, guard=True):
+                 write_debug=True):
     """
-    开启 DEBUG：比对 → 写 $DEBUG=true → 清反调试 → 关掉「删 dat + 全量编译」。
+    开启 DEBUG：比对 → 在 pbCallTitle 第一行写 $DEBUG=true → 清反调试。
 
     force=True 时即使比对发现引擎被改过也照样写（界面上让用户确认过再用）。
 
-    guard=False 时**不装编译闸门**（界面上「自动关闭全量编译」取消勾选）：
-      调试模式启动会走 Compiler 的常规流程 —— 数据比 PBS 旧、或缺 dat 时
-      会删 Data/*.dat 并全量重编译。默认 True（勾上）：装一道闸，
-      数据已编译好就直接 return，按住 Ctrl 启动仍然会真编译一次。
+    ★ 全量编译**不再自动关闭**（不碰 Compiler）。
 
     antidebug_plan：复核窗口给的决定 —— `{src_key: {"action", "text"}}`
       · action="comment" / "manual"，text 是**改好后的整份脚本文本** → 直接写；
       · action="skip" → 这一处不动（用户跳过了 / 加进白名单了）。
       没给（None）就按老规矩：发现即自动注释。
 
-    ★★ write_debug=False：**不往 mainFunction 写 `$DEBUG=true`**。
+    ★★ write_debug=False：**不往 pbCallTitle 第一行写 `$DEBUG=true`**。
       只有方式①（通用）需要这一步。方式②（删条件）本来就是把「需要 $DEBUG
       才生效」的判定删掉；方式⑦（改名调试函数）更不能设 —— 它的整套设计前提
       就是「全程不设 $DEBUG」（反调试里到处是 `exit if $DEBUG`，一设就退游戏）。
       ★ 以前 GUI 对所有非⑧方式都传 True，于是**换方式后 Main 里总会冒出
       `$DEBUG=true`**，很容易被误判成「还原没生效」。其余步骤（比对 /
-      清反调试 / 关编译）照做。
+      清反调试）照做。
     返回报告 dict：{"ok", "changed", "version", "baseline", "check", ...}
     """
     def say(msg):
@@ -943,7 +895,7 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
             emit(msg)
 
     rep = {"ok": False, "changed": False, "version": "", "baseline": None,
-           "debug": {}, "antidebug": {}, "guard": {}, "check": None,
+           "debug": {}, "antidebug": {}, "check": None,
            "backups": [], "reason": ""}
     _reset_backups()
 
@@ -964,24 +916,22 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
     rep["baseline"] = check.get("baseline")
     if check.get("reason"):
         # 基准都对不上（没有内置基准 / 改得太狠认不出）——也**不中止**，
-        # 下面照样写 $DEBUG（写的是 Main 的 mainFunction，跟基准无关）。
+        # 下面照样写 $DEBUG（写的是 Main 的 pbCallTitle，跟基准无关）。
         say(f"[DEBUG] ⚠ {check['reason']}；仍继续写入（只写 $DEBUG 开关，"
             "不依赖基准）")
     elif not check.get("ok"):
         # ★ 用户要求：引擎基本函数被改过 / 缺失时**默认继续写入**，不再中止。
         #   只是警告一下，方便排查「写了没生效」这类问题。
-        say(f"[DEBUG] ⚠ 引擎基本函数与官方基准不一致（改 "
-            f"{check.get('changed_n', 0)} / 缺 {check.get('missing_n', 0)}）"
-            "—— 按默认继续写入")
+        say("[DEBUG] ⚠ 引擎基本函数与官方基准不一致 —— 按默认继续写入")
         if force:
             say("[DEBUG] · 你已勾选「仍要继续」，照常执行")
 
-    # ---------- ② mainFunction 里写 $DEBUG=true ----------
+    # ---------- ② pbCallTitle 第一行写 $DEBUG=true ----------
     if not write_debug:
         # ★ 只有方式①（通用）需要这一步。其余方式一律不写：
         #   · 方式② 删条件的做法本来就是把「需要 $DEBUG 才生效」的判定删掉；
         #   · 方式⑦ 的整套设计前提就是「不设 $DEBUG」（反调试 `exit if $DEBUG`）。
-        #   比对 / 清反调试 / 关重编译照做。
+        #   比对 / 清反调试照做。
         rep["debug"] = {"targets": [], "skipped": True}
         say("[DEBUG] · 本方式**不写 $DEBUG=true**（需要它请改用方式①「通用」）")
         # 顺手把以前用方式① 留下的那行清掉 —— 它和「不设 $DEBUG」直接矛盾，
@@ -996,7 +946,8 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
     else:
         mains = find_main_sources(game_dir)
         if not mains:
-            rep["reason"] = "脚本里没找到 `def mainFunction`，没法写 $DEBUG=true"
+            rep["reason"] = ("脚本里没找到 `def pbCallTitle`（也没有 "
+                             "`def mainFunction`），没法写 $DEBUG=true")
             say(f"[DEBUG] ✘ {rep['reason']}")
             return rep
         rep["debug"] = {"targets": []}
@@ -1004,14 +955,19 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
             say(f"[DEBUG] Main 有 {len(mains)} 处（解包 .rb 与 Scripts.rxdata "
                 "并存），两处都写，免得改了不生效的那份")
         for src in mains:
-            new_text, info = patch_main_function(src["text"])
+            fn_name = ("pbCallTitle" if src.get("rx") is _PB_CALL_TITLE_RE
+                       else "mainFunction")
+            if src.get("rx") is _MAIN_FUNC_RE:
+                new_text, info = patch_main_function(src["text"])
+            else:
+                new_text, info = patch_pb_call_title(src["text"])
             where = _where(src)
             rec = {"mode": src["mode"], "where": str(src["key"]),
                    "added": info["added"], "existed": info["existed"],
-                   "written": False}
+                   "fn": fn_name, "written": False}
             rep["debug"]["targets"].append(rec)
             if not info["added"]:
-                say(f"[DEBUG] · {where} 的 mainFunction 里已经有 {DEBUG_LINE}，"
+                say(f"[DEBUG] · {where} 的 {fn_name} 里已经有 {DEBUG_LINE}，"
                     "跳过")
                 continue
             try:
@@ -1024,7 +980,7 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
             _note_backup(rep, bak)
             rep["changed"] = True
             rec["written"] = True
-            say(f"[DEBUG] ✔ 已在 mainFunction 里写入 {DEBUG_LINE}（{where}）")
+            say(f"[DEBUG] ✔ 已在 {fn_name} 第一行写入 {DEBUG_LINE}（{where}）")
 
     # ---------- ③ 清掉「反调试」（Scene_Map 里把 $DEBUG 摁死那一段） ----------
     ad_srcs = find_antidebug_sources(game_dir)
@@ -1103,46 +1059,6 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
             rec["written"] = True
             say(f"[DEBUG] ✔ 已注释掉 {where} 里的反调试代码"
                 f"（{info['blocks']} 段：`if $DEBUG … end` / `$DEBUG = false`）")
-
-    # ---------- ④ 关掉「删 dat + 全量编译」 ----------
-    comps = [] if not guard else find_compiler_sources(game_dir)
-    if not guard:
-        # ★ 界面上「自动关闭全量编译」没勾：一道闸都不装
-        say("[DEBUG] · 按你的选择：**不装**编译闸门（「自动关闭全量编译」"
-            "没勾）—— 启动时数据比 PBS 旧的话会全量重编译")
-        rep["guard"] = {"added": False, "existed": False, "na": True,
-                        "targets": [], "skipped": True}
-    elif not comps:
-        say("[DEBUG] · 这个版本启动时不会自动删 dat / 全量编译，不用处理")
-        rep["guard"] = {"added": False, "existed": False, "na": True,
-                        "targets": []}
-    else:
-        rep["guard"] = {"na": False, "targets": []}
-        if len(comps) > 1:
-            say(f"[DEBUG] Compiler 有 {len(comps)} 处，两处都装闸门")
-        for src in comps:
-            ctext, cinfo = patch_compiler_main(src["text"])
-            cwhere = _where(src)
-            rec = {"mode": src["mode"], "where": str(src["key"]),
-                   "added": cinfo["added"], "existed": cinfo["existed"],
-                   "written": False}
-            rep["guard"]["targets"].append(rec)
-            if not cinfo["added"]:
-                say(f"[DEBUG] · {cwhere} 的这道闸已经装过了，跳过")
-                continue
-            try:
-                bak = _write_text(src["mode"], src["path"], src["key"], ctext,
-                                  old_text=src["text"], emit=emit)
-            except (OSError, RuntimeError) as e:
-                rep["reason"] = f"写入编译闸门失败（{cwhere}）：{e}"
-                say(f"[DEBUG] ✘ {rep['reason']}")
-                return rep
-            _note_backup(rep, bak)
-            rep["changed"] = True
-            rec["written"] = True
-            say("[DEBUG] ✔ 已关掉 debug 启动时的「删 Data/*.dat + 全量编译」"
-                f"（{cwhere}）")
-        say("[DEBUG]   按住 Ctrl 启动游戏仍然会真的编译一次")
 
     rep["ok"] = True
     if rep["changed"]:
