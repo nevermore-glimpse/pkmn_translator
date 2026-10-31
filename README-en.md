@@ -16,9 +16,10 @@ Supports terminology lists, control-code detection, resume from cache, and autom
 - 🔀 **Line rewrapping** — Dedicated step (menu 6): by character count for `[map*]` (`\n`) and other blocks (spaces). **Blocks can be multi-selected, and only the selected blocks are rewrapped.** Not applied automatically after translation.
 - 📤 **Extract / compile game text** — Same as *Extract Text* / *Compile Text* in the game's debug menu, but without launching the game. Text is always split into **one txt per section** (older builds go to `Text_<lang>/`, v21+ to `Text_<lang>_core/` and `Text_<lang>_game/`), which makes translating far easier. **Splitting never changes the compiled result** — the compiler rebuilds the table by section/map id, so a single file and 20 files produce a **byte-identical** `.dat` (verified on real games; regression `work/t_lang_split.py`). Can also add the language to `Settings::LANGUAGES` for you (uncomment the first entry → copy the line → `English`→`Chinese`; no model call, no comment translation). Verified byte-for-byte against real games' own output (menu 1).
 - ✏️ **Edit translations by hand + apply them** — Double-click any row in the check report to edit it: source text on top (read-only, for reference), translation below. Saved into the cache and filed under a new "已编辑" (edited) kind that is never overwritten by re-translation. Then hit **"应用已编辑"** to push every hand-edited line into the translation cache *and* into the generated `*_translated.txt` — untouched lines stay byte-identical (menu 3).
-- 🈶 **Chinese text plugin** — **Four plugin bodies ship with the tool (21.1 / 20.1 / 19.1 / legacy) and the right one is picked automatically from the game's `Essentials::VERSION`** (plus whether the game has a plugin system at all).
+- 🈶 **Chinese text plugin** — **Six plugin bodies ship with the tool (21.1 / 20.1 / 19.1 / 18.1 / 17.2 / 16) and the right one is picked automatically from the game's `Essentials::VERSION`** (a fingerprint match is used when the version can't be read, and an 18.1 fallback when neither works).
   - Games **with** a `Plugins/` folder: the plugin is dropped in there and every plugin (including the game's own) is **compiled straight into `Data/PluginScripts.rxdata`** — no debug mode, no launching the game. A compatibility shim is added when the version can't be read, falling back to the engine's own implementation if the plugin raises.
-  - Games **without** a `Plugins/` folder, or without a plugin system at all (pre-v19, **Ruby 1.8.1**): the plugin is concatenated into a single script and **inserted just *before* the `Main` script in `Scripts.rxdata`** — RGSS evaluates scripts top to bottom and enters the game loop the moment it reaches `Main`, so anything placed *after* `Main` never runs (that was the original "injected but no effect" bug). For unpacked games the file is named after `Main`'s number minus one (e.g. `999_Main.rb` → `998_pkmn_chinese_text.rb`) so it sorts between the last normal script and `Main`.  
+  - Games **without** a `Plugins/` folder, or without a plugin system at all (pre-v18, **Ruby 1.8.1**): the plugin is concatenated into a single script and **inserted just *before* the `Main` script in `Scripts.rxdata`** — RGSS evaluates scripts top to bottom and enters the game loop the moment it reaches `Main`, so anything placed *after* `Main` never runs (that was the original "injected but no effect" bug). For unpacked games the file is named after `Main`'s number minus one (e.g. `999_Main.rb` → `998_pkmn_chinese_text.rb`) so it sorts between the last normal script and `Main`.  
+  - **Font replacement**: choosing a font when loading the plugin also patches every font-related engine script at once — `SpriteWindow`, `MessageConfig` and `Settings` font constants, plus hardcoded font names in `pbSetSystemFontName` / `pbTryFonts` / `Font.default_name` / `FONT_OPTIONS`. Each modified script is backed up first; "restore" rolls them all back.
     The legacy body patches `String#ord` (via `unpack("U")` — `self[0]` only returns the first *byte* in 1.8 and would never detect Chinese) and `String#each_char`, routes every per-character split through `_pkmn_chars()` (Ruby 1.8's `$KCODE` is not `'U'`, so `scan(/./m)` splits *bytes* and Chinese is never detected), writes both the modern `FONT_NAME` and the legacy `MessageConfig::FontName` font constants, and builds the `\p{Han}` regex at runtime so old Oniguruma won't choke. Re-injecting never stacks duplicates, and "restore" removes exactly that one entry. Verified: `Scripts.rxdata` round-trips byte-for-byte on six real games, so only the one inserted entry changes (menu 1).
 - 🧠 **Terminology re-translation** — Detects newly added terms and re-translates only the affected sentences
 - ⚙️ **In-app settings** — Edit all configuration values from the menu, no manual file editing
@@ -83,32 +84,43 @@ launch it for you (Ollama Desktop App is preferred, with `ollama serve` as fallb
 
 GUI pages:
 
+The left side has **8 main menus**; some open into **sub-pages** (reached  
+from the parent page, with a "← back" bar at the top):
+
 ```
-1. Extract / compile text     7. Terminology dictionary / Excel
-2. Translate                  8. Settings   (double-click a row to edit)
-3. Re-translate report        9. Local model server
-4. Re-translate terms        10. Enable DEBUG
-5. Prefix dictionary         11. Log
-6. Line rewrap
+1. Extract / compile text   5. Enable DEBUG
+2. Game localization        6. Save editor
+3. PBS edit                 7. Settings
+4. Local model server       8. Log
 ```
 
-Page 10 ("Enable DEBUG") works on a chosen game executable: pick the  
-game's `.exe` (its folder becomes the game directory; a `Data` folder is  
-not required), then choose one of the methods from the dropdown — write  
-`$DEBUG=true` as the first line of Main's `pbCallTitle`, strip `$DEBUG`  
-conditions (F9 / party Debug /  
-walk-through-walls), inject a SPECIAL-key hook, inject into `pbRepel`  
-(set `$DEBUG` or open the debug menu), or generate a **debug launcher  
-(test)** that starts the game in debug mode without modifying the game  
-itself. Method ⑥ is the only one that needs no `Data` folder; it uses an  
-in-memory patch for RGSS (v16–v18) or `Game.exe debug` + a `preloadScript`  
-in `mkxp.json` for mkxp-z (v19–v21.1), and fills in empty placeholder  
-`Data/*.dat` / `pbs/*.txt` files so debug mode does not trigger a full  
-recompile.
+Game localization (menu 2) sub-pages: term extraction / term-check report /  
+translate / re-translate report / re-translate after term update / prefix  
+dictionary / line rewrap / terminology dictionary / Excel conversion (the  
+dictionary page is the default; switch to the Excel view from there).
 
-Pages 2–6 have a file checklist sidebar on the right; add files via  
-"Single file" or "Whole folder". Page 1 uses a game-folder picker  
-instead (it must contain a `Data` folder and an `.exe`). Page 9 has an  
+Save editor (menu 6) sub-pages: trainer / party Pokémon / bag / PC boxes /  
+switches & variables.
+
+PBS edit (menu 3) sub-page: the PBS editor window (only pokemon /  
+pokemon_forms / items / moves are editable).
+
+The Enable DEBUG page (GUI menu 5 / CLI 10) works on a chosen game  
+executable: pick the game's `.exe` (its folder becomes the game directory;  
+a `Data` folder is not required), then choose one of the methods from the  
+dropdown — write `$DEBUG=true` as the first line of Main's `pbCallTitle`,  
+strip `$DEBUG` conditions (F9 / party Debug / walk-through-walls), inject a  
+SPECIAL-key hook, inject into `pbRepel` (set `$DEBUG` or open the debug  
+menu), or generate a **debug launcher (test)** that starts the game in  
+debug mode without modifying the game itself. Method ⑥ is the only one  
+that needs no `Data` folder; it uses an in-memory patch for RGSS (v16–v18)  
+or `Game.exe debug` + a `preloadScript` in `mkxp.json` for mkxp-z  
+(v19–v21.1), and fills in empty placeholder `Data/*.dat` / `pbs/*.txt`  
+files so debug mode does not trigger a full recompile.
+
+The game-localization sub-pages have a file-checklist sidebar on the right  
+("Single file" / "Whole folder"); menu 1 uses a game-folder picker instead  
+(it must contain a `Data` folder and an `.exe`); menus 4 / 7 have an  
 "Adaptation" sidebar listing what changed after switching provider.
 
 Command-line menu:
@@ -266,6 +278,8 @@ extraction page:
 6. Review the prefix dictionary — only `\tg[]` contents are translated
 7. Line rewrap — re-wrap the sentences
 8. When everything is translated, delete the auto-extracted terms in 8. Terminology dictionary
+
+> **Translate page (menu 2) toggles**: to the right of "term hit statistics" there is an "auto shut down after translation" option (off by default) — when translation finishes successfully it schedules shutdown after 60 seconds, cancelable with `shutdown /a`.
 
 
 ### Terminology List

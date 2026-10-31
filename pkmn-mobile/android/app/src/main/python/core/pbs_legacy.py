@@ -937,6 +937,64 @@ def _txt(game_root: str, key: str, family: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# 名字来源：v16-18 的 .dat 里**没有名字**（dexdata / moves 二进制只存数值），
+# 名字存在 Data/messages.dat 的消息表里（按 MessageTypes 下标）：
+#   1=Species  2=Kinds  3=Pokedex  5=Moves  7=Items  8=ItemPlurals  12=Types
+# 游戏若是中文版，语言包（zh.dat / Chinese.dat / intl_chinese.dat）里有中文名，
+# 优先用带中文的那份 —— 用户在 PBS 编辑里看到的才是游戏里真正的名字。
+# ---------------------------------------------------------------------------
+_MSG_FILES = ("messages.dat", "zh.dat", "Chinese.dat", "chinese.dat",
+              "intl_chinese.dat", "intl_chinese_cn.dat")
+_MSG_CACHE: Dict[Tuple[str, int], list] = {}
+
+
+def _cjk_len(s: Any) -> int:
+    return sum(1 for ch in str(s) if "\u4e00" <= ch <= "\u9fff")
+
+
+def _msg_array(game_root: str, idx: int) -> list:
+    """取消息表第 idx 段（species/moves/...）→ list；带缓存。"""
+    ck = (game_root, idx)
+    if ck in _MSG_CACHE:
+        return _MSG_CACHE[ck]
+    best, best_score = [], -1
+    for fn in _MSG_FILES:
+        p = os.path.join(game_root, "Data", fn)
+        if not os.path.isfile(p):
+            continue
+        try:
+            obj = _load(game_root, fn)
+        except Exception:
+            continue
+        if not isinstance(obj, list) or len(obj) <= idx:
+            continue
+        arr = obj[idx]
+        if not isinstance(arr, list):
+            continue
+        # 中文越多越优先（中文版直接给中文名）；messages.dat 是基表，平局优先
+        score = sum(_cjk_len(x) for x in arr[:80])
+        if fn == "messages.dat":
+            score += 1
+        if score > best_score:
+            best_score, best = score, arr
+    _MSG_CACHE[ck] = best
+    return best
+
+
+def _msg_name(game_root: str, idx: int, sid: int) -> str:
+    arr = _msg_array(game_root, idx)
+    if 0 <= sid < len(arr):
+        v = arr[sid]
+        return "" if v is None else str(v)
+    return ""
+
+
+def _rev_const(game_root: str, cls: str) -> Dict[int, str]:
+    """编号 → 内部名（脚本常量表反过来）。"""
+    return {v: k for k, v in const_map(game_root, cls).items()}
+
+
 def extract_spec(spec: dict, family: str, game_root: str
                  ) -> Tuple[bool, str, str]:
     """
@@ -1066,6 +1124,20 @@ def x_moves(game_root: str, family: str, spec: dict):
                          b[2], b[3], b[4], b[5], b[6], b[7],
                          struct.unpack_from("<H", b, 8)[0], b[10],
                          struct.unpack_from("<H", b, 11)[0], None])
+    # ★ 名字/内部名：v16/17 的 moves.dat 只存数值，名字在消息表(5)与常量表里
+    names = _msg_array(game_root, 5)
+    rev = _rev_const(game_root, "PBMoves")
+    for rec in rows:
+        if not isinstance(rec, list):        # v18 偶尔是元组，不可写就跳过
+            continue
+        try:
+            sid = int(rec[0])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if len(rec) > 1 and not rec[1]:
+            rec[1] = rev.get(sid, "")
+        if len(rec) > 2 and not rec[2] and 0 <= sid < len(names):
+            rec[2] = names[sid]
     lines = _hdr()
     schema = spec["schema"][_family_of(family)]
     for i, rec in enumerate(rows):
@@ -1300,11 +1372,18 @@ def x_pokemon(game_root: str, family: str, spec: dict):
         if not isinstance(data, list):
             return None
         lines = _hdr()
+        rev = _rev_const(game_root, "PBSpecies")
         for sid, rec in enumerate(data):
             if not rec:
                 continue
             lines.append(PE._SEP)
             lines.append("[%d]" % sid)
+            iv = rev.get(sid, "")
+            nm = _msg_name(game_root, 1, sid)
+            if iv:
+                lines.append("InternalName = %s" % iv)
+            if nm:
+                lines.append("Name = %s" % nm)
             if len(rec) > 0 and rec[0] is not None:
                 lines.append("Type1 = %s" % rec[0])
             if len(rec) > 1 and rec[1] is not None:
@@ -1345,12 +1424,19 @@ def x_pokemon(game_root: str, family: str, spec: dict):
     raw = open(p, "rb").read()
     n = len(raw) // DEX_SIZE
     lines = _hdr()
+    rev = _rev_const(game_root, "PBSpecies")
     for i in range(1, n):
         blob = raw[i * DEX_SIZE:(i + 1) * DEX_SIZE]
         if len(blob) < DEX_SIZE or not any(blob):
             continue
         lines.append(PE._SEP)
         lines.append("[%d]" % i)
+        iv = rev.get(i, "")
+        nm = _msg_name(game_root, 1, i)
+        if iv:
+            lines.append("InternalName = %s" % iv)
+        if nm:
+            lines.append("Name = %s" % nm)
         lines.append("Type1 = %d" % _dex_get(blob, "Type1"))
         lines.append("Type2 = %d" % _dex_get(blob, "Type2"))
         bs = list(blob[10:16])
@@ -2151,6 +2237,102 @@ def newest_txt_time(game_root: str) -> float:
     except OSError:
         pass
     return newest
+
+
+def sync_names(game_root: str, family: str,
+               keys: Optional[List[str]] = None) -> dict:
+    """
+    把 PBS txt 里的**名字**写回 Data/messages.dat（以及中文语言包），不碰 .dat。
+
+    ★ 为什么低版本「编译」只做这个：v16-18 直接重编 .dat 会丢招式表/进化表
+      （c_pokemon 只能从 pokemon.txt 重建，而提取出的 txt 不含这些衍生表）。
+      名字本来就不在 .dat 里，而在消息表里；改名字落到消息表即可立刻生效，
+      也不会破坏任何衍生数据。
+    """
+    want = set(keys) if keys else {"pokemon", "moves"}
+
+    # 载入所有消息表文件（messages.dat + 中文包）
+    files = []
+    for fn in _MSG_FILES:
+        p = os.path.join(game_root, "Data", fn)
+        if not os.path.isfile(p):
+            continue
+        try:
+            obj = _load(game_root, fn)
+        except Exception:
+            continue
+        if isinstance(obj, list) and len(obj) >= 13:
+            files.append((fn, p, obj))
+    if not files:
+        return {"ok": False,
+                "reason": "Data 里没有 messages.dat，改名字无处可写"}
+
+    def _pairs_from_txt(key: str):
+        txt = _txt(game_root, key, family)
+        if txt is None:
+            return []
+        out = []
+        if key == "pokemon":
+            for sec in PE.parse_sections(txt):
+                sid = _num(sec.name)
+                if sid <= 0:
+                    continue
+                nm = ""
+                for k, v in sec.fields:
+                    if k == "Name":
+                        nm = v
+                        break
+                if nm:
+                    out.append((sid, nm))
+        elif key == "moves":
+            for line in txt.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                cols = PE.split_csv(line)
+                if len(cols) < 3:
+                    continue
+                sid = _num(cols[0])
+                nm = _q(cols[2])
+                if sid > 0 and nm:
+                    out.append((sid, nm))
+        return out
+
+    counts: Dict[str, int] = {}
+    applied = set()
+    for key, idx in (("pokemon", 1), ("moves", 5)):
+        if key not in want:
+            continue
+        pairs = _pairs_from_txt(key)
+        if not pairs:
+            continue
+        n = 0
+        for _fn, _p, obj in files:
+            arr = obj[idx] if idx < len(obj) and isinstance(obj[idx], list) \
+                else None
+            if arr is None:
+                continue
+            for sid, nm in pairs:
+                if sid >= len(arr):
+                    arr.extend([""] * (sid + 1 - len(arr)))
+                if arr[sid] != nm:
+                    arr[sid] = nm
+                    n += 1
+        if n:
+            for _fn, p, obj in files:
+                _save(p, obj)
+                applied.add(p)
+            counts[key] = n
+
+    # 写回后清掉这个名字缓存，保证紧接着的「提取」看到的是新名字
+    for _k in [k for k in list(_MSG_CACHE) if k[0] == game_root]:
+        _MSG_CACHE.pop(_k, None)
+
+    if not counts:
+        return {"ok": True, "counts": {}, "files": [],
+                "reason": "名字没有变化（或 PBS 里没有名字）"}
+    return {"ok": True, "counts": counts,
+            "files": sorted(applied), "reason": ""}
 
 
 def mark_for_recompile(game_root: str, family: str) -> Tuple[int, str]:

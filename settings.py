@@ -112,6 +112,8 @@ EDITABLE = [
      "不含源语言字符的行不送模型，按原文缓存"),
     ("TERM_STATS_ENABLE",       "术语命中统计", "bool",
      "翻译时统计术语命中，写 terms_stats.json"),
+    ("AUTO_SHUTDOWN_ON_DONE",   "翻译完自动关机", "bool",
+     "整批翻译正常结束后延迟关机（默认关；取消/报错不关机）"),
 
     # ---------- 换行重排 ----------
     ("REWRAP_ENABLE",      "启用换行重排",      "bool",  "菜单 6 是否可用（翻译后不再自动重排）"),
@@ -153,6 +155,7 @@ HIDDEN_KEYS = {
     "PRE_REPLACEMENT_PRESETS",  # 启用的译前预设：空
     "POST_REPLACEMENT_PRESETS",  # 启用的译后预设：空
     "TERM_STATS_ENABLE",       # 术语命中统计：关
+    "AUTO_SHUTDOWN_ON_DONE",   # 翻译完自动关机：关（在游戏汉化页勾选）
     "REWRAP_ENABLE",           # 启用换行重排：开
     "APPLY_TERMS",             # 启用术语替换：开
     "WHOLE_TERM_MATCH",        # 整句术语直译：开

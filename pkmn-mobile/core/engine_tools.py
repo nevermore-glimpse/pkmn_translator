@@ -127,6 +127,69 @@ def _font_sub(text, consts, family):
     return text, changed
 
 
+# ---------------------------------------------------------------------------
+# 全库字体替换：常量之外，老游戏还会把字体名硬编码在别处
+#   pbSetSystemFontName("OPPOSans") / pbTryFonts(MessageConfig::FontName,
+#   "OPPOSans", "OPPOSans") / Font.default_name = "Arial" /
+#   bitmap.font.name = "Arial" / FONT_OPTIONS = ["Power Green", ...]
+# 只改一个脚本的三/四个常量，这些地方仍会把界面拉回旧字体 —— 用户要的是
+# 「所有和字体相关的脚本里的字体都换掉」，所以下面全库扫一遍。
+_FONT_CONST_ALL = re.compile(
+    r"(\b(?:SMALL_FONT_NAME|NARROW_FONT_NAME|FONT_NAME|SmallFontName"
+    r"|NarrowFontName|FontName)[ \t]*=[ \t]*)([\"'])([^\"'\r\n]*)\2")
+_FONT_SETCALL = re.compile(
+    r"(\bpb(?:SetSystem|SetSmall|SetNarrow)FontName[ \t]*\([ \t]*)"
+    r"([\"'])([^\"'\r\n]*)\2")
+_FONT_DEFAULT_ONE = re.compile(
+    r"(\bFont\.default_name[ \t]*=[ \t]*)([\"'])([^\"'\r\n]*)\2")
+_FONT_BITMAP_ONE = re.compile(
+    r"(\.font\.name[ \t]*=[ \t]*)([\"'])([^\"'\r\n]*)\2")
+_FONT_TRY_CALL = re.compile(r"(\bpbTryFonts[ \t]*\()([^)]*)(\))")
+_FONT_DEFAULT_ARR = re.compile(
+    r"(\bFont\.default_name[ \t]*=[ \t]*\[)([^\]]*)(\])")
+_FONT_OPTIONS_ARR = re.compile(
+    r"(\bFONT_OPTIONS[ \t]*=[ \t]*\[)([^\]]*)(\])")
+
+
+def _font_lit(m, family, changed):
+    """单引号/双引号字面量：{prefix}{quote}{value}{quote}。"""
+    old = m.group(3)
+    if old == family:
+        return m.group(0)
+    changed.append(old)
+    return f"{m.group(1)}{m.group(2)}{family}{m.group(2)}"
+
+
+def _font_quoted_inner(block, family, changed):
+    """把一个括号块里**所有**字符串字面量换成 family（保留常量引用）。"""
+    def _rep(m):
+        old = m.group(2)
+        if old == family:
+            return m.group(0)
+        changed.append(old)
+        return f"{m.group(1)}{family}{m.group(1)}"
+    return re.sub(r"([\"'])([^\"'\r\n]*)\1", _rep, block)
+
+
+def _font_sub_all(text, family):
+    """把一份脚本里**所有**字体定义换成 family → (新文本, [旧值...])。"""
+    changed = []
+    text = _FONT_CONST_ALL.sub(lambda m: _font_lit(m, family, changed), text)
+    text = _FONT_SETCALL.sub(lambda m: _font_lit(m, family, changed), text)
+    text = _FONT_DEFAULT_ONE.sub(lambda m: _font_lit(m, family, changed), text)
+    text = _FONT_BITMAP_ONE.sub(lambda m: _font_lit(m, family, changed), text)
+
+    def _arr(m):
+        return (m.group(1)
+                + _font_quoted_inner(m.group(2), family, changed)
+                + m.group(3))
+
+    text = _FONT_TRY_CALL.sub(_arr, text)
+    text = _FONT_DEFAULT_ARR.sub(_arr, text)
+    text = _FONT_OPTIONS_ARR.sub(_arr, text)
+    return text, changed
+
+
 def _font_script(game_dir, sname, consts, module):
     """
     找「字体定义」在哪份脚本里 → (脚本 dict, 是否按脚本名找到的)：
@@ -150,10 +213,16 @@ def _font_script(game_dir, sname, consts, module):
 
 def patch_engine_font(game_dir, family, version=None, emit=None):
     """
-    把游戏引擎脚本里的字体定义改成 family（改前先备份，可还原）。
+    把游戏引擎脚本里**所有**字体定义改成 family（改前先备份，可还原）。
 
-    返回 {"ok", "script", "consts", "backup", "reason", "notes"}；
-    没找到可改的地方时 ok=False + reason，**不写盘**。
+    ★ 用户要求：不只改「那个脚本」的三四个常量，而是全库扫一遍 ——
+      老游戏常把字体名写死在 pbSetSystemFontName("OPPOSans") /
+      pbTryFonts(..., "OPPOSans", ...) / Font.default_name = "..." /
+      bitmap.font.name = "..." / FONT_OPTIONS = [...] 里；
+      只改常量的话，这些地方一跑就把界面拉回旧字体，现在一并换掉。
+
+    返回 {"ok", "script", "scripts", "consts", "backup", "reason", "notes"}；
+    没找到可改的地方时 ok=True + reason（不写盘），和旧行为一致。
     """
     def say(msg):
         if emit:
@@ -175,27 +244,51 @@ def patch_engine_font(game_dir, family, version=None, emit=None):
         rule = ("MessageConfig", FONT_OLD_CONSTS + FONT_NEW_CONSTS,
                 "MessageConfig")
     sname, consts, module = rule
-    tgt, by_name = _font_script(game_dir, sname, consts, module)
-    if not tgt:
-        reason = f"游戏里找不到定义字体的脚本（{sname}）"
-        say(f"[字体] ⚠ {reason}，只在插件里换字体")
-        return {"ok": False, "reason": reason, "notes": []}
 
-    new_text, changed = _font_sub(tgt["text"], consts, family)
-    if not changed:
-        reason = (f"「{tgt['name']}」里没有 {'/'.join(consts)}，"
-                  f"或已经是「{family}」")
+    # ★ 全库扫描：解包 .rb 与 Scripts.rxdata 两处都要改（见 game_scripts）。
+    hits = []            # [(脚本名, [旧值...], 备份路径)]
+    seen = set()
+    for mode, key, path, name, text in GS.iter_named_scripts(game_dir,
+                                                            both=True):
+        sig = (mode, key)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        if not text:
+            continue
+        new_text, changed = _font_sub_all(text, family)
+        if not changed:
+            continue
+        rec = {"mode": mode, "key": key, "path": path,
+               "name": name, "text": text}
+        try:
+            bak = _write_script(rec, new_text, emit=emit, mark=FONT_BAK_MARK)
+        except Exception as e:                       # noqa: BLE001
+            say(f"[字体] ⚠ 改「{name}」失败：{e}")
+            continue
+        hits.append((name, sorted(set(changed)), bak))
+
+    if not hits:
+        # 说明「为什么没改」：按脚本名找一下那个定义脚本，给出具体原因
+        tgt, _by_name = _font_script(game_dir, sname, consts, module)
+        where = f"「{tgt['name']}」" if tgt else f"（{sname}）"
+        reason = f"{where}里没有可改的字体定义，或已经是「{family}」"
         say(f"[字体] {reason}（引擎脚本原样不动）")
-        return {"ok": True, "script": tgt["name"], "consts": [],
-                "backup": None, "reason": reason, "notes": []}
+        return {"ok": True, "script": tgt["name"] if tgt else "",
+                "scripts": [], "consts": [], "backup": None,
+                "reason": reason, "notes": []}
 
-    bak = _write_script(tgt, new_text, emit=emit, mark=FONT_BAK_MARK)
-    note = (f"[字体] 已把引擎脚本「{tgt['name']}」里的 "
-            f"{'、'.join(changed)} 改成「{family}」"
-            f"（{'按脚本名' if by_name else '全库扫描'}找到，原文件已备份）")
-    say(note)
-    return {"ok": True, "script": tgt["name"], "consts": changed,
-            "backup": bak, "reason": "", "notes": [note]}
+    names = [h[0] for h in hits]
+    notes = [f"[字体] 「{n}」：{'、'.join(vals)} → 「{family}」"
+             for n, vals, _b in hits]
+    summary = (f"[字体] 已改 {len(hits)} 个脚本的字体定义"
+               f"（{'、'.join(names[:4])}{'…' if len(names) > 4 else ''}）"
+               f" → 「{family}」，原文件均已备份")
+    say(summary)
+    return {"ok": True, "script": "、".join(names), "scripts": names,
+            "consts": sorted({v for _n, vals, _b in hits for v in vals}),
+            "backup": hits[0][2], "reason": "",
+            "notes": [summary] + notes}
 
 
 def restore_engine_font(game_dir, emit=None):

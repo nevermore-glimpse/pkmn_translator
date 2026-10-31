@@ -4465,7 +4465,12 @@ class App:
         else:
             self.status_var.set(label or "就绪")
 
-    def run_async(self, fn, label="运行中…", done_label="完成"):
+    def run_async(self, fn, label="运行中…", done_label="完成", on_done=None):
+        """在后台跑 fn；on_done(result) 只在成功结束时于主线程调用。
+
+        ★ on_done 不传 = 老行为。取消（CancelRequested）与异常都不调用它，
+          所以「翻译完自动关机」不会因为用户点取消而误关机。
+        """
         if self.busy:
             messagebox.showinfo("提示", "已有任务在运行，请稍候")
             return
@@ -4474,9 +4479,9 @@ class App:
         def work():
             try:
                 result = fn()
-                self.q.put(("done", (result, done_label)))
+                self.q.put(("done", (result, done_label, on_done)))
             except bridge.CancelRequested:
-                self.q.put(("done", (None, "已取消")))
+                self.q.put(("done", (None, "已取消", on_done)))
             except Exception:
                 self.q.put(("err", traceback.format_exc()))
 
@@ -4495,10 +4500,20 @@ class App:
                 elif kind == "env":
                     self._on_env(payload)
                 elif kind == "done":
-                    _result, label = payload
+                    # payload 兼容两种形态：(result, label) 或
+                    # (result, label, on_done)（run_async 带 on_done 时）
+                    if len(payload) == 3:
+                        _result, label, _on_done = payload
+                    else:
+                        (_result, label), _on_done = payload, None
                     self.set_busy(False, label)
                     self.prog_var.set(100)
                     self._append_log(f"\n=== {label} ===\n")
+                    if _on_done is not None and _result is not None:
+                        try:
+                            _on_done(_result)
+                        except Exception as e:      # 回调本身出错不拖垮 UI
+                            log.warning("完成回调失败：%s", e)
                 elif kind == "term_reload":
                     self._reset_term_pending(keep_added=bool(payload),
                                              keep_checks=bool(payload))
@@ -5239,7 +5254,8 @@ class App:
                             ("POST_REPLACEMENT_ENABLE", "译后替换"),
                             ("PRE_REPLACEMENT_ENABLE", "译前替换"),
                             ("THINKING_BLOCK", "思考块"),
-                            ("TERM_STATS_ENABLE", "术语命中统计")):
+                            ("TERM_STATS_ENABLE", "术语命中统计"),
+                            ("AUTO_SHUTDOWN_ON_DONE", "翻译完自动关机")):
             _var = tk.BooleanVar(value=bool(getattr(config, _key, False)))
             self.hanhua_opt_vars[_key] = _var
             tk.Checkbutton(
@@ -5251,7 +5267,9 @@ class App:
         tk.Label(body,
                  text="预过滤：不含源语言字符的行不送模型、按原文缓存；译前/译后替换按 "
                       "replacements/ 目录规则执行；思考块让模型先想再翻；"
-                      "术语命中统计写 terms_stats.json。",
+                      "术语命中统计写 terms_stats.json；"
+                      "翻译完自动关机默认关，勾选后整批正常翻完会延迟 60 秒关机"
+                      "（取消或报错不关机）。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=560).pack(anchor="w", pady=(4, 0))
 
@@ -6647,7 +6665,29 @@ class App:
             lambda: commands.translate_paths(paths, src, tgt, model),
             label=f"翻译 {len(paths)} 个文件…",
             done_label="翻译完成",
+            on_done=self._maybe_autoshutdown,
         )
+
+    def _maybe_autoshutdown(self, _result=None):
+        """翻译正常结束后的收尾：勾了「翻译完自动关机」才延迟关机。"""
+        if not getattr(config, "AUTO_SHUTDOWN_ON_DONE", False):
+            return
+        if log:
+            log.info("翻译完成：已按设置安排自动关机（60 秒后）")
+        self._append_log("\n[自动关机] 翻译已完成，60 秒后关机；"
+                         "要取消请在命令行执行 shutdown /a\n")
+        try:
+            if os.name == "nt":
+                subprocess.Popen(
+                    ["shutdown", "/s", "/t", "60",
+                     "/c", "宝可梦同人工具：翻译已完成，60 秒后自动关机"
+                            "（可用 shutdown /a 取消）"])
+            else:
+                subprocess.Popen(["shutdown", "-h", "+1"])
+        except Exception as e:                       # noqa: BLE001
+            if log:
+                log.warning("自动关机失败：%s", e)
+            self._append_log(f"[自动关机] 执行失败：{e}\n")
 
     # ================================================================
     # 页面 2：重翻检查报告
@@ -12014,9 +12054,9 @@ class App:
                              "编辑：只开放 4 个文件：宝可梦（pokemon）、宝可梦形态"
                              "（pokemon_forms）、道具（items）、招式（moves）；"
                              "其余类型暂不提供编辑界面。\n"
-                             "提取和编译都按该游戏版本的官方引擎脚本走"
-                             "（v19 / v19.1 / v20 / v20.1 / v21 / v21.1 各自不同），"
-                             "产出与官方一致。",
+                             "提取按该版本官方引擎脚本走（v16 ~ v21.1 各自不同）；"
+                             "v16-18 会从 .dat 还原并补齐名字"
+                             "（宝可梦 / 招式，取自消息表），编译时把名字写回消息表。",
                         bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
                         wraplength=620)
         hint.pack(fill="x", pady=(4, 8))
@@ -12054,7 +12094,9 @@ class App:
         bind_autowrap(warn, pad=4)
 
         old = tk.Label(c0.body,
-                       text="v16 / v17 / v18 的老游戏不支持此功能，可能出现未知问题（如字段错位）。",
+                       text="v16 / v17 / v18：提取会补齐宝可梦 / 招式名字；"
+                            "编译只把名字同步进消息表（安全，不破坏招式表 / 进化表）；"
+                            "数值改动请按住 Ctrl 启动游戏，让官方编译器重建 .dat。",
                        bg=CARD, fg=C_KEY, font=FONT_SMALL, justify="left",
                        wraplength=620)
         old.pack(fill="x", pady=(6, 0))
@@ -12130,29 +12172,66 @@ class App:
             messagebox.showinfo("提示", "PBS 文件夹还没有，请先「提取PBS文件」。")
             return
         if pbs_edit.is_legacy(fam):
-            # ★ 老版本（v16/v17/v18）：不硬写 .dat，改成「标记待重编译」
+            # ★ 老版本（v16/v17/v18）：名字不在 .dat 里，而在 Data/messages.dat。
+            #   直接重编 .dat 会丢招式表/进化表等衍生数据，所以这里只做
+            #   「把 txt 里改过的名字写回消息表」——安全、立刻生效、不破坏存档。
             if not messagebox.askyesno(
                     "确认编译（%s 老版本）" % fam,
-                    "v16 / v17 / v18 的 .dat 里有一半是官方编译器的衍生缓存"
-                    "（种族表、进化表、招式机表…），拆开单个写容易造成"
-                    "「一半新一半旧」。\n\n"
-                    "本工具的做法：把 Data 里的 .dat 标记成「比 PBS 旧」，"
-                    "游戏下次启动时用它自己的编译器一次性重建全部 .dat。\n"
-                    "（只改时间戳、不删文件，随时可以重来）\n\n"
-                    "现在就把 %s 里的 txt 标记为待编译吗？" % pbs):
+                    "v16 / v17 / v18 的名字不在 .dat 里，而在 Data/messages.dat"
+                    "（消息表）。\n\n"
+                    "本工具会把 PBS 里改过的宝可梦 / 招式名字写回消息表："
+                    "编译后游戏立刻显示新名字，且不会破坏招式表、进化表等"
+                    "衍生数据。\n\n"
+                    "· 数值（种族值、威力……）的改动：按住 Ctrl 启动游戏，"
+                    "让游戏自己的编译器重建 .dat。\n"
+                    "· 只写名字、不动 .dat，随时可以重来。\n\n"
+                    "现在同步 %s 里的名字吗？" % pbs):
                 return
+            # 可选：让游戏启动时用官方编译器重建全部 .dat（默认否）
+            rebuild = messagebox.askyesno(
+                "是否同时重建 .dat？（默认否）",
+                "名字同步本身是安全的。\n\n"
+                "是否还要把 Data 里的 .dat 标记成「比 PBS 旧」，"
+                "让游戏下次启动时用它自己的编译器重建全部 .dat？\n\n"
+                "· 游戏自带完整 PBS：可以选「是」（等于官方重编译）。\n"
+                "· PBS 是从 .dat 还原出来的（缺招式表 / 进化表）："
+                "建议选「否」，否则重建可能丢数据。\n\n"
+                "选「否」= 只改名字，最安全。",
+                default=messagebox.NO)
             self.show("log")
             if log:
-                log.info("PBS 标记待重编译：%s（%s）", root, fam)
+                log.info("PBS 编译（老版本同步名字）：%s（%s）", root, fam)
 
             def work():
                 import pbs_legacy
-                n, msg = pbs_legacy.mark_for_recompile(root, fam)
-                out = [("标记待重编译", "_mark", True, "", msg)]
+                res = pbs_legacy.sync_names(root, fam)
+                out = []
+                if not res.get("ok"):
+                    out.append(("同步名字", "_names", False,
+                                res.get("reason", "失败"), ""))
+                else:
+                    counts = res.get("counts") or {}
+                    if not counts:
+                        out.append(("同步名字", "_names", True, "",
+                                    res.get("reason") or "没有名字变化"))
+                    for k, n in counts.items():
+                        out.append(("同步名字·%s" % k, k, True, "",
+                                    "已写入 %d 条名字" % n))
+                    if res.get("files"):
+                        out.append(("消息表", "_files", True, "",
+                                    "已写回 %d 个消息表文件"
+                                    % len(res["files"])))
+                if rebuild:
+                    try:
+                        _n, msg = pbs_legacy.mark_for_recompile(root, fam)
+                        out.append(("标记待重编译", "_mark", True, "", msg))
+                    except Exception as e:           # noqa: BLE001
+                        out.append(("标记待重编译", "_mark", False,
+                                    str(e), ""))
                 self.q.put(("pbs_compile_done", out))
                 return out
 
-            self.run_async(work, label="标记待重编译…", done_label="标记完成")
+            self.run_async(work, label="同步 PBS 名字…", done_label="名字已同步")
             return
         if not messagebox.askyesno(
                 "确认编译",
