@@ -19,7 +19,6 @@ import zlib
 
 from rubymarshal.constants import TYPE_IVAR as _RB_TYPE_IVAR
 from rubymarshal.reader import Reader as _RbReader
-from rubymarshal.reader import load as _rb_load
 from rubymarshal.writer import Writer as _RbWriter
 from rubymarshal.writer import write as _rb_write
 

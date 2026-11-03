@@ -62,26 +62,71 @@ _LATIN_RUN_RE = re.compile(r'[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{2,}')
 # ================================================================
 # 读缓存 / 术语表
 # ================================================================
+def _has_translated_file(src_path):
+    """名字文件有没有对应的 `*_translated.txt`。"""
+    p = _translated_path_for(src_path)
+    return bool(p and os.path.isfile(p))
+
+
+def _translated_values(src_path):
+    """
+    读名字文件对应的 `*_translated.txt` → {原文: 译文行内容}（读不到返回 {}）。
+
+    ★ 行号按**源文件**算（译文文件里原文/译文两行已不配对），
+      与 apply_to_translated_file 同一套映射。
+    """
+    import parser as P
+
+    out_path = _translated_path_for(src_path)
+    if not out_path or not os.path.isfile(out_path):
+        return {}
+    try:
+        src_lines, _nl = P.read_file(src_path, config.INPUT_ENCODING)
+        out_lines, _o = P.read_file(out_path, config.OUTPUT_ENCODING)
+    except Exception as e:                       # noqa: BLE001
+        log.warning("读译文文件失败（忽略）：%s：%s", out_path, e)
+        return {}
+    entries, _special = P.extract_entries(src_lines)
+    vals = {}
+    for idx, src in entries:
+        key = (src or "").strip()
+        if not key or key in vals or idx >= len(out_lines):
+            continue
+        vals[key] = out_lines[idx].strip()
+    return vals
+
+
 def _sections(target):
     """
     读名字文件，返回只含**术语**的界面数据：
 
       [{"path": 名字文件, "label": 类别中文名,
         "cache_path": 它的普通翻译缓存,
-        "items": {原文: 缓存里的译名（可能为空串）}}, ...]
+        "items": {原文: 译名}}, ...]
 
     ★ 过滤依据是 term_extract.file_records：候选原文来自 parse_names_file，
       所以同一文件里的对白等普通条目不会被当成术语列出来。
-    ★ 「缓存里完全没有该原文」的候选不算一条（还没翻过）—— 与改动前一致：
-      改动前缓存里有什么就列什么。
+    ★ **缓存里没有的候选也列出来**（以前会被直接丢掉，于是「整份文件只翻了
+      一半」时，没翻的那些在报告里根本不出现）：
+        ① 先从 `*_translated.txt` 取译文（手工翻译 / 上次流水线写下的都算）；
+        ② 译文文件里也没有 → 用原文本身，检查时就归为「未翻（回显原文）」。
     """
     import term_extract as TE
 
     out = []
     for rec in TE.file_records(target):
+        items = dict(rec["present"])
+        missing = [n for n in rec["names"] if n not in items]
+        # ★ 只在「这个文件已经开始翻了」时补未翻条目（缓存有内容，或已有
+        #   译文文件）；整份都没动过的名字文件不铺一屏「未翻」。
+        started = bool(items) or _has_translated_file(rec["path"])
+        if missing and started:
+            tvals = _translated_values(rec["path"])
+            for n in missing:
+                v = (tvals.get(n) or "").strip()
+                items[n] = v if v else n
         out.append({"path": rec["path"], "label": rec["label"],
-                    "cache_path": rec["cache_path"],
-                    "items": dict(rec["present"])})
+                    "cache_path": rec["cache_path"], "items": items})
     return out
 
 
@@ -201,6 +246,22 @@ def check_terms(target):
             else:
                 by_lower[key] = dst
     return hits
+
+
+def ensure_intermediates_dir(path):
+    """
+    地图名文本（MapInfos.txt）的中间文件放进「翻译中间文件」夹。
+
+    ★ 与 term_extract.ensure_mapinfos_dir 同一个口径，这里独立写一份是为了
+      不 import term_extract（本模块刻意不依赖它，避免循环 import）。
+    """
+    try:
+        import map_infos as MI
+        if MI.is_mapinfos_txt(path):
+            return MI.intermediates_dir(path)
+    except Exception as e:                       # noqa: BLE001
+        log.warning("建地图名中间文件夹失败（忽略）：%s", e)
+    return ""
 
 
 def _is_single_letter(text):
@@ -340,21 +401,28 @@ def _apply_to_caches(target, fixes):
             continue
 
         names = set(rec["names"])
-        changed = 0
+        changed = added = 0
         for src, new in fixes.items():
-            if src not in names or src not in data:
+            if src not in names:
                 continue
             if not new:
                 # 译名被清空：保留原值，避免把缓存写成空
                 log.info("译名为空，跳过缓存更新：%s", src)
+                continue
+            if src not in data:
+                # ★ 缓存里本来没有这条（报告里的「未翻」多数是这种）：
+                #   按候选原文新增，否则改完刷新报告还是「未翻」。
+                data[src] = new
+                changed += 1
+                added += 1
                 continue
             if data[src] != new:
                 data[src] = new
                 changed += 1
         if changed:
             _save_json(cp, data)
-            log.info("翻译缓存已更新：%s（%d 条，其余 %d 条原样保留）",
-                     cp, changed, len(data) - changed)
+            log.info("翻译缓存已更新：%s（%d 条，其中新增 %d，其余 %d 条原样保留）",
+                     cp, changed, added, len(data) - changed)
             n += changed
     return n
 
@@ -367,6 +435,64 @@ def _save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
     from cache import atomic_replace
     atomic_replace(tmp, path)
+
+
+def apply_to_translated_file(src_path, fixes):
+    """
+    把 {原文: 新译名} 写进 `src_path` 对应的 `*_translated.txt`（存在才写）。
+
+    返回 (改动条数, 是否真的写了文件)。
+    ★ 行号按**源文件**算（译文文件里原文行 / 译文行已不配对，
+      直接 extract_entries 一条都对不上），与 _apply_to_translated 同一套做法。
+    ★ 「导入已翻问题术语」也用它，所以抽成公开函数。
+    """
+    import parser as P
+
+    out_path = _translated_path_for(src_path)
+    if not out_path or not os.path.isfile(out_path):
+        return 0, False
+
+    # ① 源文件 → {原文: 译文行号}
+    try:
+        src_lines, _nl = P.read_file(src_path, config.INPUT_ENCODING)
+    except Exception as e:
+        log.warning("读源文件失败（跳过）：%s：%s", src_path, e)
+        return 0, False
+    entries, _special = P.extract_entries(src_lines)
+    line_of = {}
+    for idx, src in entries:
+        key = (src or "").strip()
+        if key and key not in line_of:
+            line_of[key] = idx
+
+    # ② 译文文件 → 按同一批行号替换
+    try:
+        lines, newline = P.read_file(out_path, config.OUTPUT_ENCODING)
+    except Exception as e:
+        log.warning("读译文失败（跳过）：%s：%s", out_path, e)
+        return 0, False
+
+    changed = 0
+    for src, new in (fixes or {}).items():
+        idx = line_of.get(str(src or "").strip())
+        if idx is None or idx >= len(lines) or not new:
+            continue
+        indent = re.match(r'^([ \t]*)', lines[idx]).group(1)
+        new_line = indent + new
+        if lines[idx] != new_line:
+            lines[idx] = new_line
+            changed += 1
+    if not changed:
+        return 0, False
+    try:
+        with io.open(out_path, "w", encoding=config.OUTPUT_ENCODING,
+                     newline="") as f:
+            f.write(newline.join(lines))
+        log.info("译文文件已更新：%s（%d 条）", out_path, changed)
+        return changed, True
+    except Exception as e:
+        log.warning("写译文失败：%s：%s", out_path, e)
+        return 0, False
 
 
 def _apply_to_translated(target, fixes):
@@ -392,51 +518,21 @@ def _apply_to_translated(target, fixes):
         out_path = _translated_path_for(src_path)
         if not out_path or not os.path.isfile(out_path):
             continue
-
-        # ① 源文件 → {原文: 译文行号}
+        # 缺译文的条目数按源文件里的条目算（与改动前一致）
         try:
             src_lines, _nl = P.read_file(src_path, config.INPUT_ENCODING)
-        except Exception as e:
-            log.warning("读源文件失败（跳过）：%s：%s", src_path, e)
-            continue
-        entries, _special = P.extract_entries(src_lines)
-        line_of = {}
-        for idx, src in entries:
-            key = (src or "").strip()
-            if key and key not in line_of:
-                line_of[key] = idx
-
-        # ② 译文文件 → 按同一批行号替换
-        try:
-            lines, newline = P.read_file(out_path, config.OUTPUT_ENCODING)
-        except Exception as e:
-            log.warning("读译文失败（跳过）：%s：%s", out_path, e)
-            continue
-
-        changed = 0
-        for src, new in fixes.items():
-            idx = line_of.get(src.strip())
-            if idx is None:
+            entries, _special = P.extract_entries(src_lines)
+            known = {(s or "").strip() for _i, s in entries}
+        except Exception:
+            known = set()
+        for src in fixes:
+            if src.strip() not in known:
                 missing += 1
-                continue
-            if idx >= len(lines):
-                missing += 1
-                continue
-            indent = re.match(r'^([ \t]*)', lines[idx]).group(1)
-            new_line = indent + new
-            if lines[idx] != new_line:
-                lines[idx] = new_line
-                changed += 1
-        if changed:
-            try:
-                with io.open(out_path, "w", encoding=config.OUTPUT_ENCODING,
-                             newline="") as f:
-                    f.write(newline.join(lines))
-                n_files += 1
-                file_list.append(out_path)
-                log.info("译文文件已更新：%s（%d 条）", out_path, changed)
-            except Exception as e:
-                log.warning("写译文失败：%s：%s", out_path, e)
+
+        _n, wrote = apply_to_translated_file(src_path, fixes)
+        if wrote:
+            n_files += 1
+            file_list.append(out_path)
     return n_files, file_list, missing
 
 
@@ -507,6 +603,8 @@ def retranslate(target, items, cancel=None, progress=None,
             except Exception:
                 pass
         try:
+            # ★ 地图名文本：缓存同样放「翻译中间文件」，别落到 txt 旁边
+            ensure_intermediates_dir(path)
             config.Runtime.set_input(path)
             cache = Cache(config.Runtime.cache_file)
             n = cache.remove_many(by_path[path])

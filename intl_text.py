@@ -704,12 +704,18 @@ def extract_text(game_dir, out_path=None, emit=None, backup=True, split=True):
         say(f"[提取] 这个游戏是新版方案（Essentials "
             f"{scheme.get('essentials') or '≥21'}）："
             f"文本分 core / game 两份，导出成两个文件夹")
-        return extract_split(game_dir, out_root=out_path, emit=emit)
+        rep = extract_split(game_dir, out_root=out_path, emit=emit)
+        rep["mapinfos"] = _extract_map_infos(
+            game_dir, map_infos_dir(game_dir, scheme), emit)
+        return rep
 
     if split:
         say("[提取] 这个游戏是旧版方案（单份 messages.dat）："
             "按分段拆成多个 txt，方便分批翻译")
-        return extract_legacy_split(game_dir, out_dir=out_path, emit=emit)
+        rep = extract_legacy_split(game_dir, out_dir=out_path, emit=emit)
+        rep["mapinfos"] = _extract_map_infos(
+            game_dir, map_infos_dir(game_dir, scheme), emit)
+        return rep
 
     src = find_source_messages(game_dir, emit=emit)
     say(f"[提取] 文本来源：{_shown(src, game_dir)}"
@@ -737,7 +743,9 @@ def extract_text(game_dir, out_path=None, emit=None, backup=True, split=True):
     log.info("提取文本：%s → %s（%d 段 / %d 条）",
              game_dir, out, sections, entries)
     return {"out": out, "backup": bak, "sections": sections,
-            "entries": entries, "source": src, "kinds": kinds}
+            "entries": entries, "source": src, "kinds": kinds,
+            "mapinfos": _extract_map_infos(
+                game_dir, os.path.dirname(out) or game_dir, emit)}
 
 
 def _section_summary(messages):
@@ -991,6 +999,16 @@ def _is_compile_artifact(name):
     return any(low.endswith(s) for s in COMPILE_SKIP_SUFFIXES)
 
 
+# ★ 地图名文本（MapInfos.txt）**不进** language .dat —— 它编译到
+#   Data/MapInfos.rxdata 里（见 map_infos.compile_to_rxdata）。
+_MAPINFOS_TXT_RE = re.compile(r'^mapinfos(_translated)?\.txt$', re.I)
+
+
+def is_mapinfos_name(name):
+    """MapInfos.txt / MapInfos_translated.txt（编译目标不是 .dat）。"""
+    return bool(_MAPINFOS_TXT_RE.match(os.path.basename(str(name or ""))))
+
+
 def select_compile_files(paths):
     """
     编译输入筛选（菜单 1「编译文本」用）：
@@ -1012,7 +1030,7 @@ def select_compile_files(paths):
     selected, skipped, seen = [], [], set()
     for p in collect_text_files(items):
         name = os.path.basename(p)
-        if _is_compile_artifact(name):
+        if _is_compile_artifact(name) or is_mapinfos_name(name):
             skipped.append(p)
             continue
 
@@ -1037,6 +1055,44 @@ def select_compile_files(paths):
 
 def _default_out(game_dir):
     return GS.default_language_file(game_dir)
+
+
+# ================================================================
+# 地图名（Data/MapInfos.rxdata）的提取与写回
+#   提取 → 放进这次导出的**游戏侧**文件夹（Text_<语言>_game / Text_<语言>）；
+#   编译 → 不写 .dat，而是写回 MapInfos.rxdata（见 map_infos 模块）。
+# ================================================================
+def map_infos_dir(game_dir, scheme=None):
+    """地图名文本该放进哪个文件夹（与同批导出的 txt 放一起）。"""
+    scheme = scheme or detect_scheme(game_dir)
+    if scheme.get("scheme") == SCHEME_SPLIT:
+        frag = scheme.get("fragment") or _DEFAULT_FRAGMENT
+        return os.path.join(game_dir, f"Text_{frag}_game")
+    return legacy_split_dir(game_dir, scheme.get("fragment"))
+
+
+def _extract_map_infos(game_dir, out_dir, emit=None):
+    """提取地图名（失败只记日志，不影响文本提取本身）。"""
+    try:
+        import map_infos as MI
+        return MI.extract(game_dir, out_dir, emit=emit)
+    except Exception as e:                       # noqa: BLE001
+        log.warning("提取地图名失败（忽略）：%s", e)
+        return {"ok": False, "extracted": False, "count": 0,
+                "out": "", "reason": str(e)}
+
+
+def _compile_map_infos(game_dir, paths, emit=None):
+    """把 MapInfos.txt 的译文写回 MapInfos.rxdata（没有该文件时返回 None）。"""
+    try:
+        import map_infos as MI
+        files = MI.collect_txt(paths)
+        if not files:
+            return None
+        return MI.compile_to_rxdata(game_dir, files, emit=emit)
+    except Exception as e:                       # noqa: BLE001
+        log.warning("写回地图名失败（忽略）：%s", e)
+        return {"ok": False, "changed": 0, "reason": str(e)}
 
 
 # ================================================================
@@ -1177,11 +1233,21 @@ def compile_text(game_dir, input_path, out_path=None, emit=None, backup=True):
             emit(msg)
 
     paths = input_path if isinstance(input_path, (list, tuple)) else [input_path]
+    # ★ 地图名走另一条路：它编译到 Data/MapInfos.rxdata，不写进 language .dat。
+    #   先在这里处理（用户可能只选了含 MapInfos.txt 的文件夹），失败只记日志。
+    mapinfos = _compile_map_infos(game_dir, paths, emit=emit)
+
     paths, skipped = select_compile_files(paths)
     if skipped:
         say(f"[编译] 按规则跳过 {len(skipped)} 个文件"
             f"（已有对应译文，或不是文本源）")
     if not paths:
+        if mapinfos and mapinfos.get("ok"):
+            say("[编译] 这一批只有地图名文本：已写回 MapInfos.rxdata，"
+                "没有需要编进 language .dat 的内容")
+            return {"scheme": SCHEME_LEGACY, "outs": [], "files": 0,
+                    "entries": 0, "conflicts": 0, "mapinfos": mapinfos,
+                    "sections": 0}
         raise FileNotFoundError(
             "没有可编译的文本。\n\n"
             "编译规则：只编译译文文件 *_translated.txt；\n"
@@ -1190,7 +1256,9 @@ def compile_text(game_dir, input_path, out_path=None, emit=None, backup=True):
 
     if split_targets(game_dir, paths):
         say("[编译] 这个游戏是新版方案：按 core / game 分别编译")
-        return compile_split(game_dir, paths, emit=emit, backup=backup)
+        rep = compile_split(game_dir, paths, emit=emit, backup=backup)
+        rep["mapinfos"] = mapinfos
+        return rep
 
     files = paths
     if len(files) > 1:
@@ -1253,7 +1321,8 @@ def compile_text(game_dir, input_path, out_path=None, emit=None, backup=True):
              input_path, out, len(merged), entries)
     return {"out": out, "backup": bak, "files": [f for f, _s, _n in per_file],
             "sections": len(merged), "entries": entries,
-            "conflicts": conflicts, "detail": per_file, "kinds": kinds}
+            "conflicts": conflicts, "detail": per_file, "kinds": kinds,
+            "mapinfos": mapinfos}
 
 
 def _build_table(merged, plain_hash=False, with_encoding=False):

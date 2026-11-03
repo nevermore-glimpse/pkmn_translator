@@ -4540,8 +4540,15 @@ class App:
                             text=f"{r.get('sections', r.get('files', 0))} 段 / "
                                  f"{r.get('entries', 0)} 条")
                         outs = _intl_outs(r)
-                        self.intl_extract_lbl.config(
-                            text="✔ 已写出：" + outs)
+                        txt = "✔ 已写出：" + outs
+                        mi = r.get("mapinfos") or {}
+                        if mi.get("extracted"):
+                            txt += (f"\n地图名：{mi.get('count', 0)} 条 → "
+                                    f"{os.path.basename(mi.get('out') or '')}"
+                                    f"（编译时写回 MapInfos.rxdata）")
+                        elif mi and not mi.get("ok"):
+                            txt += (f"\n地图名：跳过（{mi.get('reason')}）")
+                        self.intl_extract_lbl.config(text=txt)
                         self.intl_last_out = outs
                 elif kind == "intl_compile_done":
                     r = payload or {}
@@ -4562,6 +4569,12 @@ class App:
                                        if lang.get("uncommented") else ""))
                         elif lang:
                             txt += f"\n语言表：{lang.get('reason') or '没有改动'}"
+                        mi = r.get("mapinfos") or {}
+                        if mi and mi.get("ok") and mi.get("changed"):
+                            txt += (f"\n地图名：已写回 {mi.get('changed', 0)} 条"
+                                    f" → MapInfos.rxdata")
+                        elif mi and not mi.get("ok"):
+                            txt += f"\n地图名：未写回（{mi.get('reason')}）"
                         self.intl_compile_lbl.config(text=txt)
                 elif kind == "script_intl_done":
                     r = payload or {}
@@ -4575,6 +4588,18 @@ class App:
                         head = ("✔ 已写回" if r.get("write") else "预览：会改")
                         txt = (f"{head} {r.get('changed', 0)} 处，"
                                f"涉及 {len(r.get('files') or [])} 个文件")
+                        if r.get("map_files"):
+                            txt += (f"（其中地图事件 "
+                                    f"{r.get('map_changed', 0)} 处 / "
+                                    f"{len(r['map_files'])} 个 Map 文件）")
+                        if r.get("dialog_changed") or r.get("dialog_already") \
+                                or r.get("dialog_miss"):
+                            txt += (f"\n地图对话：改写 {r.get('dialog_changed', 0)} 条"
+                                    f"（{r.get('dialog_files', 0)} 个文件）/ "
+                                    f"已是中文 {r.get('dialog_already', 0)} 条 / "
+                                    f"仍缺译文 {r.get('dialog_miss', 0)} 条")
+                            if r.get("dialog_choices"):
+                                txt += f"；选项 {r['dialog_choices']} 处"
                         if r.get("miss"):
                             txt += (f"\n还有 {r['miss']} 处脚本里有、词表里没有"
                                     f"（编译文本补不上，只能进脚本改或等数据重编）")
@@ -5646,18 +5671,38 @@ class App:
             bg=CARD, fg=TEXT, activebackground=CARD, activeforeground=TEXT,
             selectcolor="#FFFFFF", font=FONT_SMALL,
             cursor="hand2").pack(side="left", padx=(10, 0))
-        GlassButton(row2b, "预览", width=92, height=36, bg=CARD,
+        # ★ 地图事件：Data/Map*.rxdata 里事件脚本的 _INTL("…") 一起写回
+        self.script_intl_map_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            row2b, text="地图事件（map*.rxdata）",
+            variable=self.script_intl_map_var,
+            bg=CARD, fg=TEXT, activebackground=CARD, activeforeground=TEXT,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            cursor="hand2").pack(side="left", padx=(10, 0))
+        # ★ 地图对话（101/401/102）：把语言文件第 0 段的译文直接写进地图文件。
+        #   默认不勾 —— 它会改几百个 Map*.rxdata，风险比写 √ 脚本大。
+        self.script_intl_dialog_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            row2b, text="地图对话（101/401）",
+            variable=self.script_intl_dialog_var,
+            bg=CARD, fg=TEXT, activebackground=CARD, activeforeground=TEXT,
+            selectcolor="#FFFFFF", font=FONT_SMALL,
+            cursor="hand2").pack(side="left", padx=(10, 0))
+        # ★ 按钮单独一行：四个勾选框 + 三个按钮放一行会把按钮挤成 1px
+        row2c = tk.Frame(c2b.body, bg=CARD)
+        row2c.pack(fill="x", pady=(6, 0))
+        GlassButton(row2c, "导出待补文案", width=120, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_script_intl_export
+                    ).pack(side="left")
+        GlassButton(row2c, "预览", width=92, height=36, bg=CARD,
                     font=FONT_SMALL,
                     command=lambda: self._do_script_intl(False)
                     ).pack(side="right")
-        GlassButton(row2b, "写回脚本", width=128, height=46, primary=True,
+        GlassButton(row2c, "写回脚本", width=128, height=46, primary=True,
                     bg=CARD,
                     command=lambda: self._do_script_intl(True)
                     ).pack(side="right", padx=(0, 8))
-        GlassButton(row2b, "导出待补文案", width=120, height=36, bg=CARD,
-                    font=FONT_SMALL,
-                    command=self._do_script_intl_export
-                    ).pack(side="left", padx=(10, 0))
         self.script_intl_lbl = tk.Label(c2b.body, text="", bg=CARD,
                                         fg=C_KEY, font=FONT_SMALL,
                                         justify="left", wraplength=560)
@@ -5669,6 +5714,13 @@ class App:
                  "改完不再经过语言文件查表。\n"
                  "译文取自已编译的中文语言文件；带 #{…} 插值的不动，"
                  "已是中文的跳过；\n"
+                 "勾上「地图事件」时 Data/Map*.rxdata 里事件指令的 "
+                 "_INTL 也一并写回（整份文件读→改→存，其余字节不动）。\n"
+                 "勾上「地图对话」时，把语言文件第 0 段（EVENT_TEXTS / "
+                 "[MapNNN]）的译文按**原文**钉进 101/401/102 —— "
+                 "不看地图编号，同一句在别的地图里出现也一起替换；\n"
+                 "多行对话会按原行数自动折行填满。这一步会改几百个地图文件，"
+                 "写前逐个备份，风险自负（建议先在副本上试）。\n"
                  "同一行出现 @sprites[ / RPG::Cache.load_bitmap / "
                  "AnimatedBitmap.new / pbBitmap 的整行不动。\n"
                  "改动前自动备份（*.bak），可反复执行。",
@@ -5759,6 +5811,10 @@ class App:
             justify="left", wraplength=200)
         self.intl_hint_lbl.pack(anchor="w", padx=10, pady=(10, 0))
         attach_label_copy(self.intl_hint_lbl, self, "使用提示")
+        # ★ 侧边栏最下面的大字提示：往下滚还有「加载中文文本处理插件」
+        tk.Label(body, text="下滑还有中文文本处理插件", bg=CARD, fg=ACCENT,
+                 font=FONT_TITLE, justify="left",
+                 wraplength=196).pack(anchor="w", padx=10, pady=(28, 14))
 
     # ---------- 菜单 1（文本提取与编译）：小工具 ----------
     def _intl_pick_folder(self):
@@ -5808,22 +5864,26 @@ class App:
                 self.intl_extract_hint.config(
                     text=f"这个游戏分 core（引擎）与 game（游戏）两份，会导出成 "
                          f"Text_{frag}_core/ 与 Text_{frag}_game/ 两个文件夹"
-                         f"（每个分段一个 txt）。")
+                         f"（每个分段一个 txt）。地图名另存成 "
+                         f"Text_{frag}_game/MapInfos.txt（按名字类文本翻译）。")
                 self.intl_compile_hint.config(
                     text="选 Text_<语言>_core / Text_<语言>_game 两个文件夹"
                          "（或里面的 txt），分别编出 "
                          f"messages_{frag}_core.dat 与 "
-                         f"messages_{frag}_game.dat；覆盖前自动备份。")
+                         f"messages_{frag}_game.dat；MapInfos.txt 不编进 "
+                         "dat，而是写回 Data/MapInfos.rxdata；覆盖前自动备份。")
                 self.intl_src_lbl.config(
                     text="未选择（默认用提取出来的两个 Text_ 文件夹）")
             else:
                 self.intl_extract_hint.config(
                     text="读游戏 Data 下已编译的原文表，按分段拆成 "
-                         "Text_<语言> 文件夹里的 txt（已存在时先备份）。")
+                         "Text_<语言> 文件夹里的 txt（已存在时先备份）；"
+                         "地图名另存成 MapInfos.txt（按名字类文本翻译）。")
                 self.intl_compile_hint.config(
                     text="可以只选一个 txt，也可以选整个文件夹（里面的 .txt "
                          "按文件名顺序合并）；输出位置按游戏 "
-                         "Settings::LANGUAGES 定，覆盖前自动备份。")
+                         "Settings::LANGUAGES 定；MapInfos.txt 不编进 dat，"
+                         "而是写回 Data/MapInfos.rxdata；覆盖前自动备份。")
                 self.intl_src_lbl.config(
                     text="未选择（默认用提取出来的 Text_ 文件夹）")
         except Exception:
@@ -5935,26 +5995,39 @@ class App:
             return
         inc_main = bool(self.script_intl_main_var.get())
         inc_plug = bool(self.script_intl_plugin_var.get())
-        if not (inc_main or inc_plug):
-            messagebox.showwarning("提示", "主脚本和插件脚本至少要勾一个。")
+        inc_maps = bool(self.script_intl_map_var.get())
+        inc_dialog = bool(getattr(self, "script_intl_dialog_var", None)
+                          and self.script_intl_dialog_var.get())
+        if not (inc_main or inc_plug or inc_maps or inc_dialog):
+            messagebox.showwarning(
+                "提示",
+                "主脚本 / 插件脚本 / 地图事件 / 地图对话至少要勾一个。")
             return
         if write:
-            if not messagebox.askyesno(
-                    "确认写回",
-                    "会把脚本里的 _INTL(\"英文\") 直接改成中文并保存。\n\n"
-                    "· 主脚本写 Data/Scripts/*.rb 与 Scripts.rxdata\n"
-                    "· 插件写 Data/PluginScripts.rxdata\n"
-                    "· 每个文件改动前自动备份成 *.bak（已存在则不覆盖）\n"
-                    "· 行内有 @sprites[ 等资源记号的整行不动\n\n"
-                    "以后更新插件或脚本会覆盖掉这些改动。\n\n"
-                    "确定写回吗？"):
+            msg = ("会把脚本里的 _INTL(\"英文\") 直接改成中文并保存。\n\n"
+                   "· 主脚本写 Data/Scripts/*.rb 与 Scripts.rxdata\n"
+                   "· 插件写 Data/PluginScripts.rxdata\n"
+                   "· 地图事件写 Data/Map*.rxdata（事件指令里的 _INTL）\n"
+                   "· 每个文件改动前自动备份成 *.bak（已存在则不覆盖）\n"
+                   "· 行内有 @sprites[ 等资源记号的整行不动\n\n"
+                   "★ 请先关掉游戏（文件被占用会写失败）。\n\n")
+            if inc_dialog:
+                msg += ("⚠ 另外勾了「地图对话」：会把语言文件第 0 段"
+                        "（EVENT_TEXTS）的译文直接写进 Data/Map*.rxdata 与 "
+                        "Data/CommonEvents.rxdata 的 101/401/102 指令。\n"
+                        "每个文件都会先备份（*.bak + 时间戳），但仍可能造成"
+                        "地图对话错乱、事件执行异常**——请先在游戏副本上试一遍，"
+                        "确认没问题再动正式游戏。\n\n")
+            msg += "以后更新插件或脚本会覆盖掉这些改动。\n\n确定写回吗？"
+            if not messagebox.askyesno("确认写回", msg):
                 return
         self.show("log")
 
         def work():
             res = commands.script_intl_paths(
                 d, write=write, include_main=inc_main,
-                include_plugins=inc_plug)
+                include_plugins=inc_plug, include_maps=inc_maps,
+                include_dialog=inc_dialog)
             self.q.put(("script_intl_done", res))
             return res
 
@@ -5969,11 +6042,13 @@ class App:
             return
         inc_main = bool(self.script_intl_main_var.get())
         inc_plug = bool(self.script_intl_plugin_var.get())
+        inc_maps = bool(self.script_intl_map_var.get())
         self.show("log")
 
         def work():
             res = commands.script_intl_export(
-                d, include_main=inc_main, include_plugins=inc_plug)
+                d, include_main=inc_main, include_plugins=inc_plug,
+                include_maps=inc_maps)
             self.q.put(("script_intl_export_done", res))
             return res
 
@@ -6009,6 +6084,7 @@ class App:
                       "写进术语表的「自动提取区」。\n"
                       "可选单个名字文本，也可选整个文本文件夹。\n"
                       "翻译走与「翻译」同一套提示词（system_translate_jsonline），"
+                      "含上文参考（每批附带前 N 句原文⇒译文），"
                       "只是在翻完后把原文与译文计入术语表。\n"
                       "与翻译一样带缓存：中途取消 / 中断后重跑，已翻过的"
                       "条目不会重复送模型（缓存在目标文件夹的「翻译中间文件」夹）。",
@@ -6229,7 +6305,8 @@ class App:
         tk.Label(c1.body, text="术语检查报告", bg=CARD, fg=C_TITLE,
                  font=FONT_TITLE).pack(anchor="w")
         tk.Label(c1.body,
-                 text="只看术语提取的缓存与术语表，把有问题的译名列出来。\n"
+                 text="读术语提取的缓存、译文文件与术语表，把有问题的译名"
+                      "（含「还没翻」的条目）列出来。\n"
                       "双击「译名」列即可改，点「应用修改」写回缓存、"
                       "译文文件与术语表（改译名 / 应用修改不走模型）；\n"
                       "点「术语重翻」会删掉选中条目的缓存并重走翻译流水线"
@@ -6247,6 +6324,16 @@ class App:
         GlassButton(head, "刷新报告", width=104, height=34, bg=CARD,
                     font=FONT_SMALL,
                     command=self._do_term_check).pack(side="left", padx=12)
+        # ★ 问题术语的批量处理：导出成 problem/problem_term_*.json
+        #   （缓存形式，改右边的译文），改完导入写回缓存 + 译文文件
+        GlassButton(head, "导出问题术语", width=118, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_export_problem_terms
+                    ).pack(side="left")
+        GlassButton(head, "导入已翻问题术语", width=140, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_import_problem_terms
+                    ).pack(side="left", padx=(6, 0))
         self.tc_stat = tk.Label(head, text="尚未检查", bg=CARD, fg=C_KEY,
                                 font=FONT_BIG)
         self.tc_stat.pack(side="right")
@@ -6317,7 +6404,10 @@ class App:
                       "译文文件（如有）与术语表自动提取区（不走模型）；"
                       "「术语重翻」会删掉选中条目的缓存并重走翻译流水线"
                       "（会调用模型），\n"
-                      "并把每批翻出的新译名逐批写进术语表自动提取区。",
+                      "并把每批翻出的新译名逐批写进术语表自动提取区；\n"
+                      "「导出问题术语」把问题条目写成游戏根目录 problem/ 下的 "
+                      "problem_term_*.json（缓存形式，改右边的译文），"
+                      "改完点「导入已翻问题术语」写回缓存与译文文件。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=560).pack(anchor="w", pady=(8, 0))
 
@@ -6374,6 +6464,76 @@ class App:
             return
         self.set_busy(True, "正在检查术语…")
         threading.Thread(target=work, daemon=True).start()
+
+    def _do_export_problem_terms(self):
+        """把当前显示的问题术语按名字文件导出成 problem/problem_term_*.json。"""
+        import problem_io as PI
+
+        target = self._te_target_ready(None)
+        if not target:
+            return
+        hits = self._tc_filtered_hits()
+        if not hits:
+            messagebox.showinfo(
+                "提示",
+                "当前没有可导出的条目：先点「刷新报告」，"
+                "并确认问题类型没有全被取消勾选。")
+            return
+
+        def done(st):
+            st = st or {}
+            if not st.get("files"):
+                messagebox.showinfo("提示", "没有可导出的问题术语。")
+                return
+            self.q.put(("log", f"[问题术语] 已导出 {st.get('count', 0)} 条 → "
+                               f"{st.get('dir')}\n"))
+            messagebox.showinfo(
+                "已导出",
+                f"已导出 {st.get('count', 0)} 条问题术语，"
+                f"分成 {st.get('groups', 0)} 个文件：\n{st.get('dir')}\n\n"
+                "用记事本打开 problem_term_*.json，只改 items 里每条**右边的"
+                "译文**（键＝原文，别动），改完回来点「导入已翻问题术语」。")
+
+        self.run_async(lambda: PI.export_terms(target, hits),
+                       label="导出问题术语…", done_label="问题术语已导出",
+                       on_done=done)
+
+    def _do_import_problem_terms(self):
+        """读 problem/problem_term_*.json，把译文写回缓存 + 译文文件。"""
+        import problem_io as PI
+
+        target = self._te_target_ready(None)
+        if not target:
+            return
+        if not PI.known_problem_files(target):
+            messagebox.showinfo(
+                "提示",
+                f"没找到问题术语缓存：\n{PI.problem_dir(target, create=False)}\n\n"
+                f"先点「导出问题术语」。")
+            return
+
+        def done(st):
+            st = st or {}
+            if not st.get("applied"):
+                messagebox.showinfo(
+                    "提示",
+                    f"没有读到已翻译的条目（目录：{st.get('dir')}）。\n\n"
+                    "只改 items 里每条右边的译文、别改原文；"
+                    "留空或与原文相同会被视为「没翻」而跳过。")
+                return
+            msg = (f"已导入 {st.get('applied', 0)} 条："
+                   f"缓存新增 {st.get('added', 0)} 条 / 改写 "
+                   f"{st.get('updated', 0)} 条，"
+                   f"译文文件改写 {st.get('file_lines', 0)} 行")
+            if st.get("missing"):
+                msg += f"，{st['missing']} 个缓存找不到对应文本"
+            self.q.put(("log", f"[问题术语] {msg}\n"))
+            messagebox.showinfo("已导入", msg + "\n\n正在刷新报告…")
+            self.root.after(200, self._do_term_check)
+
+        self.run_async(lambda: PI.import_terms(target),
+                       label="导入问题术语…", done_label="问题术语已导入",
+                       on_done=done)
 
     def _fill_termcheck(self, payload):
         hits, path = payload if isinstance(payload, tuple) else (payload, "")
@@ -6624,7 +6784,9 @@ class App:
         self._model_row(c2.body)
         tk.Label(c2.body,
                  text="本地模式自动检测已安装的 Ollama 模型；"
-                      "云端模式填写 API 地址与密钥后可用。",
+                      "云端模式填写 API 地址与密钥后可用。\n"
+                      "每批翻译会附带本批第一句在文件里的前 N 句（默认 5）"
+                      "「原文 ⇒ 译文」作为上文参考，可在「设置」里改句数或关闭。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left").pack(anchor="w", pady=(10, 0))
 
@@ -6749,7 +6911,7 @@ class App:
         self.report_search = tk.StringVar()
         self.report_search_ent = ttk.Entry(self.report_search_box,
                                            textvariable=self.report_search,
-                                           width=14, font=FONT)
+                                           width=10, font=FONT)
         self.report_search_ent.pack(side="left")
         self.report_search_ent.bind("<KeyRelease>",
                                     lambda _e: self._render_report_rows())
@@ -6765,6 +6927,22 @@ class App:
                                     fg=C_KEY, font=FONT_BIG)
         self.report_stat.pack(side="right")
         attach_label_copy(self.report_stat, self, "统计")
+
+        # ★ 问题句子的批量处理（紧跟在搜索框那一行下面）：导出成
+        #   problem/problem_sentence_*.json（缓存形式，改右边的译文），
+        #   改完导入写回缓存 + 译文文件并刷新报告
+        prob_bar = tk.Frame(c2.body, bg=CARD)
+        prob_bar.pack(fill="x", pady=(6, 0))
+        tk.Label(prob_bar, text="问题句子批量处理", bg=CARD, fg=TEXT_DIM,
+                 font=FONT_SMALL).pack(side="left")
+        GlassButton(prob_bar, "导出问题句子", width=118, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_export_problem_sentences
+                    ).pack(side="left", padx=(8, 0))
+        GlassButton(prob_bar, "导入已翻问题句子", width=140, height=34, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_import_problem_sentences
+                    ).pack(side="left", padx=(6, 0))
 
         # ★ 重翻类型选择（刷新报告后按实际出现的问题类型动态生成）
         self.report_kind_bar = tk.Frame(c2.body, bg=CARD)
@@ -6820,7 +6998,11 @@ class App:
             self.c3_normal,
             text="删除勾选类型的问题句缓存并重新翻译；"
                  "「译文残留控制码」等类型不参与重翻；"
-                 "「应用已编辑」把双击改过的译文写进缓存与译文文件",
+                 "「应用已编辑」把双击改过的译文写进缓存与译文文件；\n"
+                 "「导出问题句子」写到游戏根目录 problem/ 下的 "
+                 "problem_sentence_*.json（缓存形式，改右边的译文；"
+                 "附带每句命中的术语 hit_terms 供参考），"
+                 "改完点「导入已翻问题句子」写回并刷新报告",
             bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
             wraplength=560)
         self.report_hint.pack(anchor="w", pady=(8, 0))
@@ -7237,6 +7419,81 @@ class App:
             return
         self.set_busy(True, "正在检查…")
         threading.Thread(target=work, daemon=True).start()
+
+    def _do_export_problem_sentences(self):
+        """把当前报告里的问题句子按源文件导出成 problem_sentence_*.json。"""
+        import problem_io as PI
+
+        reports = self.fp_report.ensure()
+        if not reports:
+            messagebox.showwarning("提示",
+                                   "请先选择检查报告（*_translated_report.txt）")
+            return
+        hits = list(getattr(self, "report_hits", []) or [])
+        if not hits:
+            messagebox.showinfo("提示", "当前报告是空的：先点「刷新报告」。")
+            return
+
+        def done(st):
+            st = st or {}
+            if not st.get("files"):
+                messagebox.showinfo("提示", "没有可导出的问题句子。")
+                return
+            self.q.put(("log", f"[问题句子] 已导出 {st.get('count', 0)} 条"
+                               f"（附带命中术语 {st.get('terms', 0)} 条）→ "
+                               f"{st.get('dir')}\n"))
+            messagebox.showinfo(
+                "已导出",
+                f"已导出 {st.get('count', 0)} 条问题句子，"
+                f"分成 {st.get('groups', 0)} 个文件：\n{st.get('dir')}\n\n"
+                "用记事本打开 problem_sentence_*.json，只改 items 里每条"
+                "**右边的译文**（键＝原文，别动）；hit_terms 是每句命中的"
+                "术语，翻的时候参考它（不用改，导入时忽略），改完回来点"
+                "「导入已翻问题句子」。")
+
+        self.run_async(lambda: PI.export_sentences(reports, hits),
+                       label="导出问题句子…", done_label="问题句子已导出",
+                       on_done=done)
+
+    def _do_import_problem_sentences(self):
+        """读 problem/problem_sentence_*.json，写回缓存 + 译文文件并刷新报告。"""
+        import problem_io as PI
+
+        reports = self.fp_report.ensure()
+        basis = reports[0] if reports else ""
+        if not basis:
+            messagebox.showwarning("提示",
+                                   "请先选择检查报告（*_translated_report.txt）")
+            return
+        if not PI.known_problem_files(basis):
+            messagebox.showinfo(
+                "提示",
+                f"没找到问题句子缓存：\n{PI.problem_dir(basis, create=False)}"
+                f"\n\n先点「导出问题句子」。")
+            return
+
+        def done(st):
+            st = st or {}
+            if not st.get("applied"):
+                messagebox.showinfo(
+                    "提示",
+                    f"没有读到已翻译的条目（目录：{st.get('dir')}）。\n\n"
+                    "只改 items 里每条右边的译文、别改原文；"
+                    "留空或与原文相同会被视为「没翻」而跳过。")
+                return
+            msg = (f"已导入 {st.get('applied', 0)} 条问题句子"
+                   f"（写回缓存、译文文件并记为「已编辑」）")
+            if st.get("missing"):
+                msg += f"；{st['missing']} 个缓存找不到对应文本"
+            if st.get("failed"):
+                msg += f"；{st['failed']} 条写入失败（见日志）"
+            self.q.put(("log", f"[问题句子] {msg}\n"))
+            messagebox.showinfo("已导入", msg + "\n\n正在刷新报告…")
+            self.root.after(200, self._do_check)
+
+        self.run_async(lambda: PI.import_sentences(basis),
+                       label="导入问题句子…", done_label="问题句子已导入",
+                       on_done=done)
 
     def _fill_report(self, result):
         if self.report_mode != "report":
@@ -8392,7 +8649,7 @@ class App:
         bottom2 = tk.Frame(c.body, bg=CARD)
         bottom2.pack(fill="x", pady=(8, 0))
         tk.Label(bottom2,
-                 text="应用术语：只替换 \\tg[...] 里的内容",
+                 text="应用术语：只替换 \\tg[] / \\xn[] 里的内容",
                  bg=CARD, fg=C_WARN, font=FONT_SMALL).pack(side="left")
         GlassButton(bottom2, "应用术语", width=140, height=44, bg=CARD,
                     font=FONT_BIG,
@@ -8411,9 +8668,10 @@ class App:
             data = PFD.all_entries()
         except Exception:
             data = {}
-        # ★ 只展示 \tg 类型的前缀（其它控制码前缀不显示、不编辑）
+        # ★ 只展示带「名字标签」的前缀：\tg[...] 与 \xn[...]
+        #   （其它控制码前缀不显示、不编辑）
         self._prefix_all = [(k, v) for k, v in data.items()
-                            if "\\tg[" in str(k)]
+                            if "\\tg[" in str(k) or "\\xn[" in str(k)]
         self._filter_prefix()
 
     def _filter_prefix(self):
@@ -8467,7 +8725,8 @@ class App:
     def _do_apply_prefix_terms(self):
         """
         让前缀去匹配术语字典：命中术语就把对应部分替换掉。
-        ★ 当前只替换 \\tg[...] 里的内容（角色名），控制码参数保持不动。
+        ★ 只替换名字标签（\\tg[...] / \\xn[]）里的内容（角色名），
+          控制码参数保持不动。
         """
         try:
             # ★ 统一走 commands 的命令层：内部已含 PFD.reload_dict()
@@ -8480,7 +8739,7 @@ class App:
             messagebox.showinfo(
                 "应用术语",
                 f"前缀字典共 {stats['total']} 条，"
-                f"没有 \\tg[...] 里的文字命中术语，无需改动。")
+                f"没有 \\tg[] / \\xn[] 里的文字命中术语，无需改动。")
             return
 
         preview = "\n".join(
@@ -8495,7 +8754,7 @@ class App:
                 f"{preview}"
                 + (f"\n  … 其余 {len(changes) - 8} 条省略"
                    if len(changes) > 8 else "")
-                + "\n\n只替换 \\tg[...] 里的内容，确定应用？"):
+                + "\n\n只替换 \\tg[] / \\xn[] 里的内容，确定应用？"):
             return
 
         # 勾选了缓存就顺带把前缀重新拼回译文，没有就只更新字典

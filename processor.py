@@ -125,7 +125,16 @@ CTRL_RE      = _DelegatingRE(_ctrl_builder)
 TAG_RE       = re.compile(_TAG_PAT)
 BRACE_RE     = re.compile(_BRACE_PAT)
 DIGIT_TAG_RE = re.compile(_DIGIT_TAG_PAT)
-SPEAKER_TAG_RE = re.compile(r'\\tg\[([^\]]*)\]')
+# ★ 说话人 / 名字标签：\tg[名字] 与 \xn[名字]（后者见 setTextMode("\\ml[x]\\xn[x]")）
+#   两种都是「给玩家看的角色名」，翻译与术语替换时要进到括号里面去，
+#   不能当普通控制码整段保护掉。group(1) 一律是括号里的内容。
+SPEAKER_TAG_RE = re.compile(r'\\(?:tg|xn)\[([^\]]*)\]')
+
+def _tag_open(tag_text):
+    """'\\tg[名字]' / '\\xn[名字]' → 开头的 '\\tg[' / '\\xn['（保住原命令名）。"""
+    i = tag_text.find("[")
+    return tag_text[: i + 1] if i >= 0 else tag_text
+
 
 # 未识别控制码检测（原始文本中残留的 \字母）
 LEFTOVER_CTRL_RE = re.compile(r'\\[A-Za-z]+')
@@ -420,7 +429,7 @@ def protect(text, drop_newline=True):
 
     def _in_entity(s, e):
         return any(s < se and e > ss for ss, se in entity_ranges)
-    # ---------- ③.3 说话人标签：\tg[Alba] → 三段 \tg[ / Alba / ] ----------
+    # ---------- ③.3 说话人标签：\tg[Alba] / \xn[Alba] → 三段 前缀 / 名字 / ] ----------
     speaker_ranges = []
     for m in SPEAKER_TAG_RE.finditer(text):
         if _in_angle(m.start(), m.end()) or _in_html(m.start(), m.end()):
@@ -434,7 +443,9 @@ def protect(text, drop_newline=True):
             "start": m.start(),
             "end":   m.end(),
             "segments": [
-                {"protect": True,  "content": "\\tg[", "no_pad": True},
+                # ★ 前缀按**实际的**命令名取（\tg[ 或 \xn[），别写死 \tg[
+                {"protect": True,  "content": _tag_open(m.group(0)),
+                 "no_pad": True},
                 {"protect": False, "content": name},
                 {"protect": True,  "content": "]",    "no_pad": True},
             ],
@@ -1006,8 +1017,9 @@ _MULTI_RE = None
 _MULTI_MAP = {}
 _MULTI_MAP_LOWER = {}
 
-# ★ 整句匹配表：{小写原文: (原文, 译文)}，只收「手工维护」的术语
-#   （term_dict.py 里 AUTO 块中的自动提取术语不算，见 match_whole_term）
+# ★ 整句匹配表：{小写原文: (原文, 译文)}，**术语表里的全部条目都收**
+#   （包括 term_dict.py 里 AUTO 块的自动提取术语）—— 整句就是一条术语时
+#   直接用该术语的译文，不送模型。见 match_whole_term。
 _TERM_WHOLE = {}
 
 # ★ 整句连写回退索引：{去空格小写原文: (原文, 译文)}，只收**原本含空格**的
@@ -1195,7 +1207,8 @@ def _load_term_sections():
 # ----------------------------------------------------------------
 # term_dict.py 里的 AUTO 块（自动提取的术语）
 #   标记与写入逻辑见 auto_terms.AUTO_START / AUTO_END。
-#   整句匹配只认手工术语，所以这里把 AUTO 块里的原文挑出来排除掉。
+#   注意：AUTO 块的条目**同样参与整句术语直译**（自 2026-11 起），
+#   这里只用来把统计数字打进日志，不再用于排除。
 # ----------------------------------------------------------------
 _AUTO_PAIR_RE = re.compile(r'^\s*"((?:[^"\\]|\\.)*)"\s*:', re.MULTILINE)
 
@@ -1204,7 +1217,8 @@ def _auto_block_keys(text):
     """
     从 term_dict.py 的源码文本里，取出 AUTO 块内所有术语原文（小写）。
 
-    AUTO 块里的条目是翻译过程中自动提取的，不算「用户手工加的术语」。
+    ★ 只用于日志统计（「整句匹配表里有 N 条来自自动提取」）：
+      自动提取的术语**不再被排除**在整句术语直译之外。
     找不到标记（没有 AUTO 块）时返回空集合。
     """
     try:
@@ -1318,14 +1332,18 @@ def load_terms(force=False):
 
     _TERMS_LOADED_KEY = key
 
-    # ---- 整句匹配表（只收手工术语，AUTO 块的自动术语排除） ----
+    # ---- 整句匹配表（**全部术语**都收，含 AUTO 块的自动提取术语） ----
+    # ★ 自动提取的术语（term_extract 从名字文件翻出来的那批）现在也参与
+    #   「整句术语直译」：句子里整条就是 `Pikachu` 这种名字时，直接用术语表
+    #   里的译名写缓存，不再送模型。以前这里把 AUTO 块排除掉，导致自动提取
+    #   的术语只在正文里做注入、整句命中不了。
     auto_keys = _auto_block_keys(term_text)
     _TERM_WHOLE = {}
     for k, v in good:
         if not v.strip():
             continue
         lk = k.strip().lower()
-        if lk in auto_keys or lk in _TERM_WHOLE:
+        if lk in _TERM_WHOLE:
             continue            # 先到先得：good 已按原文长度降序排好
         _TERM_WHOLE[lk] = (k, v)
 
@@ -1354,12 +1372,12 @@ def load_terms(force=False):
     _check_case_conflicts(good)
     log.info("术语表加载：%d 条（单词 %d / 多词 %d，跳过短词 %d 条）",
              len(_TERMS), len(_TERM_SINGLE), len(_TERM_MULTI), skipped_short)
-    log.info("整句术语匹配表：%d 条（已排除自动提取术语 %d 条）",
+    log.info("整句术语匹配表：%d 条（含自动提取术语 %d 条）",
              len(_TERM_WHOLE), len(auto_keys))
 
 
 # ----------------------------------------------------------------
-# 整句术语匹配：整句就是一条手工术语 → 直接用术语译文
+# 整句术语匹配：整句就是一条术语（含自动提取的术语）→ 直接用术语译文
 # ----------------------------------------------------------------
 # 参与「首尾剥离」的标点/空白。刻意不含 \ [ ] { } < > @ # ~ ——
 # 这些是控制码 / 标签 / 占位符的构件，剥掉它们会把 [Pikachu] 这类
@@ -1436,10 +1454,10 @@ def _whole_plural_lookup(core_lower, section=None):
 
 def match_whole_term(text, section=None):
     """
-    整句术语匹配（手工术语专用）。
+    整句术语匹配（术语表里的**全部**条目，含自动提取区）。
 
-    把 text 首尾的空白与标点剥掉后，若剩下的整串正好等于**一条手工维护的
-    术语原文**（term_dict.py 里 AUTO 块中的自动提取术语不参与），
+    把 text 首尾的空白与标点剥掉后，若剩下的整串正好等于**术语表里的一条
+    原文**（手工维护的与 term_dict.py 里 AUTO 块自动提取的都算），
     就认为这句话的译文就是该术语的译文。
 
     section：可选，当前文件的 section 名（term_extract.resolve_names 判定）。
@@ -1735,7 +1753,8 @@ def apply_terms(text):
 
     ★ 只对「正文」替换：控制码（\\v[50]、<<n>>、<tag>、&quot; 等）内部的
       内容一律不动，否则 \\se[ItemGet] 这类资源名会被翻坏；
-      唯一例外是说话人标签 \\tg[...] —— 里面是给玩家看的角色名，照常替换。
+      唯一例外是名字标签 \\tg[...] / \\xn[...] —— 里面是给玩家看的角色名，
+      照常替换。
     """
     if not text or (not _TERM_SINGLE and not _MULTI_RE):
         return text
@@ -1746,7 +1765,8 @@ def apply_terms(text):
         # 说话人标签：整段拿捏，只替换 \tg[ 与 ] 之间的名字
         m_tg = SPEAKER_TAG_RE.match(text, i)
         if m_tg:
-            out.append("\\tg[" + _apply_terms_plain(m_tg.group(1)) + "]")
+            out.append(_tag_open(m_tg.group(0))
+                       + _apply_terms_plain(m_tg.group(1)) + "]")
             i = m_tg.end()
             continue
 

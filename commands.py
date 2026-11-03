@@ -27,8 +27,8 @@ import settings
 import translator as T
 from cache import Cache, atomic_replace, load_edits
 from logger import get_logger
-from translator import (OllamaClient, estimate_tokens,
-                        resolve_concurrency, translate_with_retry)
+from translator import (OllamaClient, resolve_concurrency,
+                        translate_with_retry)
 
 log = get_logger("commands")
 
@@ -1153,19 +1153,23 @@ def _apply_lang_model(src_lang=None, tgt_lang=None, model=None):
 def _make_batches(todo, batch_size=None, max_chars=None, max_tokens=None,
                   budget=None, sys_tokens=0,
                   terms_provider=None,
-                  ref_provider=None, body_provider=None):
+                  ref_provider=None, body_provider=None,
+                  context_provider=None):
     """
     自适应分批：单批占用不超过上下文预算就继续加条，超了就切批。
 
-    占用 = system + 术语块 + 正文 + 参考原文块 + 预留输出
+    占用 = system + 术语块 + 正文 + 参考原文块 + 上文参考块 + 预留输出
     预算 = 上下文窗口 × CTX_BUDGET_RATIO
 
     两阶段：① 用 system + 正文 + 预留输出粗切出候选批；
-            ② 补算术语块 / 参考原文块，超预算从尾部逐条剔除并重算。
+            ② 补算术语块 / 参考原文块 / 上文参考块，超预算从尾部逐条剔除并重算。
 
     sys_tokens    system 提示词的 token 数
     terms_provider  callable(batch_texts) -> [(原文, 译文), ...]
     ref_provider    callable(batch_texts) -> bool；参考原文块开关
+    context_provider callable(batch_texts) -> str；【上文参考】块（已组装好
+                    的字符串，空串 = 不带）。切批与发请求调同一个 provider，
+                    保证算的 token 和发出去的内容是同一份。
     body_provider   callable(txt) -> 进正文的字符串
     max_chars / max_tokens 已废弃，仅为兼容旧签名保留，不参与切批
     """
@@ -1174,6 +1178,7 @@ def _make_batches(todo, batch_size=None, max_chars=None, max_tokens=None,
         budget = T.resolve_ctx_budget()
     terms_provider = terms_provider or (lambda b: None)
     ref_provider = ref_provider or (lambda b: False)
+    context_provider = context_provider or (lambda b: "")
     body_provider = body_provider or (lambda t: t)
 
     # 每条先算一次正文 token 与预留输出 token，两阶段复用
@@ -1222,10 +1227,14 @@ def _make_batches(todo, batch_size=None, max_chars=None, max_tokens=None,
             # 参考原文块也占输入 token
             ref = sum(T.estimate_tokens(t) for t in sub) if ref_provider(sub) \
                 else 0
+            # 上文参考块同样占输入 token（只与本批第一句有关：剔除尾部
+            # 条目不影响它，keep≥1 时值恒定）
+            ctx_blk = context_provider(sub) or ""
+            ctx = _tokens_of(ctx_blk)
             pairs = terms_provider(sub)
             term = _tokens_of(
                 T.build_terms_block_string(pairs) if pairs else "")
-            return base + body + ref + out + term
+            return base + body + ref + ctx + out + term
 
         keep = len(cand)
         total = _total(keep)
@@ -1256,7 +1265,8 @@ def _translate_batch(client, batch_texts, cache,
                      unknown_ctrl_hits, failed, extra_hits,
                      mode_of_entry=None, bi=1, conflict_records=None,
                      term_stats=None, section=None,
-                     batch_term_hook=None, miss_log=None):
+                     batch_term_hook=None, miss_log=None,
+                     context_block=None):
     """
     翻译一批文本，写入缓存。返回成功条数。
 
@@ -1275,6 +1285,10 @@ def _translate_batch(client, batch_texts, cache,
               原文 append 进去，由调用方 _translate_core 汇总成一条日志
               （几千条缺失时逐条打印会把运行日志刷爆）。
               不传（None）时保持旧行为：每批一条 warning。
+    context_block: 可选 str。【上文参考】块（本批第一句之前的若干句
+              「原文 ⇒ 译文」，见 translator.build_context_block_string），
+              透传给 translate_with_retry → translate_batch，放进 user
+              prompt 的正文之前。空 / None = 不带（首句、或 CONTEXT_ENABLE=False）。
     """
     if not batch_texts:
         return 0
@@ -1361,7 +1375,8 @@ def _translate_batch(client, batch_texts, cache,
     t_req = time.time()
     result = translate_with_retry(client, batch,
                                   term_pairs=term_pairs_list,
-                                  section=section)
+                                  section=section,
+                                  context_block=context_block)
     log.info("[批 %d] 模型返回 %d 条，耗时 %.1fs",
              bi, len(result), time.time() - t_req)
 
@@ -1707,10 +1722,61 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
         ctx_limit = T.resolve_ctx_limit()
         emit(f"[分批] 自适应：预算 {budget}/{ctx_limit} token"
              f"（窗口×{getattr(config, 'CTX_BUDGET_RATIO', 0.9)}）")
+
+        # ---------- 上文参考（默认前 5 句：原文 ⇒ 译文） ----------
+        # ★ 「游戏汉化 → 翻译」与「游戏汉化 → 术语提取」走的就是这里这一条
+        #   流水线，所以两边同时生效。
+        # 每个原文在文件里**第一次出现**的位置（entries 按行序，含重复行）
+        n_ctx = T.context_lines_count()
+        pos_of = {}
+        if n_ctx:
+            for _idx, (_ln, _txt) in enumerate(entries):
+                pos_of.setdefault(_txt, _idx)
+        # 上文块按「本批第一句」定位，与 keep（保留几条）无关
+        _ctx_real = {}      # 首句原文 → 发请求用的真实上文块
+        _ctx_est = {}       # 首句原文 → 切批算 token 用的保守上界
+
+        def _ctx_pairs(first_txt, worst=False):
+            """本批第一句之前、最近的 n_ctx 句 → [(原文, 译文), ...]。"""
+            p = pos_of.get(first_txt)
+            if p is None or p <= 0:
+                return []
+            pairs, seen_t = [], set()
+            for _l, t in entries[max(0, p - n_ctx):p]:
+                if not t or not t.strip() or t in seen_t:
+                    continue
+                seen_t.add(t)
+                dst = cache.get(t) or ""
+                if dst == t:
+                    # 原文==译文（预过滤/资源路径等按原文缓存的句子，或回显）：
+                    # 按「还没翻出来」处理，上文里只列原文，不出「X ⇒ X」噪音
+                    dst = ""
+                if worst and not dst:
+                    # 这句还没翻出来：按「原文 ⇒ 原文」估，切批不会算少
+                    dst = t
+                pairs.append((t, dst))
+            return pairs
+
+        def _context_for(batch_texts, worst=False):
+            """切批与请求都调这里（同一条定位规则），保证内容一致。"""
+            if not n_ctx or not batch_texts:
+                return ""
+            memo = _ctx_est if worst else _ctx_real
+            first = batch_texts[0]
+            if first in memo:
+                return memo[first]
+            blk = T.build_context_block_string(
+                _ctx_pairs(first, worst=worst), n=n_ctx)
+            memo[first] = blk
+            return blk
+
         batches = _make_batches(
             todo, budget=budget, sys_tokens=sys_tokens,
-            terms_provider=_terms_for)
+            terms_provider=_terms_for,
+            context_provider=lambda b: _context_for(b, worst=True))
         emit(f"[分批] 共 {len(batches)} 批（{total} 条）")
+        if n_ctx:
+            emit(f"[上文] 每批附带前 {n_ctx} 句原文与译文作为参考")
 
         # ★ 并发批翻译：resolve_concurrency() > 1 且批数 > 1 时开线程池。
         #   调度（并发槽 / Key 轮换 / 429 降档）由 translator.ApiScheduler
@@ -1735,7 +1801,10 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
                     mode_of_entry=mode_of_entry, bi=bi,
                     conflict_records=conflict_records,
                     term_stats=term_stat_batches, section=sec,
-                    batch_term_hook=batch_term_hook, miss_log=miss_log)
+                    batch_term_hook=batch_term_hook, miss_log=miss_log,
+                    # ★ 并发模式：各批同时在飞，此刻缓存里可能还没有前批
+                    #   的译文 —— 上文块就只剩原文（格式支持），不会拿错。
+                    context_block=_context_for(batch_texts))
 
             with ThreadPoolExecutor(max_workers=conc) as ex:
                 futs = {}
@@ -1777,7 +1846,10 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
                                       term_stats=term_stat_batches,
                                       section=sec,
                                       batch_term_hook=batch_term_hook,
-                                      miss_log=miss_log)
+                                      miss_log=miss_log,
+                                      # ★ 串行模式：发这一批时才现取，前面各批
+                                      #   的译文都已落进缓存 → 上文带「原文 ⇒ 译文」
+                                      context_block=_context_for(batch_texts))
 
                 cache.tick()
                 done += len(batch_texts)
@@ -2627,7 +2699,8 @@ def apply_prefix_dict_paths(paths, entries_map=None):
 # ================================================================
 # 核心 4b：前缀字典「应用术语」
 #   · 让前缀去匹配术语字典，命中则替换
-#   · 当前只替换 \tg[...] 里的内容（角色名），控制码参数一律不动
+#   · 只替换名字标签里的内容（角色名）：\tg[...] 与 \xn[...]，
+#     控制码参数一律不动
 # ================================================================
 def scan_prefix_terms():
     """预演「应用术语」，返回 (changes, stats)，不写盘。"""
@@ -2637,8 +2710,8 @@ def scan_prefix_terms():
 
 
 def apply_prefix_terms_paths(paths=None):
-    """
-    把术语表套用到前缀字典（仅 \tg[...] 内容）并落盘；
+    r"""
+    把术语表套用到前缀字典（仅名字标签 \tg[...] / \xn[...] 的内容）并落盘；
     给了 paths 就顺带把前缀重新拼回译文文件。
 
     返回 {"changed": 命中条数, "files": 应用到的文件数, "samples": [...]}
@@ -2651,7 +2724,7 @@ def apply_prefix_terms_paths(paths=None):
     changes, stats = PFD.apply_terms_for_tg()
 
     emit("\n" + "=" * 55)
-    emit("  前缀字典 · 应用术语（只替换 \\tg[...] 里的内容）")
+    emit("  前缀字典 · 应用术语（只替换 \\tg[] / \\xn[] 里的内容）")
     emit("=" * 55)
     emit(f"  字典共 {stats['total']} 条，命中术语 {stats['changed']} 条，"
          f"未命中 {stats['untouched']} 条")
@@ -3002,6 +3075,12 @@ def intl_compile_paths(game_dir, sources, out_path=None, apply_language=True):
         log.error("编译文本失败：%s\n%s", e, traceback.format_exc())
         emit(f"  ✘ 编译失败：{e}")
         return {"ok": False, "error": str(e)}
+    # ★ 只编了地图名（MapInfos.txt → MapInfos.rxdata）时没有语言 .dat 产出，
+    #   这种情况不碰 Settings::LANGUAGES。
+    if apply_language and not (rep.get("outs") or rep.get("out")):
+        if (rep.get("mapinfos") or {}).get("ok"):
+            emit("  （这一批只写了地图名，没有生成语言文件，语言表不动）")
+        apply_language = False
     if apply_language:
         try:
             # ★ 旧版写的是单个语言 .dat（如 Data/Chinese.dat）：语言表里必须
@@ -3037,7 +3116,8 @@ def intl_apply_language(game_dir, display="简体中文", fragment=None, emit=No
 
 
 def script_intl_paths(game_dir, write=False, include_main=True,
-                      include_plugins=True):
+                      include_plugins=True, include_maps=True,
+                      include_dialog=False):
     """
     脚本内文本汉化（方案 B）：把 `_INTL("英文")` 直接换成 `_INTL("中文")`。
 
@@ -3046,6 +3126,10 @@ def script_intl_paths(game_dir, write=False, include_main=True,
     （实测登神 v0.1.1.3：3299 键里 99.2% 来自主脚本）。写回源码不查表。
 
     write=False → 只预览，不动任何文件。
+
+    include_dialog：顺带把语言文件第 0 段（地图对话）的译文写回
+                    `Data/Map*.rxdata` / `CommonEvents.rxdata` 的 101/401/102。
+
     返回 script_intl.run 的报告 dict。
     """
     import script_intl as SI
@@ -3054,14 +3138,17 @@ def script_intl_paths(game_dir, write=False, include_main=True,
     emit("=" * 55)
     try:
         return SI.run(game_dir, write=write, include_main=include_main,
-                      include_plugins=include_plugins, emit=emit)
+                      include_plugins=include_plugins,
+                      include_maps=include_maps,
+                      include_dialog=include_dialog, emit=emit)
     except Exception as e:
         log.error("脚本内文本汉化失败：%s\n%s", e, traceback.format_exc())
         emit(f"  ✘ 失败：{e}")
         return {"ok": False, "error": str(e)}
 
 
-def script_intl_export(game_dir, include_main=True, include_plugins=True):
+def script_intl_export(game_dir, include_main=True, include_plugins=True,
+                       include_maps=True):
     """
     导出「脚本里有、词表里没有」的 `_INTL` 文案 → 游戏根目录
     `Script_texts_missing.txt`（intl 格式，每段两行）。
@@ -3074,7 +3161,8 @@ def script_intl_export(game_dir, include_main=True, include_plugins=True):
     emit("=" * 55)
     try:
         return SI.export_missing(game_dir, include_main=include_main,
-                                 include_plugins=include_plugins, emit=emit)
+                                 include_plugins=include_plugins,
+                                 include_maps=include_maps, emit=emit)
     except Exception as e:
         log.error("导出待补文案失败：%s\n%s", e, traceback.format_exc())
         emit(f"  ✘ 失败：{e}")

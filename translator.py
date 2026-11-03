@@ -57,6 +57,11 @@ SYSTEM_PROMPT_JSONLINE = r"""你是专业游戏本地化译者，负责把游戏
 表内词为词根的派生词、复合词（+s 复数，或 +ite/+ites/+nite/+ium/+Z 等道具、进化石命名）也用同一个译名，再按词义把后缀补成中文。
 例：Altarianite=七夕青鸟进化石 → Altarianites 译作「七夕青鸟进化石」；不要音译成别的词。
 
+【上文参考】
+用户可能给出本批之前的若干句，写成「原文 ⇒ 译文」。它只用来接上指代、说话人、
+语气和时态，让本批译文与前文连贯；上文本身不要翻译、不要输出、不要重复。
+表内没写的译名，若上文已确立某词的译法，本批延用同一个译法。
+
 【输出】
 每行输出一条 JSON，编号与输入一一对应，一个都不能少、不能合并：
 {"id":<编号>,"text":"<译文>"}
@@ -67,7 +72,7 @@ JSON 字符串里的双引号必须转义成 \"；换行必须转义成 \n。
 
 _USER_TEMPLATE_JSONLINE = r"""把下面每条翻译成{tgt}，每行输出一条 JSON，格式：
 {"id":<编号>,"text":"<译文>"}
-{terms_block}输入：
+{terms_block}{context_block}输入：
 {body}
 """
 
@@ -315,6 +320,66 @@ def _format_terms_block(term_pairs, limit=None):
     返回术语表块，或空串。兼容旧名的薄壳，本体见 build_terms_block_string。
     """
     return build_terms_block_string(term_pairs, limit)
+
+
+# ================================================================
+# 上文参考块（本批之前的若干句：原文 ⇒ 译文）
+# ================================================================
+# 单侧最长保留多少字符（超出截断）。游戏台词极少这么长，这条只是防止
+# 个别巨型段落把整批预算吃掉。
+CONTEXT_LINE_MAX = 300
+
+
+def context_lines_count():
+    """上文取几句：config.CONTEXT_LINES（默认 5）；开关关了或 ≤0 → 0。"""
+    if not getattr(config, "CONTEXT_ENABLE", True):
+        return 0
+    try:
+        n = int(getattr(config, "CONTEXT_LINES", 5) or 0)
+    except (TypeError, ValueError):
+        n = 5
+    return n if n > 0 else 0
+
+
+def _one_line(s, limit=CONTEXT_LINE_MAX):
+    """把一句压成单行（真实换行 → 空格），并按 limit 截断。"""
+    s = re.sub(r"\r\n|\r|\n+", " ", str(s or "")).strip()
+    if limit > 0 and len(s) > limit:
+        s = s[:limit].rstrip() + "…"
+    return s
+
+
+def build_context_block_string(ref_pairs, n=None):
+    """
+    ★ 上文参考块的「唯一组装函数」（与 build_terms_block_string 同理：
+      切批算 token 的一侧与真正发请求的一侧调同一个函数，格式不会漂移）。
+
+    ref_pairs: [(原文, 译文或空串), ...]，按文件里出现的顺序（最早的在前）。
+               译文为空 = 这句还没翻出来，只列原文。
+    n        : None 时取 context_lines_count()（含 CONTEXT_ENABLE 开关）。
+
+    返回上文块字符串，或空串（没内容 / 开关关）。
+    """
+    if n is None:
+        n = context_lines_count()
+    if not ref_pairs or n <= 0:
+        return ""
+
+    lines = []
+    for src, dst in ref_pairs[-n:]:          # 只要最近的 n 句
+        s = _one_line(src)
+        if not s:
+            continue
+        d = _one_line(dst)
+        lines.append(f"{s} ⇒ {d}" if d else s)
+    if not lines:
+        return ""
+
+    # 表头短一点：这段每批都要发。放在正文之前，本批紧跟在它后面。
+    head = ("【上文参考·不要翻译】以下是本批之前的若干句，每行是"
+            "「原文 ⇒ 译文」（个别句子还没翻出来就只有原文）。"
+            "只用来接指代、说话人、语气和时态；这些句子不要输出。")
+    return head + "\n" + "\n".join(lines) + "\n\n"
 
 
 # ================================================================
@@ -1216,18 +1281,23 @@ class OllamaClient:
                 text = text.rstrip() + "\n\n" + block.rstrip()
         return text
 
-    def translate_batch(self, items, term_pairs=None, section=None):
+    def translate_batch(self, items, term_pairs=None, section=None,
+                        context_block=None):
         """
         items:      [(idx, safe_text), ...]
         term_pairs: 可选 [(原文, 译文), ...]，作为 prompt 里的术语表
         section:    可选，当前文件的文本类别名（如 "SPECIES_NAMES"）——
                    有 prompts/categories/<SECTION>.txt 就追加到 system 末尾
+        context_block: 可选，【上文参考】块（本批之前的若干句「原文 ⇒ 译文」，
+                   由 build_context_block_string 组装）。放在正文之前，
+                   只作语境参考，不参与本批输出。
         返回:       {idx: translation}
         """
         if not items:
             return {}
 
         terms_block = _format_terms_block(term_pairs)
+        context_block = context_block or ""
 
         # 输出固定 JSON：每行一条 {"id":N,"text":"..."}
         body = "\n".join(
@@ -1236,8 +1306,14 @@ class OllamaClient:
         template = load_template("user_translate_jsonline.txt",
                                  _USER_TEMPLATE_JSONLINE)
 
+        # ★ 向后兼容：用户在 prompts/ 放了**旧版**模板（没有 {context_block}
+        #   占位符）时，把上文块插到正文之前，别让上文静默丢失。
+        if context_block and "{context_block}" not in template:
+            template = template.replace("{body}", "{context_block}{body}")
+
         user_msg = (template
                     .replace("{terms_block}", terms_block)
+                    .replace("{context_block}", context_block)
                     .replace("{tgt}", config.TARGET_LANG)
                     .replace("{body}", body))
 
@@ -1271,11 +1347,12 @@ class OllamaClient:
 # 带重试的封装
 # ================================================================
 def translate_with_retry(client, batch, depth=0,
-                         term_pairs=None, section=None):
+                         term_pairs=None, section=None, context_block=None):
     """
     batch:      [(idx, safe_text), ...]
     term_pairs: 可选 [(原文, 译文), ...]，作为 prompt 里的术语表
     section:    可选，当前文件的文本类别名（透传给 translate_batch）
+    context_block: 可选，【上文参考】块（透传给 translate_batch）
     返回:       {idx: translation}
 
     ★ 重试策略（借鉴 LinguaGacha）：整批失败 → 原样重试 BATCH_RETRIES 次
@@ -1291,6 +1368,7 @@ def translate_with_retry(client, batch, depth=0,
         try:
             return client.translate_batch(
                 batch, term_pairs=term_pairs, section=section,
+                context_block=context_block,
             )
         except Exception as e:
             last_err = e
@@ -1304,10 +1382,13 @@ def translate_with_retry(client, batch, depth=0,
         log.info("整批失败，按 %d 块（每块约 %d 条）缩块重试",
                  parts, size)
         result = {}
+        # ★ 缩块出来的每个小块沿用整批那份 context_block（按整批第一句定位）：
+        #   首块正好；后面的块「上文」少了几句同批内部的邻居，但都是刚失败的
+        #   那批里没落进缓存的内容，下一轮 / 重翻会自动补上，不影响正确性。
         for i in range(0, len(batch), size):
             chunk = batch[i:i + size]
             r = translate_with_retry(client, chunk, depth + 1,
-                                     term_pairs, section)
+                                     term_pairs, section, context_block)
             result.update(r)
         return result
 

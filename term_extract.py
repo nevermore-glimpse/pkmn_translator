@@ -509,6 +509,24 @@ def read_name_cache(path):
     return {str(k): ("" if v is None else str(v)) for k, v in data.items()}
 
 
+def ensure_mapinfos_dir(path):
+    """
+    地图名文本（MapInfos.txt）的中间文件一律进「翻译中间文件」夹。
+
+    ★ 别的名字文件在「整个文件夹一起翻」时由 commands.enter_work_dir 建好
+      那个夹；单文件翻译时没人建，地图名就会把 `MapInfos_cache.json` /
+      `MapInfos_translated_report.txt` 摆在 txt 旁边 —— 与其它文件不一致。
+      这里补建一次（幂等，顺手把以前散在源目录的那几份搬进去）。
+    """
+    try:
+        import map_infos as MI
+        if MI.is_mapinfos_txt(path):
+            return MI.intermediates_dir(path)
+    except Exception as e:                       # noqa: BLE001
+        log.warning("建地图名中间文件夹失败（忽略）：%s", e)
+    return ""
+
+
 def file_records(target, files=None):
     """
     解析名字文件，并把它的**普通翻译缓存**过滤到该文件的候选原文上。
@@ -524,6 +542,8 @@ def file_records(target, files=None):
 
     recs = []
     for p in (files if files is not None else find_names_files(target)):
+        # ★ 地图名文本的缓存 / 报告固定放「翻译中间文件」（见 ensure_mapinfos_dir）
+        ensure_mapinfos_dir(p)
         try:
             info = parse_names_file(p)
         except Exception as e:
@@ -572,6 +592,8 @@ def plan(target, use_cache=True):
     #   旧版也是在这里就把中间文件夹建出来的（不然报告没处放）。
     import commands as C
     if files:
+        for f in files:
+            ensure_mapinfos_dir(f)
         C.enter_work_dir(files)
 
     recs = file_records(target, files)
@@ -679,6 +701,7 @@ def run_extract(target, batch_size=None, progress=None, cancel=None,
        ① 名字类文件只在这里翻（别处已由 is_term_source_file 排除）；
        ② 翻完之后把缓存里的原文与译文并入术语表。
       中间的解析、分批、缓存续翻、整句术语直译、术语注入 prompt、
+      **上文参考（每批附带前 N 句原文⇒译文，见 config.CONTEXT_LINES）**、
       `*_cache.json` / `*_translated.txt` / 检查报告，全部由
       commands._translate_core 原样产出，这里一处都不重写。
 

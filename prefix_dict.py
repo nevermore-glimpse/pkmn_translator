@@ -17,9 +17,15 @@ log = get_logger("prefix_dict")
 # 存储位置：与 term_dict.py 同目录
 DICT_FILE = os.path.join(config.BASE_DIR, "prefix_dict.json")
 
-# ★「应用术语」目前只处理说话人标签 \tg[...] 里的内容
-#   （三段：\tg[ / 内容 / ]），内容段才是可替换的角色名
-TG_RE = re.compile(r'(\\tg\[)([^\]]*)(\])')
+# ★「应用术语」处理的是「名字标签」里的内容：\tg[...] 与 \xn[...]
+#   （三段：\tg[ / 内容 / ]），内容段才是可替换的角色名。
+#   ★ \xn[] 是 setTextMode("\\ml[名字]\\xn[名字]") 那种写法里的名字框，
+#     内容同样是给玩家看的角色名 —— 只替换 \tg[] 的话，用 \xn[] 的游戏
+#     （如 宝可梦重聚 / Edge Rising）永远命不中。
+NAME_TAG_RE = re.compile(r'(\\(?:tg|xn)\[)([^\]]*)(\])')
+
+# 兼容旧名字（以前只有 \tg[]，外部若按 TG_RE 引用也能用）
+TG_RE = NAME_TAG_RE
 
 # 全局内存缓存
 _entries = {}     # {前缀原文: 前缀译文}  空串表示待翻译
@@ -171,15 +177,17 @@ def _terms_hit_in(text):
 
 def substitute_tg_terms(prefix):
     r"""
-    只把前缀里 \tg[...] 的内部文字按术语表替换（其余部分原样保留）。
+    只把前缀里名字标签（\tg[...] / \xn[...]）的内部文字按术语表替换
+    （其余部分原样保留）。
 
     例：\w[speech hgss 3]\tg[Owen] → \w[speech hgss 3]\tg[欧文]
+        \ml[Lilith]\xn[Lilith]     → \ml[Lilith]\xn[莉莉丝]
     没命中任何术语时原样返回。
 
-    ★ 目前「应用术语」的作用范围就限定在 \tg[]，避免误伤
-      \w[speech hgss 3] 之类必须保持英文的控制码参数。
+    ★ 「应用术语」的作用范围就限定在这两种名字标签，避免误伤
+      \w[speech hgss 3] / \ml[none] 之类必须保持原样的控制码参数。
     """
-    if not prefix or "\\tg[" not in prefix:
+    if not prefix or not NAME_TAG_RE.search(prefix):
         return prefix
     try:
         def _repl(m):
@@ -189,18 +197,22 @@ def substitute_tg_terms(prefix):
             new_inner = _apply_terms_to_text(inner)
             return m.group(1) + new_inner + m.group(3)
 
-        return TG_RE.sub(_repl, prefix)
+        return NAME_TAG_RE.sub(_repl, prefix)
     except Exception as e:
-        log.warning("前缀 \\tg[] 术语替换失败（已回退）：%s", e)
+        log.warning("前缀名字标签（\\tg[] / \\xn[]）术语替换失败（已回退）：%s",
+                    e)
         return prefix
 
 
 def tg_terms_of(prefix):
-    r"""列出前缀中 \tg[...] 内部命中的术语 [(原文, 译文), ...]（已去重）。"""
-    if not prefix or "\\tg[" not in prefix:
+    r"""
+    列出前缀中名字标签（\tg[...] / \xn[...]）内部命中的术语
+    [(原文, 译文), ...]（已去重）。
+    """
+    if not prefix or not NAME_TAG_RE.search(prefix):
         return []
     out, seen = [], set()
-    for m in TG_RE.finditer(prefix):
+    for m in NAME_TAG_RE.finditer(prefix):
         for src, dst in _terms_hit_in(m.group(2)):
             key = (src or "").lower()
             if key in seen:
@@ -214,7 +226,7 @@ def scan_terms_for_tg():
     r"""
     扫描整本前缀字典，预演「应用术语」的结果（不写盘）。
 
-    只对「当前生效文本」里 \tg[] 的内容做术语替换：
+    只对「当前生效文本」里名字标签（\tg[] / \xn[]）的内容做术语替换：
       · 已有译文 → 在译文基础上替换（保留用户其它手工改动）
       · 译文为空 → 在原文基础上替换
 
@@ -244,7 +256,8 @@ def scan_terms_for_tg():
 
 def apply_terms_for_tg():
     r"""
-    把术语表套用到前缀字典并落盘（只替换 \tg[...] 的内容）。
+    把术语表套用到前缀字典并落盘（只替换名字标签 \tg[...] / \xn[...]
+    的内容）。
     返回 (changes, stats)，与 scan_terms_for_tg() 结构一致。
     """
     changes, stats = scan_terms_for_tg()
