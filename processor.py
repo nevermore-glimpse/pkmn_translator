@@ -14,7 +14,7 @@ import os
 import re
 
 import config
-from logger import get_logger
+from logger import get_logger, log_once
 
 log = get_logger("processor")
 
@@ -111,7 +111,9 @@ def set_extra_ctrl_patterns(patterns):
     )
     for r in (CTRL_RE, ALL_CTRL_RE, _CTRL_FOR_REWRAP):
         r.rebuild()
-    log.info("文本保护规则生效：额外模式 %d 条", len(good))
+    # ★ 每批翻译前都会重装一次规则，同样的结果没必要刷满日志
+    log_once(("ctrl_rules", len(good)), "文本保护规则生效：额外模式 %d 条",
+             len(good), logger=log)
 
 # ④ 方括号标签
 _TAG_PAT   = r'\[[^\]]*\]'
@@ -1370,10 +1372,16 @@ def load_terms(force=False):
     _load_term_sections()
 
     _check_case_conflicts(good)
-    log.info("术语表加载：%d 条（单词 %d / 多词 %d，跳过短词 %d 条）",
-             len(_TERMS), len(_TERM_SINGLE), len(_TERM_MULTI), skipped_short)
-    log.info("整句术语匹配表：%d 条（含自动提取术语 %d 条）",
-             len(_TERM_WHOLE), len(auto_keys))
+    # ★ 术语表每次 load_terms 都会重读（翻译每批都可能触发），
+    #   条目数没变就是同一件事，只提示一次。
+    log_once(("term_loaded", len(_TERMS), len(_TERM_SINGLE),
+              len(_TERM_MULTI)),
+             "术语表加载：%d 条（单词 %d / 多词 %d，跳过短词 %d 条）",
+             len(_TERMS), len(_TERM_SINGLE), len(_TERM_MULTI), skipped_short,
+             logger=log)
+    log_once(("term_whole", len(_TERM_WHOLE), len(auto_keys)),
+             "整句术语匹配表：%d 条（含自动提取术语 %d 条）",
+             len(_TERM_WHOLE), len(auto_keys), logger=log)
 
 
 # ----------------------------------------------------------------

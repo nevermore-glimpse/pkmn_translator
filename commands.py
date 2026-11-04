@@ -26,7 +26,7 @@ import restoration as RESTORE
 import settings
 import translator as T
 from cache import Cache, atomic_replace, load_edits
-from logger import get_logger
+from logger import get_logger, log_once, reset_once
 from translator import (OllamaClient, resolve_concurrency,
                         translate_with_retry)
 
@@ -42,6 +42,26 @@ _TERM_MERGE_LOCK = threading.Lock()
 def emit(*args, **kwargs):
     """统一输出：GUI 接管后写入日志页，命令行下就是 print。"""
     bridge.emit(*args, **kwargs)
+
+
+# ★ 「同一段提示一次运行只输出一遍」的去重表（与 logger.log_once 同理，
+#   但这里管的是 emit 到界面 / 日志页的那一路）。
+_EMIT_ONCE = set()
+
+
+def emit_once(key, text):
+    """
+    同一条界面提示只输出一次（key 相同即视为同一条）。
+
+    ★ 用在「每个文件都会打、内容还一模一样」的收尾提示上，例如
+      「前缀字典共 N 条，待翻译 N 条」—— 一次翻 20 个文件就刷 20 遍。
+    ★ 用 `reset_once()` 一起清空，下一轮翻译又能看到一次。
+    """
+    if key in _EMIT_ONCE:
+        return False
+    _EMIT_ONCE.add(key)
+    emit(text)
+    return True
 
 
 # ================================================================
@@ -1421,7 +1441,11 @@ def _translate_batch(client, batch_texts, cache,
         #   —— 能证明安全的才修，修不了的留给下面的控制码检测。
         raw, restore_notes = RESTORE.safe_restore(raw, src_body)
         for note in restore_notes:
-            log.info("[批 %d][%d] 安全恢复：%s", bi, k, note)
+            # ★ 每句都可能触发同一种恢复，逐句打会把日志刷满；
+            #   按「恢复类别」去重，同类这次只提示一次。
+            log_once(("safe_restore", str(note).split("（")[0]),
+                     "[批 %d][%d] 安全恢复：%s（同类提示本次只显示一次）",
+                     bi, k, note, logger=log)
 
         # ★ 译文里控制码是否齐全：由下面的 repair_missing_controls 按原文
         #   补回，并由检查报告的「符号不匹配 / 译文残留控制码」兜底。
@@ -1550,7 +1574,8 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
     #   整句术语直译与多译文投送都按它定向
     sec = _file_section(src_path)
     if sec:
-        log.info("文件 section：%s", sec)
+        # ★ 一次翻译几十个同类别文件时这行会重复几十遍，按 section 去重
+        log_once(("file_section", sec), "文件 section：%s", sec, logger=log)
 
     if show_header:
         emit(f"\n{'=' * 55}")
@@ -1980,9 +2005,12 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
             import prefix_dict as PFD
             s = PFD.stats()
             if s["pending"]:
-                emit(f"\n[前缀字典] 共 {s['total']} 条，"
-                     f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条")
-                emit("  请到菜单 5「前缀字典」补全译文后应用")
+                # ★ 一次翻译多个文件时这段会重复十几遍，同样的数字只提示一次
+                emit_once(("prefix_stat", s["total"], s["done"],
+                           s["pending"]),
+                          f"\n[前缀字典] 共 {s['total']} 条，"
+                          f"已翻译 {s['done']} 条，待翻译 {s['pending']} 条"
+                          f"\n  请到菜单 5「前缀字典」补全译文后应用")
         except Exception as e:
             log.debug("前缀字典统计失败：%s", e)
 
@@ -2127,7 +2155,8 @@ def _update_snapshot():
         current_terms = TS.load_current_terms()
         if current_terms:
             TS.save_snapshot(current_terms)
-            log.info("术语表快照已更新：%d 条", len(current_terms))
+            log_once(("term_snapshot", len(current_terms)),
+                     "术语表快照已更新：%d 条", len(current_terms), logger=log)
     except Exception as e:
         log.warning("建立术语表快照失败：%s", e)
 
@@ -2195,6 +2224,11 @@ def translate_paths(paths, src_lang=None, tgt_lang=None, model=None):
     """
     _apply_lang_model(src_lang, tgt_lang, model)
     _announce_work_dir(paths)          # 整个文件夹 → 中间文件另存
+
+    # ★ 每轮翻译开始重置「只提示一次」的去重表：上一轮的提示不该挡这一轮，
+    #   同一轮里几千句重复的提示只出一条。
+    reset_once()
+    _EMIT_ONCE.clear()
 
     paths, _skipped = _drop_names_files(paths, "翻译")
 
@@ -2602,8 +2636,10 @@ def _rename_conflict_keys(renames):
 # ================================================================
 def apply_prefix_dict_paths(paths, entries_map=None):
     """
-    不调用模型：用前缀字典重新拼接缓存译文并回写输出文件。
+    不调用模型：用前缀字典重新拼接缓存译文，**同时回写缓存与输出文件**。
     entries_map: 可选的 {前缀: 译文}，先写入字典再应用。
+
+    返回 {"files": 处理的文件数, "cached": 回写进缓存的条数}
     """
     import prefix_dict as PFD
 
@@ -2621,8 +2657,22 @@ def apply_prefix_dict_paths(paths, entries_map=None):
     s = PFD.stats()
     emit(f"当前字典：共 {s['total']} 条，已翻译 {s['done']} 条，"
          f"待翻译 {s['pending']} 条")
+    # ★ 前缀译文的控制码应与原文一致（只该改括号里的名字）。
+    #   手滑把 `\b` 打成 `\r` 这类错误会让译文显示效果变化，这里提示一次。
+    try:
+        bad = PFD.ctrl_mismatches()
+    except Exception:                       # noqa: BLE001
+        bad = []
+    if bad:
+        emit(f"  ⚠ 有 {len(bad)} 条前缀的控制码与原文不一致，"
+             f"译文可能显示异常（到「前缀字典」页核对）：")
+        for _src, _dst, _d in bad[:3]:
+            emit(f"      {_src}  →  {_dst}   （{_d}）")
+        if len(bad) > 3:
+            emit(f"      … 其余 {len(bad) - 3} 条省略")
 
     done = 0
+    cache_written = 0
     for i, path in enumerate(paths, 1):
         if bridge.cancelled():
             break
@@ -2653,7 +2703,8 @@ def apply_prefix_dict_paths(paths, entries_map=None):
         cache = Cache(config.Runtime.cache_file)
 
         translations = {}
-        hit_prefix = miss_prefix = no_prefix = 0
+        cache_updates = {}
+        hit_prefix = miss_prefix = no_prefix = unknown_prefix = 0
 
         for _, src in entries:
             prefix, body = PR.split_prefix(src)
@@ -2664,6 +2715,14 @@ def apply_prefix_dict_paths(paths, entries_map=None):
 
             cached_final = cache.get(src)
             if not cached_final:
+                continue
+
+            # ★ 字典里压根没有这个前缀（也没登记它的更短前缀）→ 整条不动。
+            #   否则 apply_prefix 会退回「原文前缀」，把缓存里已经翻好的
+            #   `\xn[雅恩德尔]\r` 又打回英文 `\xn[Yahn Deer]\r`。
+            if not PFD.is_known(prefix):
+                translations[src] = cached_final
+                unknown_prefix += 1
                 continue
 
             new_prefix = PFD.apply_prefix(prefix)
@@ -2678,6 +2737,12 @@ def apply_prefix_dict_paths(paths, entries_map=None):
             new_final = new_prefix + body_final
             if new_final != cached_final:
                 translations[src] = new_final
+                # ★ 拼好的整行必须回写缓存：缓存里存的就是「前缀 + 正文」
+                #   （翻译时 commands._translate_batch 也是这么写的）。
+                #   以前这里只改译文文件、不碰缓存 —— 于是后续任何读缓存的
+                #   步骤（换行重排 / 重翻 / 再来一次本功能）拿到的都是旧前缀，
+                #   看上去就是「应用了前缀字典，但缓存里的 \tg[]/\xn[] 没变」。
+                cache_updates[src] = new_final
                 hit_prefix += 1
             else:
                 translations[src] = cached_final
@@ -2687,13 +2752,23 @@ def apply_prefix_dict_paths(paths, entries_map=None):
             lines, entries, translations,
             config.Runtime.output_file, newline, config.OUTPUT_ENCODING,
         )
+        if cache_updates:
+            try:
+                for _k, _v in cache_updates.items():
+                    cache.put(_k, _v)
+                cache.save(force=True)
+                cache_written += len(cache_updates)
+            except Exception as e:
+                emit(f"  ⚠ 前缀已写进译文文件，但回写缓存失败：{e}")
         emit(f"  [{os.path.basename(src_path)}] 替换 {replaced}/{len(entries)} 条"
-             f"  前缀生效 {hit_prefix}  未译 {miss_prefix}  无前缀 {no_prefix}")
+             f"  前缀生效 {hit_prefix}  未译 {miss_prefix}  无前缀 {no_prefix}"
+             + (f"  字典未登记 {unknown_prefix}" if unknown_prefix else "")
+             + f"  回写缓存 {len(cache_updates)} 条")
         done += 1
 
     bridge.progress(len(paths), len(paths), "完成")
-    log.info("应用前缀字典完成：%d 个文件", done)
-    return {"files": done}
+    log.info("应用前缀字典完成：%d 个文件，回写缓存 %d 条", done, cache_written)
+    return {"files": done, "cached": cache_written}
 
 
 # ================================================================
@@ -2743,16 +2818,19 @@ def apply_prefix_terms_paths(paths=None):
         return {"changed": 0, "files": 0, "samples": []}
 
     files = 0
+    cached = 0
     if paths:
         r = apply_prefix_dict_paths(paths)
         files = (r or {}).get("files", 0)
+        cached = (r or {}).get("cached", 0)
     else:
         emit("  （未选择文件，只更新前缀字典；"
              "选好文件后再点一次即可写回译文）")
 
-    log.info("前缀字典应用术语：命中 %d 条，应用文件 %d 个",
-             len(changes), files)
-    return {"changed": len(changes), "files": files, "samples": samples}
+    log.info("前缀字典应用术语：命中 %d 条，应用文件 %d 个，回写缓存 %d 条",
+             len(changes), files, cached)
+    return {"changed": len(changes), "files": files, "samples": samples,
+            "cached": cached}
 
 
 # ================================================================

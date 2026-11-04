@@ -117,6 +117,32 @@ def _stem(path):
 
 
 # ================================================================
+# ★ 已经手工编辑过的条目：不再当作「问题」导出
+# ================================================================
+def edited_keys_of(src_path):
+    """
+    该源文件**已手工编辑过**的原文集合（读 `<缓存>_cache_edited.json`）。
+
+    ★ 来源：报告里双击改句（`Cache.save_edit`）、导入已翻问题句子、
+      术语检查报告「应用修改」写进缓存的那些条目。
+    ★ 这些是用户自己改好的，导出成「问题」再交给别人改等于让人白改一遍，
+      所以导出时统一跳过。
+    ★ 读不到（没编辑过 / 缓存搬走了）一律返回空集合，绝不让导出挂掉。
+    """
+    src = str(src_path or "").strip()
+    if not src:
+        return set()
+    try:
+        import commands as C
+        from cache import load_edits
+        data = load_edits(C._edited_path_for(src))
+        return {str(k).strip() for k in data if str(k).strip()}
+    except Exception as e:                  # noqa: BLE001
+        log.debug("读手工编辑记录失败（按空处理）：%s：%s", src, e)
+        return set()
+
+
+# ================================================================
 # ★ 命中术语（导出问题句子时附带，供人工/外部翻译参考）
 # ================================================================
 def hit_terms_for(src_text, section=None):
@@ -233,11 +259,17 @@ def export_terms(target, hits):
     out_dir = problem_dir(target)
     files = []
     count = 0
+    skipped_edited = 0
     for path, hs in groups.items():
+        skip = edited_keys_of(path)
         items = {}
         for h in hs:
             src = str(h.get("src") or "").strip()
             if not src:
+                continue
+            # ★ 已经手工改过的译名不再当问题导出
+            if src in skip:
+                skipped_edited += 1
                 continue
             items.setdefault(src, str(h.get("dst") or ""))
         if not items:
@@ -254,9 +286,10 @@ def export_terms(target, hits):
         files.append(out)
         count += len(items)
 
-    log.info("导出问题术语：%d 条 / %d 个文件 → %s", count, len(files), out_dir)
+    log.info("导出问题术语：%d 条 / %d 个文件 → %s（跳过已编辑 %d 条）",
+             count, len(files), out_dir, skipped_edited)
     return {"dir": out_dir, "files": files, "count": count,
-            "groups": len(files)}
+            "groups": len(files), "edited": skipped_edited}
 
 
 def import_terms(basis):
@@ -353,13 +386,18 @@ def export_sentences(basis, items):
       与翻译时注入 prompt 的术语表同一口径，供外部/人工翻这些句子时参考。
       只作参考，导入时忽略（写回只看 items）。
 
-    返回 {"dir", "files", "count", "groups", "terms"}
+    返回 {"dir", "files", "count", "groups", "terms", "edited"}
     """
     import commands as C
 
     groups = {}
+    skipped_edited = 0
     for report_path, h in (items or []):
         if not isinstance(h, dict) or not h.get("src"):
+            continue
+        # ★ 「已编辑」本来就不是问题（手工改过的句子），不导出
+        if str(h.get("kind") or "") in C.MANUAL_KINDS:
+            skipped_edited += 1
             continue
         src = C.source_path_for_report(report_path) or ""
         key = src or str(report_path or "")
@@ -371,7 +409,9 @@ def export_sentences(basis, items):
     out_dir = problem_dir(_basis_path(basis))
     files, count, n_terms = [], 0, 0
     for src, g in groups.items():
-        its = {k: v for k, v in g["items"].items() if k}
+        skip = edited_keys_of(src)
+        its = {k: v for k, v in g["items"].items() if k and k not in skip}
+        skipped_edited += len(g["items"]) - len(its)
         if not its:
             continue
         # 命中术语按句子算（同一文件的 section 判一次就够）
@@ -398,10 +438,12 @@ def export_sentences(basis, items):
         files.append(out)
         count += len(its)
 
-    log.info("导出问题句子：%d 条 / %d 个文件（附带命中术语 %d 条）→ %s",
-             count, len(files), n_terms, out_dir)
+    log.info("导出问题句子：%d 条 / %d 个文件（附带命中术语 %d 条，"
+             "跳过已编辑 %d 条）→ %s",
+             count, len(files), n_terms, skipped_edited, out_dir)
     return {"dir": out_dir, "files": files, "count": count,
-            "groups": len(files), "terms": n_terms}
+            "groups": len(files), "terms": n_terms,
+            "edited": skipped_edited}
 
 
 def _section_of(src_path):

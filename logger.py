@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sys
+import threading
 from datetime import datetime, timedelta
 
 import config
@@ -23,6 +24,10 @@ _LOG_DIR = os.path.join(config.BASE_DIR, "logs")
 _INITIALIZED = False
 _emit_logger = None     # cmd / 界面输出专用：只写文件，不回灌控制台
 _gui_sink = None        # GUI「运行日志」页回调
+
+# ★ 「只提示一次」的日志去重表：key → 出现次数
+_ONCE_LOCK = threading.Lock()
+_ONCE_SEEN = {}
 
 # 保留最近 N 天的日志
 LOG_KEEP_DAYS = 3
@@ -160,6 +165,65 @@ def log_cmd(text):
                 el.info(line)
     except Exception:
         pass
+
+
+def log_once(key, msg, *args, level=logging.INFO, logger=None):
+    """
+    同一条提示**只写一次**，后面的重复只计数（不写盘、不刷屏）。
+
+    用在「每句 / 每批都会触发、但内容一样」的提示上，例如
+    「剥掉译文开头残留的旧前缀」「安全恢复：省略号形态跟随原文」——
+    一个文件几千句就会刷出几千行，把真正有用的信息埋掉。
+
+    key    —— 去重键（同一 key 只出一条）；建议用 ("类别", 细分) 的元组
+    msg    —— 标准 logging 格式串，args 照旧
+    level  —— 默认 INFO，可传 logging.WARNING
+    logger —— 不传就用按调用模块名推断的 logger
+
+    返回 True 表示这次真的写下去了（没写过），False 表示被去重。
+    想看总共出现过多少次，用 once_count(key)；想重新开始计数用 reset_once()。
+    """
+    logger = logger or _caller_logger()
+    with _ONCE_LOCK:
+        n = _ONCE_SEEN.get(key, 0)
+        _ONCE_SEEN[key] = n + 1
+    if n:
+        return False
+    try:
+        logger.log(level, msg, *args)
+    except Exception:
+        pass
+    return True
+
+
+def _caller_logger():
+    """按调用方的模块名取 logger（log_once 不想强制传 logger 参数）。"""
+    try:
+        name = sys._getframe(2).f_globals.get("__name__", "main")
+    except Exception:
+        name = "main"
+    return get_logger(name)
+
+
+def once_count(key):
+    """某个 key 被触发过多少次（含被去重掉的那些）。"""
+    with _ONCE_LOCK:
+        return _ONCE_SEEN.get(key, 0)
+
+
+def reset_once(prefix=None):
+    """
+    清空去重计数。给长期运行的界面用：一轮翻译开始前重置，
+    下一轮又能看到一次提示。prefix 给定时只清「key 的第一段等于它」的那些。
+    """
+    with _ONCE_LOCK:
+        if prefix is None:
+            _ONCE_SEEN.clear()
+            return
+        for k in list(_ONCE_SEEN):
+            head = k[0] if isinstance(k, tuple) and k else k
+            if head == prefix:
+                _ONCE_SEEN.pop(k, None)
 
 
 class _GuiHandler(logging.Handler):

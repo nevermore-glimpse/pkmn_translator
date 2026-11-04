@@ -59,6 +59,13 @@ DEBUG_LINE = "$DEBUG=true"
 _MAIN_FUNC_RE = re.compile(r"^([ \t]*)def\s+mainFunction\b", re.M)
 _PB_CALL_TITLE_RE = re.compile(r"^([ \t]*)def\s+pbCallTitle\b", re.M)
 
+# ★ 方式①（通用）顺手改的一处：`pbCallTitle` 里 `return Scene_DebugIntro.new if $DEBUG`
+#   会先跳到「调试开场画面」，要点一下才进标题。改成 Scene_Intro 就直接进正常标题。
+#   ★ 只改 pbCallTitle **函数体内部**（见 _function_body_span），
+#     不会碰别的场景类（比如真正的 Scene_DebugIntro 定义）。
+_DEBUG_INTRO_RE = re.compile(r"\bScene_DebugIntro\s*\.\s*new\b")
+_INTRO_REPLACEMENT = "Scene_Intro.new"
+
 # ★ Ruby 的「块注释」= `=begin` … `=end`：两个标记都必须**顶格**（第 0 列），
 #   中间整段不参与语法解析。有作者会把**废弃的旧 `def mainFunction`** 原样
 #   留在 `=begin` 里（如 999_Main.rb 里 Jos 2023-03-20 那次改动），直接
@@ -256,26 +263,69 @@ def find_main_source(game_dir):
 
 
 def patch_pb_call_title(text):
-    """
-    在 `def pbCallTitle` 的**第一行**插入 `$DEBUG=true`。
-    返回 (新文本, {"added": bool, "existed": bool})；找不到 pbCallTitle 抛 ValueError。
+    r"""
+    在 `def pbCallTitle` 的**第一行**插入 `$DEBUG=true`；
+    并把函数体里的 `Scene_DebugIntro.new` 改成 `Scene_Intro.new`
+    （开了调试也别卡在调试开场画面上，直接从正常标题进）。
+
+    返回 (新文本, {"added": bool, "existed": bool, "intro": 改了几处})；
+    找不到 pbCallTitle 抛 ValueError。
 
     ★ 定位的是**不在 `=begin`/`=end` 里**的那个定义（真正生效的那个）；
       所有定义都在块注释里 → 同样抛 ValueError（上层会如实报「没找到」）。
+    ★ 改 Scene_DebugIntro 只在 pbCallTitle 的函数体里动手，
+      别的地方（比如游戏自己定义的 Scene_DebugIntro 类）一个字不碰。
     """
     m = _search_outside_comment(_PB_CALL_TITLE_RE, text)
     if not m:
         raise ValueError("脚本里没有 `def pbCallTitle`（Main 脚本不对？）")
     lines = text.split("\n")
     i = _line_index(text, m.start())
-    # 已经写过了 → 不动（幂等）
+
+    # ---- ① 函数体里换掉调试开场画面 ----
+    intro = 0
+    lo, hi = _function_body_span(lines, i)
+    for j in range(lo, hi):
+        if _DEBUG_INTRO_RE.search(lines[j]):
+            new_line, n = _DEBUG_INTRO_RE.subn(_INTRO_REPLACEMENT, lines[j])
+            if n:
+                lines[j] = new_line
+                intro += n
+
+    # ---- ② 第一行插 $DEBUG=true ----
+    # 已经写过了 → 不再插（幂等）；但上面那处照样改
     for j in range(i, min(i + 4, len(lines))):
         if _DEBUG_SET_RE.search(lines[j]):
-            return text, {"added": False, "existed": True}
+            return "\n".join(lines), {"added": False, "existed": True,
+                                      "intro": intro}
     indent = m.group(1) or ""
     eol = _eol_of(lines[i])
     new_lines = _insert_after(lines, i, [indent + "  " + DEBUG_LINE], eol)
-    return "\n".join(new_lines), {"added": True, "existed": False}
+    return "\n".join(new_lines), {"added": True, "existed": False,
+                                  "intro": intro}
+
+
+def _function_body_span(lines, def_idx):
+    """
+    `def` 所在行 → 函数体的行区间 [lo, hi)（不含 def 行，只含缩进更深的行）。
+
+    ★ 判据只看缩进：从 def 的下一行开始，遇到「缩进 <= def 的缩进」且不是
+      空行的行就停。Ruby 的函数体必然缩进更深，够用且不依赖 end 配对
+      （同名 `end` 在嵌套 if 里会出现好几次，按 end 配平反而容易算错）。
+    """
+    base = len(lines[def_idx]) - len(lines[def_idx].lstrip())
+    lo = def_idx + 1
+    hi = lo
+    for j in range(lo, min(len(lines), lo + 200)):
+        raw = lines[j]
+        if not raw.strip():
+            hi = j + 1
+            continue
+        ind = len(raw) - len(raw.lstrip())
+        if ind <= base:
+            break
+        hi = j + 1
+    return lo, hi
 
 
 def patch_main_function(text):
@@ -964,9 +1014,10 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
             where = _where(src)
             rec = {"mode": src["mode"], "where": str(src["key"]),
                    "added": info["added"], "existed": info["existed"],
+                   "intro": info.get("intro", 0),
                    "fn": fn_name, "written": False}
             rep["debug"]["targets"].append(rec)
-            if not info["added"]:
+            if not info["added"] and not rec["intro"]:
                 say(f"[DEBUG] · {where} 的 {fn_name} 里已经有 {DEBUG_LINE}，"
                     "跳过")
                 continue
@@ -980,7 +1031,14 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
             _note_backup(rep, bak)
             rep["changed"] = True
             rec["written"] = True
-            say(f"[DEBUG] ✔ 已在 {fn_name} 第一行写入 {DEBUG_LINE}（{where}）")
+            if info["added"]:
+                say(f"[DEBUG] ✔ 已在 {fn_name} 第一行写入 {DEBUG_LINE}"
+                    f"（{where}）")
+            else:
+                say(f"[DEBUG] · {where} 的 {fn_name} 里已经有 {DEBUG_LINE}")
+            if rec["intro"]:
+                say(f"[DEBUG] ✔ {fn_name} 里的 Scene_DebugIntro.new 已换成 "
+                    f"Scene_Intro.new（{rec['intro']} 处），直接从正常标题进")
 
     # ---------- ③ 清掉「反调试」（Scene_Map 里把 $DEBUG 摁死那一段） ----------
     ad_srcs = find_antidebug_sources(game_dir)

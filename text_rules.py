@@ -33,7 +33,7 @@ import json
 import os
 
 import config
-from logger import get_logger
+from logger import get_logger, log_once
 
 log = get_logger("text_rules")
 
@@ -143,10 +143,13 @@ def apply(m=None, force=True):
     pats = active_patterns(m)
     PR.set_extra_ctrl_patterns(pats)
     if pats:
-        log.info("文本保护规则：模式 %s，%d 条生效（%s）",
-                 m or mode(), len(pats), "、".join(file_list(m)))
+        log_once(("tp_mode", m or mode(), len(pats)),
+                 "文本保护规则：模式 %s，%d 条生效（%s）",
+                 m or mode(), len(pats), "、".join(file_list(m)), logger=log)
     else:
-        log.info("文本保护规则：模式 %s，未启用额外规则", m or mode())
+        log_once(("tp_mode", m or mode(), 0),
+                 "文本保护规则：模式 %s，未启用额外规则",
+                 m or mode(), logger=log)
     return len(pats)
 
 

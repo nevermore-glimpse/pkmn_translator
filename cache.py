@@ -78,6 +78,42 @@ def load_edits(path=None):
         return {}
 
 
+def record_edits(pairs, cache_path=None):
+    """
+    把 {原文: 译文} **合并**进手工编辑记录（<缓存名>_edited.json）。
+
+    ★ 与 Cache.save_edit 的区别：那个按当前 Runtime 粘一条，这里按指定缓存
+      批量合并（术语检查报告「应用修改」改的是名字文件的缓存，一个文件一份）。
+    ★ 记录用途：报告里归入「已编辑」、导出问题条目时跳过 —— 用户自己改过的
+      不该再被当成问题交出去。
+    返回实际新增/改动的条数。
+    """
+    if not pairs:
+        return 0
+    base = (cache_path or getattr(config.Runtime, "cache_file", "")
+            or config.CACHE_FILE)
+    p = os.path.splitext(base)[0] + "_edited.json"
+    data = load_edits(p)
+    n = 0
+    for k, v in pairs.items():
+        key = str(k or "").strip()
+        if not key:
+            continue
+        val = "" if v is None else str(v)
+        if data.get(key) != val:
+            data[key] = val
+            n += 1
+    if not n:
+        return 0
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_replace(tmp, p)
+    log.info("手工编辑记录已合并：%s（%d 条）", p, n)
+    return n
+
+
 class Cache:
     def __init__(self, path, save_every=None):
         self.path = path

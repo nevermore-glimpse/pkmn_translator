@@ -144,6 +144,8 @@ MENU_KEYS = {
 #   统一从「游戏汉化」页点进去（进去后顶部会出现「← 返回游戏汉化」）。
 #   (页面键, 名称, 一句话说明)
 HANHUA_SUBMENUS = [
+    ("excel", "术语字典 / Excel 转换",
+     "翻译前先决定是否删除上一次翻译自动提取的术语。"),
     ("termextract", "术语提取",
      "从游戏文本里读名字文件（宝可梦/招式/道具/特性/属性/地图…），"
      "交给模型翻好后写进术语表。"),
@@ -152,29 +154,28 @@ HANHUA_SUBMENUS = [
      "改译名不走模型；「术语重翻」删缓存重翻会调用模型。"),
     ("translate", "翻译",
      "选好文件，把原文翻成目标语言，生成译文与检查报告。"),
-    ("report", "重翻检查报告",
-     "按问题类型筛选，把有问题的句子重新翻一遍。"),
     ("terms", "术语更新后重翻",
      "术语表改过之后，只重翻已勾选术语相关的句子（新增/修改/删除自动勾选）。"),
+    ("report", "重翻检查报告",
+     "按问题类型筛选，把有问题的句子重新翻一遍。"),
     ("prefix", "前缀字典",
      "按前缀批量替换 / 校对译文。"),
     ("reflow", "换行重排",
      "把游戏里过长的一行重新断行。"),
-    ("excel", "术语字典 / Excel 转换",
-     "首页是术语字典：查看并编辑术语字典，也可切到 Excel 导进术语。"),
 ]
 
-# ★ 「游戏汉化」页右侧的翻译流程说明（原文照抄，不要改写 / 不要另加序号）。
-#   注意第六步里的 "\t" 是普通反斜杠 + t，不是制表符，必须写成 "\\tg[]"。
+# ★ 「游戏汉化」页右侧的翻译流程说明：**顺序与 HANHUA_SUBMENUS 一一对应**，
+#   改子菜单顺序时这里要一起改。
+#   注意第七步里的 "\t" 是普通反斜杠 + t，不是制表符，必须写成 "\\tg[]"。
 HANHUA_FLOW_STEPS = [
-    "第一步：术语提取，所有要翻译的文件先走术语提取",
-    "第二步：术语检查，检查术语是否遗漏或错翻并直接改译文",
-    "第三步：翻译，翻译非术语文件",
-    "第四步：重翻检查报告，修正有问题的句子",
-    "第五步：检查术语，看是否要更新术语并修正相关句子",
-    "第六步：查看前缀字典，只翻译\\\\tg[]里的",
-    "第七步：换行重排，重新设置句子的换行",
-    "第八步：翻译全部完成后，在8.术语字典里删除自动提取术语",
+    "第一步：术语字典，翻译前先决定是否删除上一次翻译自动提取的术语",
+    "第二步：术语提取，所有要翻译的文件先走术语提取",
+    "第三步：术语检查，检查术语是否遗漏或错翻并直接改译文",
+    "第四步：翻译，翻译非术语文件",
+    "第五步：术语更新后重翻，术语改过了就只重翻相关句子",
+    "第六步：重翻检查报告，修正有问题的句子",
+    "第七步：查看前缀字典，只翻译\\tg[]里的",
+    "第八步：换行重排，重新设置句子的换行",
 ]
 
 # ★ 「翻译流程」说明的字号（手动调整就改这两个数字，单位 pt）。
@@ -4905,14 +4906,19 @@ class App:
                                                     if errs else "未知原因"),
                             fg=ERR_COLOR)
                 elif kind == "prefix_done":
-                    messagebox.showinfo("完成",
-                                        "前缀字典已写入并应用到翻译文件")
+                    r = payload or {}
+                    messagebox.showinfo(
+                        "完成",
+                        f"前缀字典已写入并应用到翻译文件\n"
+                        f"处理文件：{r.get('files', 0)} 个\n"
+                        f"回写缓存：{r.get('cached', 0)} 条")
                 elif kind == "prefix_terms_done":
                     r = payload or {}
                     messagebox.showinfo(
                         "应用术语完成",
                         f"前缀命中术语并替换：{r.get('changed', 0)} 条\n"
-                        f"已写回译文文件：{r.get('files', 0)} 个")
+                        f"已写回译文文件：{r.get('files', 0)} 个\n"
+                        f"回写缓存：{r.get('cached', 0)} 条")
                 elif kind == "excel_done":
                     if payload and payload.get("ok"):
                         msg = [f"合计 {payload.get('total')} 条术语 → "
@@ -5227,9 +5233,9 @@ class App:
     # ================================================================
     def _page_hanhua(self):
         """
-        把原来分散的菜单（翻译 / 重翻检查报告 / 术语更新后重翻 / 前缀字典 /
-        换行重排 / 术语字典）收进这一个菜单：右侧列出各步骤，
-        点一项就跳到对应界面，界面顶部有「← 返回游戏汉化」可以回来。
+        把原来分散的菜单（术语字典 / 术语提取 / 术语检查报告 / 翻译 /
+        术语更新后重翻 / 重翻检查报告 / 前缀字典 / 换行重排）收进这一个菜单：
+        右侧列出各步骤，点一项就跳到对应界面，界面顶部有「← 返回游戏汉化」回来。
         """
         page = self.pages["hanhua"]
         page.grid_columnconfigure(0, weight=1)
@@ -6473,11 +6479,22 @@ class App:
         if not target:
             return
         hits = self._tc_filtered_hits()
+        # ★ 页面上已经改过、还没点「应用修改」的条目同样跳过：
+        #   它们是用户改好的，不该再当问题导出。
+        pending = set(getattr(self, "tc_edits", {}) or {})
+        if pending:
+            hits = [h for h in hits if h.get("src") not in pending]
         if not hits:
-            messagebox.showinfo(
-                "提示",
-                "当前没有可导出的条目：先点「刷新报告」，"
-                "并确认问题类型没有全被取消勾选。")
+            if pending:
+                messagebox.showinfo(
+                    "提示",
+                    f"当前显示的条目都已改过（{len(pending)} 条），"
+                    "没有需要导出的问题术语。")
+            else:
+                messagebox.showinfo(
+                    "提示",
+                    "当前没有可导出的条目：先点「刷新报告」，"
+                    "并确认问题类型没有全被取消勾选。")
             return
 
         def done(st):
@@ -6485,11 +6502,13 @@ class App:
             if not st.get("files"):
                 messagebox.showinfo("提示", "没有可导出的问题术语。")
                 return
-            self.q.put(("log", f"[问题术语] 已导出 {st.get('count', 0)} 条 → "
-                               f"{st.get('dir')}\n"))
+            extra = (f"（另跳过 {st['edited']} 条已编辑的）"
+                     if st.get("edited") else "")
+            self.q.put(("log", f"[问题术语] 已导出 {st.get('count', 0)} 条"
+                               f"{extra} → {st.get('dir')}\n"))
             messagebox.showinfo(
                 "已导出",
-                f"已导出 {st.get('count', 0)} 条问题术语，"
+                f"已导出 {st.get('count', 0)} 条问题术语{extra}，"
                 f"分成 {st.get('groups', 0)} 个文件：\n{st.get('dir')}\n\n"
                 "用记事本打开 problem_term_*.json，只改 items 里每条**右边的"
                 "译文**（键＝原文，别动），改完回来点「导入已翻问题术语」。")
@@ -7439,12 +7458,14 @@ class App:
             if not st.get("files"):
                 messagebox.showinfo("提示", "没有可导出的问题句子。")
                 return
+            extra = (f"（另跳过 {st['edited']} 条已编辑的）"
+                     if st.get("edited") else "")
             self.q.put(("log", f"[问题句子] 已导出 {st.get('count', 0)} 条"
-                               f"（附带命中术语 {st.get('terms', 0)} 条）→ "
-                               f"{st.get('dir')}\n"))
+                               f"（附带命中术语 {st.get('terms', 0)} 条）{extra}"
+                               f"→ {st.get('dir')}\n"))
             messagebox.showinfo(
                 "已导出",
-                f"已导出 {st.get('count', 0)} 条问题句子，"
+                f"已导出 {st.get('count', 0)} 条问题句子{extra}，"
                 f"分成 {st.get('groups', 0)} 个文件：\n{st.get('dir')}\n\n"
                 "用记事本打开 problem_sentence_*.json，只改 items 里每条"
                 "**右边的译文**（键＝原文，别动）；hit_terms 是每句命中的"
@@ -11441,7 +11462,7 @@ class App:
                  font=FONT_SMALL).pack(side="left")
         self.debug_mode = tk.StringVar(value="main")
         self._debug_mode_labels = [
-            ("main", "① 通用（写 Main，启动即调试）"),
+            ("main", "① 通用（写 Main，启动即调试 + 跳过调试开场）"),
             ("keys", "② 删条件（F9/队伍/穿墙 免 $DEBUG 可用）"),
             ("special", "③ F6 键（按 F6 直接开调试 + 提示）"),
             ("special_menu", "④ F6 键（按 F6 直接开调试菜单）"),
@@ -11560,8 +11581,10 @@ class App:
 
     # ---------- 菜单 5（开启DEBUG）：小工具 ----------
     _DEBUG_MODE_DESC = {
-        "main": "方式①（通用）：在 Main 的 mainFunction 里写 $DEBUG=true，"
-                "启动即调试模式（标题界面会变，F9 开调试菜单）。"
+        "main": "方式①（通用）：在 Main 的 pbCallTitle 里写 $DEBUG=true，"
+                "启动即调试模式（F9 开调试菜单）；同时把该函数里的 "
+                "Scene_DebugIntro.new 换成 Scene_Intro.new，"
+                "开局直接进正常标题，不再停在调试开场画面。"
                 "★ 这是启动时开 $DEBUG 的方式；方式②–⑦ 都不会写"
                 "（还会把以前留下的清掉）—— 需要 $DEBUG 时用本方式。",
         "keys": "方式②：删掉各处「需要 $DEBUG 才生效」的条件，让它们无条件可用。"

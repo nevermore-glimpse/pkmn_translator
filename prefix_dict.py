@@ -10,7 +10,7 @@ import os
 import re
 
 import config
-from logger import get_logger
+from logger import get_logger, log_once
 
 log = get_logger("prefix_dict")
 
@@ -32,6 +32,22 @@ _entries = {}     # {前缀原文: 前缀译文}  空串表示待翻译
 _loaded = False
 
 
+def normalize_value(value):
+    r"""
+    前缀译文的规范形态：**去掉首尾空白**。
+
+    ★ 前缀 = 句首连续控制码串，本身不可能以空格 / 制表符结尾；
+      字典里出现 `\xn[Kao]\b\t` 这种（手工编辑时手滑打了个 Tab）会拼出
+      `\xn[卡奥]\b<Tab>正文`，既在游戏里多一格空白，也让 `strip_prefix_echo`
+      按字符串前缀比对全部失败 —— 于是这些句子每次「应用前缀字典」都被当成
+      「前缀变了」，正文被反复重拼。
+    ★ 只剩空白的译文一律归零（= 待翻译），交给「应用术语」或人工补。
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 # ================================================================
 # 读写
 # ================================================================
@@ -49,12 +65,17 @@ def _load():
         with open(DICT_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict) and "entries" in data:
-            _entries = dict(data.get("entries") or {})
+            raw = dict(data.get("entries") or {})
         elif isinstance(data, dict):
             # 兼容裸 dict 格式
-            _entries = dict(data)
+            raw = dict(data)
         else:
-            _entries = {}
+            raw = {}
+        # ★ 读入即规范化：键与译文都去首尾空白（见 normalize_value）。
+        #   前缀是控制码串，本来就不会以空白开头/结尾，带空白只可能是手误，
+        #   留着永远匹配不上。
+        _entries = {str(k).strip(): normalize_value(v) for k, v in raw.items()
+                    if str(k).strip()}
         _loaded = True
         log.info("前缀字典加载：%d 条（%s）", len(_entries), DICT_FILE)
     except Exception as e:
@@ -96,6 +117,7 @@ def get_translation(prefix):
     v = _entries.get(prefix)
     if v is None:
         return None
+    v = normalize_value(v)
     return v or None      # 空串视为未翻译
 
 
@@ -118,8 +140,8 @@ def register_prefix(prefix, fill_by_terms=True):
     if fill_by_terms:
         sub = substitute_terms(prefix)
         if sub and sub != prefix:
-            value = sub
-            log.info("新前缀 %r 命中术语，已自动填入译文 %r", prefix, sub)
+            value = normalize_value(sub)
+            log.info("新前缀 %r 命中术语，已自动填入译文 %r", prefix, value)
 
     _entries[prefix] = value
     return True
@@ -271,15 +293,73 @@ def apply_terms_for_tg():
     return changes, stats
 
 
+def _ctrl_boundaries(text):
+    r"""
+    返回 text 里「每个控制码结束」的位置列表（升序）。
+
+    例：`\xn[Kao]\b\.` → [9, 11, 13]（对应 `\xn[Kao]` / `\b` / `\.` 的末尾）。
+    认不出来（processor 不可用）时返回 []。
+    """
+    if not text:
+        return []
+    try:
+        import processor as _PR
+    except Exception:                    # noqa: BLE001
+        return []
+    out, i, n = [], 0, len(text)
+    while i < n:
+        m = _PR.ALL_CTRL_RE.match(text, i)
+        if not m or m.end() <= i:
+            break
+        i = m.end()
+        out.append(i)
+    return out
+
+
+def _known_split(prefix):
+    r"""
+    在字典里按「最长已知前缀」把 prefix 拆成 (已知前缀, 余下控制码)。
+
+    ★ 为什么需要：`split_prefix` 会把句首**一整串**控制码都算进前缀，
+      而字典里往往只登记了其中一部分 —— 例如字典有 `\xn[Yahn Deer]\r`，
+      实际句子却是 `\xn[Yahn Deer]\r\..\..\...`（多出三个 `\.` 等待码）。
+      不拆的话整个前缀「不认识」，用户改了字典也永远应用不上。
+    ★ 找不到任何已知前缀时返回 ("", prefix)。
+    """
+    if not prefix:
+        return "", prefix
+    if prefix in _entries:
+        return prefix, ""
+    for i in reversed(_ctrl_boundaries(prefix)):
+        if i < len(prefix) and prefix[:i] in _entries:
+            return prefix[:i], prefix[i:]
+    return "", prefix
+
+
+def is_known(prefix):
+    """前缀（或它的某个更短的控制码前缀）在字典里登记过没有。"""
+    _load()
+    if not prefix:
+        return False
+    if prefix in _entries:
+        return True
+    return bool(_known_split(prefix)[0])
+
+
 def apply_prefix(prefix):
     """
     返回应使用的译后前缀：
       · 已翻译 → 译后前缀
       · 未翻译 → 原前缀，但其中命中术语的部分先替换成术语译文
+      · 整体没登记、但它的某个更短的前缀登记过 → 只替换那一段，余下原样保留
     """
     t = get_translation(prefix)
     if t:
         return t
+    head, tail = _known_split(prefix)
+    if head and tail:
+        th = get_translation(head)
+        return (th if th else substitute_terms(head)) + tail
     return substitute_terms(prefix)
 
 
@@ -325,7 +405,10 @@ def strip_prefix_echo(text, src_prefix="", src_body=""):
                     return text          # 正文自己就带控制码，不动它
             head, rest = _PR.split_prefix(text)
             if head:
-                log.info("剥掉译文开头残留的旧前缀：%r", head)
+                # ★ 一句话一条的话，几千条对白就是几千行日志 —— 只提示一次
+                log_once(("prefix_echo",), "剥掉译文开头残留的旧前缀：%r"
+                         "（同类提示本次只显示这一条）", head,
+                         logger=log)
                 return rest
         except Exception as e:
             log.debug("前缀回显剥离失败（已回退原文本）：%s", e)
@@ -333,15 +416,62 @@ def strip_prefix_echo(text, src_prefix="", src_body=""):
     return text
 
 
+def _ctrl_signature(text):
+    r"""
+    前缀的「控制码骨架」：把名字标签 `\tg[X]` / `\xn[X]` 括号里的名字抹掉，
+    只留控制码本身。用来判断「译文前缀是否偷偷换掉了控制码」。
+    """
+    if not text:
+        return []
+    try:
+        import processor as _PR
+        codes = [m.group(0) for m in _PR.ALL_CTRL_RE.finditer(text)]
+    except Exception:                    # noqa: BLE001
+        return []
+    return [NAME_TAG_RE.sub(r"\1\3", c) if NAME_TAG_RE.search(c) else c
+            for c in codes]
+
+
+def ctrl_mismatches(limit=0):
+    r"""
+    列出「译文前缀的控制码与原文前缀不一致」的条目（字典里手滑打错的情况）。
+
+    例：`\xn[Hate]\b` 的译文写成 `\xn[海特]\r` —— `\b`（加粗）变成了
+    `\r`（复位），拼进译文后游戏里的显示效果就变了。
+    翻译本身只该改括号里的名字，控制码应当逐个保持一致。
+
+    返回 [(前缀原文, 译文, "原文码 → 译文码"), ...]；limit>0 时最多返回这么多条。
+    """
+    _load()
+    out = []
+    for src, dst in _entries.items():
+        if not dst:
+            continue
+        a = _ctrl_signature(src)
+        b = _ctrl_signature(dst)
+        if a == b:
+            continue
+        diff = []
+        for i in range(max(len(a), len(b))):
+            x = a[i] if i < len(a) else "（无）"
+            y = b[i] if i < len(b) else "（无）"
+            if x != y:
+                diff.append(f"{x} → {y}")
+        out.append((src, dst, "、".join(diff[:3]) or "控制码数量不同"))
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
 def update_many(mapping):
-    """批量写入 {前缀原文: 译文}，返回改动条数。"""
+    """批量写入 {前缀原文: 译文}，返回改动条数（译文会去首尾空白）。"""
     _load()
     n = 0
     for k, v in (mapping or {}).items():
         if not k:
             continue
-        if _entries.get(k) != v:
-            _entries[k] = v or ""
+        if _entries.get(k) != normalize_value(v):
+            _entries[k] = normalize_value(v)
             n += 1
     return n
 

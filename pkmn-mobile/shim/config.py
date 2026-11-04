@@ -137,12 +137,11 @@ def resource_dir(name):
 # 应用信息（防御性导出，保持与电脑版同名）
 # ================================================================
 APP_NAME = "宝可梦同人工具"
-VERSION = os.environ.get("PKMN_VERSION", "1.0.0")
+VERSION = os.environ.get("PKMN_VERSION", "1.8.1")
 APP_TITLE = f"{APP_NAME} v{VERSION}"
 
 # ★ 电脑版「翻译中间文件」目录名（桌面批量翻译把缓存/报告/润色稿放这里）。
-#   手机不跑这条链路，导出同名常量只为让 core/ 里 `import config` 的模块
-#   （如 intl_text.collect_text_files）拿到一致的名字 —— core/ 保持零改动。
+#   手机不跑汉化链路，导出同名常量只为兼容 core/ 里可能读它的模块。
 WORK_DIR_NAME = "翻译中间文件"
 
 PLATFORM = "android" if "ANDROID_ARGUMENT" in os.environ or hasattr(sys, "getandroidapilevel") else "desktop"

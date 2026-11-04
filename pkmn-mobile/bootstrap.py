@@ -91,7 +91,7 @@ def status():
     }
     for m in ("rmarshal", "save_tools", "game_scripts",
               "essentials_base", "debug_tool", "engine_tools",
-              "plugin_tools", "intl_text", "engine_src",
+              "plugin_tools", "engine_src",
               "logger", "config"):
         try:
             __import__(m)

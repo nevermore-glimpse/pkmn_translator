@@ -13,12 +13,13 @@
 """
 import difflib
 import json
+import logging
 import os
 import re
 
 import config
 import parser as _P
-from logger import get_logger
+from logger import get_logger, log_once
 
 from processor import (
     CTRL_RE, TAG_RE, BRACE_RE,
@@ -89,12 +90,16 @@ def _load_user_whitelist():
     if os.path.exists(WHITELIST_FILE):
         try:
             with open(WHITELIST_FILE, "r", encoding="utf-8") as f:
-                d = json.load(f) or {}
+                raw = f.read()
+            # ★ 空文件 / 只有空白 = 「还没有白名单」，不是错误。
+            #   以前直接 json.load 会抛 JSONDecodeError，每次检查都warning 一遍。
+            d = (json.loads(raw) if raw.strip() else {}) or {}
             words = {str(w) for w in (d.get("words") or []) if str(w).strip()}
             sentences = {str(s) for s in (d.get("sentences") or [])
                          if str(s).strip()}
         except Exception as e:
-            log.warning("白名单读取失败（按空处理）：%s", e)
+            log_once(("whitelist",), "白名单读取失败（按空处理）：%s", e,
+                     level=logging.WARNING, logger=log)
     _user_words, _user_sentences = words, sentences
 
 

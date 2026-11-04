@@ -45,6 +45,7 @@ import os
 import re
 
 import config
+from cache import record_edits
 from logger import get_logger
 
 log = get_logger("term_fix")
@@ -402,6 +403,7 @@ def _apply_to_caches(target, fixes):
 
         names = set(rec["names"])
         changed = added = 0
+        applied = {}
         for src, new in fixes.items():
             if src not in names:
                 continue
@@ -415,12 +417,20 @@ def _apply_to_caches(target, fixes):
                 data[src] = new
                 changed += 1
                 added += 1
+                applied[src] = new
                 continue
             if data[src] != new:
                 data[src] = new
                 changed += 1
+                applied[src] = new
         if changed:
             _save_json(cp, data)
+            # ★ 记进 <缓存>_edited.json：这些是用户手改的译名，
+            #   刷新报告归入「已编辑」，导出问题术语/句子时跳过。
+            try:
+                record_edits(applied, cache_path=cp)
+            except Exception as e:               # noqa: BLE001
+                log.warning("写手工编辑记录失败（忽略）：%s", e)
             log.info("翻译缓存已更新：%s（%d 条，其中新增 %d，其余 %d 条原样保留）",
                      cp, changed, added, len(data) - changed)
             n += changed
