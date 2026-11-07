@@ -204,6 +204,64 @@ def main():
         check("能列出真实目录", bool(d.get("ok")) and "core" in dnames,
               f"{len(dnames)} 个子目录")
 
+        # ⑪ 传「文件路径」要自动落到它所在的目录
+        #    ★ 真实 bug：选完一次 Game.exe 再点「浏览」，前端把 exe 路径当目录
+        #      传过来 → 后端 isdir 为假报「目录不存在」，前端又没渲染出口 → 卡死。
+        fstree = os.path.join(tmp, "fstest", "MyGame")
+        os.makedirs(os.path.join(fstree, "Data"))
+        exe = os.path.join(fstree, "Game.exe")
+        with open(exe, "wb") as f:
+            f.write(b"MZ")            # 内容无所谓，只看路径形态
+
+        st, body = http("/api/fs/list?dir=" + urllib.parse.quote(exe), port)
+        d = json.loads(body.decode("utf-8"))
+        data = d.get("data") or {}
+        # cwd 在 Windows 上是反斜杠，比较前统一
+        got_cwd = str(data.get("cwd") or "").replace("\\", "/")
+        want = fstree.replace("\\", "/")
+        check("传文件路径时自动落到所在目录",
+              bool(d.get("ok")) and got_cwd == want, f"cwd={got_cwd!r}")
+        check("响应带 moved_from（前端据此提示已跳转）",
+              str(data.get("moved_from") or "").replace("\\", "/") ==
+              exe.replace("\\", "/"), str(data.get("moved_from")))
+        check("落到父目录后仍能列出子目录",
+              "Data" in [x["name"] for x in (data.get("dirs") or [])])
+
+        # ⑫ 不存在的路径 → 「路径不存在」，不是「目录不存在」，也不是「没有权限」
+        ghost = os.path.join(fstree, "NoSuchDir")
+        st, body = http("/api/fs/list?dir=" + urllib.parse.quote(ghost), port)
+        d = json.loads(body.decode("utf-8"))
+        msg = d.get("message") or ""
+        check("不存在的路径 → code=not_found",
+              (not d.get("ok")) and d.get("code") == "not_found", msg)
+        check("文案是「路径不存在」而不是「目录不存在」",
+              "路径不存在" in msg and "目录不存在" not in msg, msg)
+        check("不存在的路径不会误报「没有读取权限」", "没有读取权限" not in msg)
+
+        # ⑬ 无权限（EACCES）必须和「不存在」分开 —— 最初误报的成因就是
+        #    os.path.isdir() 在 EACCES 时同样返回 False。
+        #    ★ 直接调 api_list 而不发 HTTP：下面的 monkeypatch 改的是**全局 os
+        #      模块**，限制在同步窗口内、finally 立刻恢复，不锁死服务线程。
+        #      （_ensure_server_dir 已把 server/ 放进 sys.path，所以是 import api_fs）
+        import api_fs as fs_api                                # noqa: E402
+        real_listdir = fs_api.os.listdir
+        real_isdir = fs_api.os.path.isdir
+
+        def _deny(_p):
+            raise PermissionError(13, "Permission denied", _p)
+        try:
+            fs_api.os.path.isdir = lambda _p: False
+            fs_api.os.listdir = _deny
+            res = fs_api.api_list(
+                {"query": {"dir": os.path.join(fstree, "Private")}})
+        finally:
+            fs_api.os.listdir = real_listdir
+            fs_api.os.path.isdir = real_isdir
+        check("无权限路径 → code=denied 且文案是「没有读取权限」",
+              (not res.get("ok")) and res.get("code") == "denied"
+              and "没有读取权限" in (res.get("message") or ""),
+              str(res.get("message")))
+
         mobile_main.stop()
 
     finally:

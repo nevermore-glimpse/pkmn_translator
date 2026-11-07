@@ -290,30 +290,67 @@
   let browseMode = "dir";          // dir / file / exe / font
   let browseTarget = null;
   let browseCwd = "";
+  // 请求序号：只认最后一次请求的响应。面板同一时刻只开一个，全局一个计数器
+  // 就够 —— 慢请求晚到会把「字体目录的列表」写进刚开的「存档」面板，很危险。
+  let browseToken = 0;
+
+  // 把录入框里的值换算成「该从哪个目录开始浏览」。
+  //   · 空 → ""（后端在安卓上返回可用起点列表）
+  //   · dir 模式 → 值本身就是目录，原样用
+  //   · exe / file / font → 值一般是文件，取它所在目录；
+  //     但用户可能手打一个目录进来，末端没有扩展名就当目录，
+  //     免得平白无故往上跳一级
+  //   ★ 以前这里直接把 value 当目录传 —— 选完一次之后 value 是
+  //     ".../Game.exe"，后端 isdir 为假，就报「目录不存在」，而且错误分支
+  //     连「返回上级」都不渲染，用户彻底卡死。
+  function startDirFor(mode, value) {
+    const v = String(value || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!v) return "";
+    if (mode === "dir") return v;
+    const base = v.slice(v.lastIndexOf("/") + 1);
+    return /\.[A-Za-z0-9]{1,8}$/.test(base) ? parentOf(v) : v;
+  }
 
   function openBrowse(mode, targetId, title) {
     browseMode = mode;
     browseTarget = $(targetId);
     $("browseTitle").textContent = title;
     $("browseSheet").classList.add("on");
-    browseCwd = browseTarget.value || "";
-    listDir(browseCwd);
+    browseCwd = startDirFor(mode, browseTarget.value);
+    // 第二个参数 = 打开时允许自动往上退几层（目录被删 / 改名时兜底）
+    listDir(browseCwd, 6);
   }
 
-  async function listDir(dir) {
-    const r = await API("/api/fs/list?dir=" + encodeURIComponent(dir || ""));
+  async function listDir(dir, upBudget) {
+    const token = ++browseToken;
+    let r;
+    try {
+      r = await API("/api/fs/list?dir=" + encodeURIComponent(dir || ""));
+    } catch (e) {
+      r = { ok: false, message: "连不上本机服务：" + ((e && e.message) || e) };
+    }
+    if (token !== browseToken) return;   // 已经有更新的请求，丢弃这次结果
+
     if (!r.ok) {
-      // 直接把原因铺在列表里，别用 toast —— 安卓上的报错都好几句，
-      // toast 一闪就没了，用户根本读不完。
-      $("browseList").innerHTML =
-        `<div class="hint err" style="padding:11px 15px;white-space:pre-line">`
-        + esc(r.message || "读取失败") + `</div>`;
+      // 路径已失效（目录被删 / 改名）：打开时自动往上退，最多 upBudget 层。
+      // 用户自己点进来的不自动跳（upBudget=0），免得「点一下退三级」。
+      if (r.code === "not_found" && upBudget > 0 && dir) {
+        const up = parentOf(dir);
+        if (up !== dir) { listDir(up, upBudget - 1); return; }
+      }
+      renderBrowseError(r.message, dir);
       return;
     }
     browseCwd = r.data.cwd || "";
     $("browsePath").textContent = browseCwd || "选择位置";
     const rows = [];
     const isExe = browseMode === "exe";
+
+    // 传的是文件、后端已自动退到所在目录 —— 说一句，别让用户以为没生效
+    if (r.data.moved_from) {
+      rows.push(`<div class="hint" style="padding:11px 15px;cursor:default">`
+                + `上次选的是文件，已跳到它所在的目录。</div>`);
+    }
 
     // 空路径在安卓上返回的是「可用起点列表」，带一句说明
     if (r.data.hint && !browseCwd) {
@@ -359,18 +396,47 @@
     });
     if (!rows.length) rows.push(`<div class="hint" style="padding:11px 15px">（空目录）</div>`);
     $("browseList").innerHTML = rows.join("");
+    bindBrowseRows();
+  }
 
-    $("browseList").querySelectorAll("div[data-up],div[data-dir],div[data-pick]")
+  // 出错时不能只留一行红字 —— 必须给用户出口。
+  // ★ 这是「再次浏览 → 目录不存在 → 彻底卡死」的卡死点：原来错误分支
+  //   直接 return，连「.. 返回上级」都没机会渲染，用户只能关掉重开，
+  //   而重开又是同一个坏路径。
+  function renderBrowseError(msg, dir) {
+    browseCwd = dir || "";
+    $("browsePath").textContent = browseCwd || "选择位置";
+    const rows = [
+      `<div class="hint err" style="padding:11px 15px;`
+      + `white-space:pre-line;cursor:default">`
+      + esc(msg || "读取失败") + `</div>`
+    ];
+    const up = parentOf(browseCwd);
+    if (browseCwd && up !== browseCwd) {
+      rows.push(`<div data-up="1">📁 .. 返回上级（${esc(up || "根目录")}）</div>`);
+    }
+    rows.push(`<div data-reset="1">🏠 重新从根目录开始</div>`);
+    $("browseList").innerHTML = rows.join("");
+    bindBrowseRows();
+  }
+
+  // 行点击统一走这里（成功列表和错误面板共用）
+  function bindBrowseRows() {
+    $("browseList")
+      .querySelectorAll("div[data-up],div[data-dir],div[data-pick],div[data-reset]")
       .forEach((el) => {
         el.addEventListener("click", () => {
-          if (el.dataset.up) { listDir(parentOf(browseCwd)); return; }
+          if (el.dataset.reset !== undefined) {
+            browseCwd = ""; listDir("", 0); return;
+          }
+          if (el.dataset.up) { listDir(parentOf(browseCwd), 0); return; }
           if (el.dataset.pick !== undefined) {
             browseTarget.value = el.dataset.pick;
             $("browseSheet").classList.remove("on");
             browseTarget.dispatchEvent(new Event("change"));
             return;
           }
-          listDir(el.dataset.dir);
+          listDir(el.dataset.dir, 0);
         });
       });
   }
@@ -396,6 +462,11 @@
     openBrowse("file", "savePath", "选择存档文件"));
   $("browseClose").addEventListener("click", () =>
     $("browseSheet").classList.remove("on"));
+  // 任何时候都能跳回起点列表（安卓上是「可用起点」，电脑上是当前目录）
+  $("browseRoot").addEventListener("click", () => {
+    browseCwd = "";
+    listDir("", 0);
+  });
 
   // ------------------------------------------------------------
   // 通用：跑一个 SSE 任务

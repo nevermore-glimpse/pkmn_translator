@@ -59,12 +59,22 @@ DEBUG_LINE = "$DEBUG=true"
 _MAIN_FUNC_RE = re.compile(r"^([ \t]*)def\s+mainFunction\b", re.M)
 _PB_CALL_TITLE_RE = re.compile(r"^([ \t]*)def\s+pbCallTitle\b", re.M)
 
-# ★ 方式①（通用）顺手改的一处：`pbCallTitle` 里 `return Scene_DebugIntro.new if $DEBUG`
-#   会先跳到「调试开场画面」，要点一下才进标题。改成 Scene_Intro 就直接进正常标题。
-#   ★ 只改 pbCallTitle **函数体内部**（见 _function_body_span），
-#     不会碰别的场景类（比如真正的 Scene_DebugIntro 定义）。
-_DEBUG_INTRO_RE = re.compile(r"\bScene_DebugIntro\s*\.\s*new\b")
-_INTRO_REPLACEMENT = "Scene_Intro.new"
+# ★ 方式①（通用）顺手改的一处：`pbCallTitle` 里
+#     `return Scene_DebugIntro.new if $DEBUG`
+#   会让开了调试的启动先跳到「调试开场画面」。做法是**把这一行注释掉**，
+#   让控制流直接落到下面的正常标题（即「执行 else」）。
+#   ★ 绝对不能把 `Scene_DebugIntro.new` 直接换成 `Scene_Intro.new`：
+#     各游戏的 Scene_Intro#initialize 参数不一样（Pokémon Edge Rising 是
+#     `Scene_Intro.new(['intro1'], 'splash')`），少传参数轻则黑屏重则
+#     ArgumentError 直接崩。注释掉原行 = 原样执行游戏自己的那行。
+#   ★ 注释前缀带标记，`remove_debug_from_main` 能原样取消注释。
+_DEBUG_INTRO_RE = re.compile(r"Scene_DebugIntro\s*\.\s*new\b")
+_INTRO_NORMAL_RE = re.compile(r"Scene_Intro\s*\.\s*new\b")
+_INTRO_COMMENT_MARK = "# [pkmn-debug] "
+# 块形态用行尾标记记下「原来那行 if」，还原时整行换回去
+_INTRO_IF_MARK = "# [pkmn-debug] was: "
+# 行内条件修饰：`return XXX if $DEBUG`（if 在 return 之后）
+_INLINE_IF_RE = re.compile(r"\breturn\b[^\n]*\bif\b[^\n]*\$DEBUG")
 
 # ★ Ruby 的「块注释」= `=begin` … `=end`：两个标记都必须**顶格**（第 0 列），
 #   中间整段不参与语法解析。有作者会把**废弃的旧 `def mainFunction`** 原样
@@ -265,16 +275,19 @@ def find_main_source(game_dir):
 def patch_pb_call_title(text):
     r"""
     在 `def pbCallTitle` 的**第一行**插入 `$DEBUG=true`；
-    并把函数体里的 `Scene_DebugIntro.new` 改成 `Scene_Intro.new`
-    （开了调试也别卡在调试开场画面上，直接从正常标题进）。
+    并把函数体里的 `return Scene_DebugIntro.new if $DEBUG` **整行注释掉**，
+    让开了调试的启动也走下面的正常标题（= 执行 else 分支）。
 
-    返回 (新文本, {"added": bool, "existed": bool, "intro": 改了几处})；
+    返回 (新文本, {"added", "existed", "intro"})：
+      intro = 这次注释掉了几行（0 = 本来就没有调试开场分支）；
     找不到 pbCallTitle 抛 ValueError。
 
+    ★ 注释而不是替换：`Scene_Intro.new` 各游戏参数不同
+      （`Scene_Intro.new(['intro1'], 'splash')`），换成无参版本会崩。
     ★ 定位的是**不在 `=begin`/`=end` 里**的那个定义（真正生效的那个）；
       所有定义都在块注释里 → 同样抛 ValueError（上层会如实报「没找到」）。
-    ★ 改 Scene_DebugIntro 只在 pbCallTitle 的函数体里动手，
-      别的地方（比如游戏自己定义的 Scene_DebugIntro 类）一个字不碰。
+    ★ 只在 pbCallTitle 的函数体里动手，别的地方（比如游戏自己定义的
+      Scene_DebugIntro 类）一个字不碰。
     """
     m = _search_outside_comment(_PB_CALL_TITLE_RE, text)
     if not m:
@@ -282,15 +295,59 @@ def patch_pb_call_title(text):
     lines = text.split("\n")
     i = _line_index(text, m.start())
 
-    # ---- ① 函数体里换掉调试开场画面 ----
-    intro = 0
+    # ---- ① 干掉「调试开场画面」那一行 ----
     lo, hi = _function_body_span(lines, i)
-    for j in range(lo, hi):
-        if _DEBUG_INTRO_RE.search(lines[j]):
-            new_line, n = _DEBUG_INTRO_RE.subn(_INTRO_REPLACEMENT, lines[j])
-            if n:
-                lines[j] = new_line
-                intro += n
+    intro = 0
+
+    def _alive(j):
+        """这一行是有效代码（不是空行、不是注释）。"""
+        s = lines[j].strip()
+        return bool(s) and not s.startswith("#")
+
+    if any(_DEBUG_INTRO_RE.search(lines[j]) for j in range(lo, hi) if _alive(j)):
+        # 逐个处理引用 Scene_DebugIntro.new 的行
+        for j in range(lo, hi):
+            if not _alive(j) or not _DEBUG_INTRO_RE.search(lines[j]):
+                continue
+            ind = re.match(r"^[ \t]*", lines[j]).group(0)
+            if _INLINE_IF_RE.search(lines[j]):
+                # ① 行内条件：`return Scene_DebugIntro.new if $DEBUG`
+                #    没有 else，注释掉这行就会落到下面的正常标题。
+                lines[j] = (ind + _INTRO_COMMENT_MARK
+                            + lines[j][len(ind):])
+                intro += 1
+                continue
+            # ② 块形态：`if $DEBUG ... return Scene_DebugIntro.new ... else ... end`
+            #    ★ 只注释 return 是**错的**：条件为真时进的是空的 if 分支，
+            #      不会执行 else，函数返回 nil → 游戏直接崩。
+            #      正确做法是把条件改成恒假（`if false`），让它走 else。
+            k = _enclosing_if(lines, lo, j)
+            if k is None:
+                # 找不到所属 if（写法太怪）→ 退回注释，至少不会崩在语法上
+                lines[j] = (ind + _INTRO_COMMENT_MARK
+                            + lines[j][len(ind):])
+                intro += 1
+                continue
+            if _INTRO_IF_MARK in lines[k]:
+                continue                     # 已经处理过（幂等）
+            ind_k = re.match(r"^[ \t]*", lines[k]).group(0)
+            lines[k] = (ind_k + "if false  " + _INTRO_IF_MARK
+                        + lines[k].strip())
+            intro += 1
+    elif sum(1 for j in range(lo, hi) if _alive(j)
+             and _INTRO_NORMAL_RE.search(lines[j])) >= 2:
+        # ★ 兼容 v1.9.2 首个实现留下的污染：上一版把
+        #   `return Scene_DebugIntro.new if $DEBUG` 直接替成了
+        #   `return Scene_Intro.new if $DEBUG`（丢了参数）。这里把「带 $DEBUG
+        #   的那行 Scene_Intro.new」照样注释掉，让它落回下面带参数的正常标题。
+        #   条件「函数体里至少还有另一处 Scene_Intro.new」保证注释后仍有 return。
+        for j in range(lo, hi):
+            if (_alive(j) and _INTRO_NORMAL_RE.search(lines[j])
+                    and "$DEBUG" in lines[j]):
+                ind = re.match(r"^[ \t]*", lines[j]).group(0)
+                lines[j] = (ind + _INTRO_COMMENT_MARK
+                            + lines[j][len(ind):])
+                intro += 1
 
     # ---- ② 第一行插 $DEBUG=true ----
     # 已经写过了 → 不再插（幂等）；但上面那处照样改
@@ -363,6 +420,54 @@ def _strip_debug_line_near(text, rx):
     return None
 
 
+def _enclosing_if(lines, lo, idx):
+    r"""
+    找第 idx 行所属的那条 `if` 语句（往上找缩进更小的最近一条 `if`）。
+
+    返回行号；找不到（或中途遇到 `end` 说明已经出了块）返回 None。
+    `lo` 是函数体起点，不会越界到函数外。
+    """
+    base = len(lines[idx]) - len(lines[idx].lstrip())
+    for k in range(idx - 1, lo - 1, -1):
+        raw = lines[k]
+        s = raw.strip()
+        if not s:
+            continue
+        ind = len(raw) - len(raw.lstrip())
+        if ind >= base:
+            continue
+        if s == "end" or s.startswith("end "):
+            return None                  # 已经出了这个块，说明上面没有 if
+        if s == "if" or s.startswith("if ") or s.startswith("if("):
+            return k
+    return None
+
+
+def _restore_intro_lines(text):
+    """
+    把方式① 对调试开场分支做的改动**全部还原**。返回 (新文本, 还原条数)。
+
+    认两种形态（都是本模块自己写的标记）：
+      ① 整行注释：`# [pkmn-debug] return Scene_DebugIntro.new ...`
+      ② 条件恒假：`  if false  # [pkmn-debug] was: if $DEBUG`
+    只认标记所在位置，绝不碰脚本里别人手写的注释。
+    """
+    lines = text.split("\n")
+    n = 0
+    for j, raw in enumerate(lines):
+        k = raw.find(_INTRO_COMMENT_MARK)
+        if k >= 0 and not raw[:k].strip():
+            lines[j] = raw[:k] + raw[k + len(_INTRO_COMMENT_MARK):]
+            n += 1
+            continue
+        m = raw.find(_INTRO_IF_MARK)
+        if m >= 0:
+            ind = re.match(r"^[ \t]*", raw).group(0)
+            lines[j] = ind + raw[m + len(_INTRO_IF_MARK):].rstrip()
+            n += 1
+    return "\n".join(lines), n
+
+
 def remove_debug_from_main(game_dir, emit=None):
     """
     把 Main 里我们写过的 `$DEBUG = true` 那行**删掉**（`pbCallTitle` 第一行
@@ -375,6 +480,8 @@ def remove_debug_from_main(game_dir, emit=None):
       这正是 `patch_pb_call_title`（旧版 `patch_main_function`）插入的位置
       和内容 → 能精确对应「是我们插的」，不会碰到脚本里其它地方写 `$DEBUG`
       的代码，也不会碰 `$DEBUG = false`。
+    ★ 同时把方式① 注释掉的 `Scene_DebugIntro` 分支**取消注释**还原回来
+      （见 `_restore_intro_lines`），否则换方式后调试开场被永久跳过。
     ★ 定位用的是与补丁**同一套**逻辑（跳过 `=begin`/`=end`），
       否则「写了哪一处、还原就清哪一处」对不上，会清错地方（甚至删掉别人
       代码里的 `$DEBUG=true`）。
@@ -391,24 +498,32 @@ def remove_debug_from_main(game_dir, emit=None):
         return rep
     for src in mains:
         new_text = src["text"]
+        n_dbg = 0
         for rx in (_PB_CALL_TITLE_RE, _MAIN_FUNC_RE):
             stripped = _strip_debug_line_near(new_text, rx)
             if stripped is not None:
                 new_text = stripped
+                n_dbg += 1
+        new_text, n_uncom = _restore_intro_lines(new_text)
         if new_text == src["text"]:
             continue
         try:
             _write_text(src["mode"], src["path"], src["key"], new_text,
                         old_text=src["text"], emit=emit)
         except (OSError, RuntimeError) as e:
-            say(f"[DEBUG] ⚠ 移除 {DEBUG_LINE} 失败（{_where(src)}）：{e}")
+            say(f"[DEBUG] ⚠ 清理方式① 的改动失败（{_where(src)}）：{e}")
             continue
         rep["removed"] += 1
         rep["targets"].append({"mode": src["mode"], "where": str(src["key"])})
-        say(f"[DEBUG] ✔ 已移除 {_where(src)} 里残留的 "
-            f"{DEBUG_LINE}（本方式不需要它）")
+        parts = []
+        if n_dbg:
+            parts.append(f"移除 {n_dbg} 行 {DEBUG_LINE}")
+        if n_uncom:
+            parts.append(f"还原 {n_uncom} 行调试开场分支")
+        say(f"[DEBUG] ✔ 已清理 {_where(src)} 里方式① 的改动"
+            f"（{'、'.join(parts)}）")
     if not rep["removed"]:
-        say("[DEBUG] · Main 里本来就没有多余的 $DEBUG=true，不用清理")
+        say("[DEBUG] · Main 里本来就没有方式① 留下的改动，不用清理")
     return rep
 
 
@@ -1037,8 +1152,8 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
             else:
                 say(f"[DEBUG] · {where} 的 {fn_name} 里已经有 {DEBUG_LINE}")
             if rec["intro"]:
-                say(f"[DEBUG] ✔ {fn_name} 里的 Scene_DebugIntro.new 已换成 "
-                    f"Scene_Intro.new（{rec['intro']} 处），直接从正常标题进")
+                say(f"[DEBUG] ✔ 已注释 {fn_name} 里的调试开场分支"
+                    f"（{rec['intro']} 行），启动直接走正常标题")
 
     # ---------- ③ 清掉「反调试」（Scene_Map 里把 $DEBUG 摁死那一段） ----------
     ad_srcs = find_antidebug_sources(game_dir)

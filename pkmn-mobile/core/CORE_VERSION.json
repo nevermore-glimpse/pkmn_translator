@@ -1,6 +1,6 @@
 {
   "source": "E:/pkmn_translator",
-  "synced_at": "2026-11-05 00:22:39",
+  "synced_at": "2026-11-05 02:00:32",
   "modules": [
     "rmarshal.py",
     "save_tools.py",
@@ -23,8 +23,8 @@
       "size": 208430
     },
     "debug_tool.py": {
-      "sha256": "df86e1cda5c493c00ad67d67f3da9ca99705687fb6fb43c49fa03ad9b10e1ee7",
-      "size": 49068
+      "sha256": "f94a2aa7ca4e2c00c11cbe5bcb28a0069b68db67561b347759c029d0ebbfd381",
+      "size": 54643
     },
     "game_scripts.py": {
       "sha256": "ffc06b584d2723f0f259b6b9e7841b701602ff7ff76f73e8a008268b62826312",

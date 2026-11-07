@@ -121,7 +121,7 @@ python main.py
 
 | # | 方式             | 说明                                                                                            |
 | - | -------------- | --------------------------------------------------------------------------------------------- |
-| ① | 通用             | Main 的 `pbCallTitle` 第一行写 `$DEBUG=true`，启动即调试模式；同时把该函数里的 `Scene_DebugIntro.new` 换成 `Scene_Intro.new`，开局直接进正常标题                                            |
+| ① | 通用             | Main 的 `pbCallTitle` 第一行写 `$DEBUG=true`，启动即调试模式；同时废掉同一函数里「`$DEBUG` 就走调试开场画面」的分支：`return Scene_DebugIntro.new if $DEBUG` 整行注释，`if $DEBUG … else … end` 则把条件改成恒假（`if false  # [pkmn-debug] was: if $DEBUG`），保证走到 else 里的正常标题。只动条件不改写，游戏自己的 `Scene_Intro.new([...], '...')` 参数原样保留                                            |
 | ② | 删条件            | 去掉三处「需 $DEBUG 才生效」的判定（F9 / 队伍 Debug 项 / 穿墙）                                                   |
 | ③ | SPECIAL 键      | Scene_Map 的 SPECIAL 分支注入「`$DEBUG` 不为真就设为真并弹窗」                                                 |
 | ④ | 除虫喷雾（设 $DEBUG） | `pbRepel` 开头注入同样逻辑                                                                            |

@@ -130,6 +130,41 @@ def _guard(path):
     return None
 
 
+def _probe_dir(path):
+    """
+    判断 path 到底是目录 / 文件 / 不存在 / 没权限。
+
+    返回 (state, near)：state ∈ {"dir", "file", "not_found", "denied"}；
+    file / not_found / denied 时 near 是它的父目录，供调用方退让。
+
+    ★ **不能只用 os.path.isdir()**：EACCES 时它也返回 False，于是
+      「没有权限」会被说成「目录不存在」（用户反馈的原文就是这句）。
+      这里用「父目录能不能列 + 这个名字在不在里面」把两者分开。
+    """
+    try:
+        if os.path.isdir(path):
+            return "dir", None
+        if os.path.isfile(path):
+            return "file", os.path.dirname(path)
+    except OSError:
+        return "denied", os.path.dirname(path)
+
+    parent = os.path.dirname(path) or "/"
+    try:
+        names = os.listdir(parent)
+    except PermissionError:
+        return "denied", parent
+    except FileNotFoundError:          # ★ 必须排在 OSError 之前（它是子类）
+        return "not_found", parent
+    except OSError:
+        # NotADirectoryError 之类：路径中间那一段其实是个文件 → 当不存在
+        return "not_found", parent
+    if os.path.basename(path) in names:
+        # 名字确实在父目录里，却 stat 不动 —— 没权限 / 断掉的符号链接
+        return "denied", parent
+    return "not_found", parent
+
+
 def api_list(ctx):
     raw = ctx["query"].get("dir") or ""
     d = JU.normalize_path(raw) or ""
@@ -152,8 +187,27 @@ def api_list(ctx):
     if not d and _is_android():
         return JU.ok(_roots_payload())
 
-    if d and not os.path.isdir(d):
-        return JU.err(f"目录不存在：{d}")
+    # ★ 把「文件路径」当目录传进来是常态 —— 前端的「浏览」按钮会把录入框里
+    #   上次选中的 Game.exe 原样回填。这里自动退到它所在的目录，并用
+    #   moved_from 告诉前端「已跳到所在目录」，而不是甩一句「目录不存在」。
+    moved_from = None
+    if d:
+        state, near = _probe_dir(d)
+        if state == "file":
+            moved_from, d = d, (near or os.path.dirname(d))
+        elif state == "not_found":
+            return JU.err(
+                f"路径不存在：{d}\n"
+                "· 多半是游戏文件夹被删掉、改过名，或者路径抄错了一层。\n"
+                "· 点「.. 返回上级」换个位置，或点「重新从根目录开始」。",
+                code="not_found")
+        elif state == "denied":
+            return JU.err(
+                f"没有读取权限：{d}\n"
+                "· 这是系统限制，不是 App 没授权 —— 根目录 / 其它应用的私有目录"
+                "本来就列不了。\n"
+                "· 游戏一般装在「内部存储 / Android/data/<游戏包名>/」下面。",
+                code="denied")
 
     try:
         names = sorted(os.listdir(d or "."))
@@ -166,9 +220,10 @@ def api_list(ctx):
             f"没有读取权限：{d}\n"
             "· 这是系统限制，不是 App 没授权 —— 根目录 / 和其它应用的私有目录"
             "本来就列不了。\n"
-            "· 游戏一般装在「内部存储 / Android/data/<游戏包名>/」下面。")
+            "· 游戏一般装在「内部存储 / Android/data/<游戏包名>/」下面。",
+            code="denied")
     except OSError as e:
-        return JU.err(e)
+        return JU.err(e, code="io_error")
 
     dirs, files = [], []
     for n in names:
@@ -198,6 +253,8 @@ def api_list(ctx):
         "files": files,
         # 让前端能提示「这个目录看起来就是游戏根目录」
         "looks_like_game": _looks_like_game(d, names),
+        # 传进来的是文件时带上原路径 —— 前端据此提示「已跳到它所在的目录」
+        "moved_from": moved_from.replace("\\", "/") if moved_from else None,
     })
 
 

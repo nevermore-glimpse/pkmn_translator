@@ -4355,6 +4355,35 @@ class App:
                     command=self._detect_models_async).pack(side="left", padx=8)
         return cb
 
+    # ---------- 手工翻译缓存（「翻译」页与「术语提取」页共用） ----------
+    def _manual_cache_row(self, parent, term=True):
+        """
+        「模型与模式」下面那一行：提取缓存 / 回写已翻缓存。
+
+        term=True  → 术语提取页（只处理名字文件，回写时并进术语表）
+        term=False → 翻译页（处理非术语类文件）
+        """
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x", pady=(10, 0))
+        GlassButton(row, "提取术语缓存" if term else "提取句子缓存",
+                    width=148, height=36, bg=CARD, font=FONT_SMALL,
+                    command=(self._te_extract_manual_cache if term
+                             else self._tr_extract_manual_cache)
+                    ).pack(side="left")
+        GlassButton(row, "回写已翻术语缓存" if term else "回写已翻句子缓存",
+                    width=196, height=36, bg=CARD, font=FONT_SMALL,
+                    command=(self._te_writeback_manual_cache if term
+                             else self._tr_writeback_manual_cache)
+                    ).pack(side="left", padx=(8, 0))
+        tk.Label(parent,
+                 text="提取：不用送模型的条目先写进翻译缓存，要翻的按文件导出到"
+                      "游戏根目录的 Text_chinese_cache（一个文件一份 json，"
+                      "带该文件的提示词与术语表）。\n"
+                      "回写：把 json 里的译文倒回翻译缓存、生成已翻译文件"
+                      + ("，并把「原文 → 译文」并进术语表。" if term else "。"),
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=560).pack(anchor="w", pady=(6, 0))
+
     # ---------- 翻译模式 ----------
     def _mode_row(self, parent, label="模式"):
         """本地服务 / 云端服务切换。"""
@@ -6109,6 +6138,8 @@ class App:
                       "云端模式填写 API 地址与密钥后可用。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(10, 0))
+        # ★ 手工翻译：把这一批术语拆成「不用模型 / 要送模型」两半
+        self._manual_cache_row(c2.body, term=True)
 
         # ---- 卡 3：预览 / 开始 ----
         c3 = RoundCard(left, radius=16, pad=18, auto_height=True)
@@ -6291,6 +6322,127 @@ class App:
             label=f"提取并翻译 {p['todo']} 条术语…",
             done_label="术语提取完成",
         )
+
+    # ----------------------------------------------------------------
+    # 手工翻译缓存：提取 / 回写（术语页）
+    # ----------------------------------------------------------------
+    def _manual_extract_done(self, st, term=True):
+        """提取完成后统一提示（两页共用一个文案模板）。"""
+        st = st or {}
+        written = st.get("written") or []
+        if not written:
+            messagebox.showinfo(
+                "提示",
+                "没有可导出的条目：\n"
+                "选中的文件里没有待翻的原文（都在翻译缓存或术语表里了）。")
+            return
+        msg = (f"已处理 {st.get('files', 0)} 个文件：\n"
+               f"· 不用送模型的 {st.get('auto', 0)} 条已写进翻译缓存\n"
+               f"· 待翻的 {st.get('todo', 0)} 条已导出成 {len(written)} 份 json\n\n"
+               f"{st.get('dir')}")
+        if st.get("problems"):
+            msg += f"\n\n⚠ {len(st['problems'])} 个文件处理失败，详见日志"
+        self.q.put(("log", f"[手工{'术语' if term else '句子'}缓存] {msg}\n"))
+        messagebox.showinfo(
+            "缓存已提取",
+            msg + "\n\n只改每份 json 里 items 的译文（键＝原文，别动），"
+                  f"改完回程序点「回写已翻{'术语' if term else '句子'}缓存」。")
+
+    def _manual_writeback_done(self, st, term=True):
+        """回写完成后统一提示。"""
+        st = st or {}
+        if not st.get("applied"):
+            extra = f"（{st['missing']} 份找不到对应文本）" \
+                if st.get("missing") else ""
+            messagebox.showinfo(
+                "提示",
+                f"没有读到已翻译的条目{extra}。\n\n"
+                "只改 items 里每条右边的译文、别改原文（键）；"
+                "留空或与原文相同的会被当成「没翻」跳过。")
+            return
+        msg = (f"回写 {st.get('applied', 0)} 条 / {st.get('files', 0)} 个文件："
+               f"缓存新增 {st.get('added', 0)} 条、改写 {st.get('updated', 0)} 条，"
+               f"译文文件改写 {st.get('file_lines', 0)} 行")
+        if term and st.get("terms_added"):
+            msg += f"，并进术语表 {st['terms_added']} 条"
+        if st.get("missing"):
+            msg += f"\n⚠ {st['missing']} 份 json 找不到对应源文件，已跳过"
+        if st.get("skipped"):
+            msg += f"\n· 另有 {st['skipped']} 条留空 / 与原文相同，按「没翻」跳过"
+        self.q.put(("log", f"[手工{'术语' if term else '句子'}缓存] {msg}\n"))
+        messagebox.showinfo("已回写", msg)
+        if term:
+            # 译名变了，术语检查报告要重刷（等本轮 busy 结束后再跑）
+            try:
+                self.root.after(200, self._do_term_check)
+            except Exception:
+                pass
+
+    def _te_extract_manual_cache(self):
+        """把名字文件拆成「写缓存 / 导出 json」两半，供人工翻译。"""
+        import manual_cache as MC
+
+        target = self._te_target_ready(None)
+        if not target:
+            return
+        self.run_async(
+            lambda: MC.extract_terms(target),
+            label="提取术语缓存…", done_label="术语缓存已提取",
+            on_done=lambda st: self._manual_extract_done(st, term=True))
+
+    def _te_writeback_manual_cache(self):
+        """把 Text_chinese_cache 里填好的术语译文回写缓存 + 译文文件。"""
+        import manual_cache as MC
+
+        target = self._te_target_ready(None)
+        if not target:
+            return
+        if not MC.known_files(target, "term"):
+            messagebox.showinfo(
+                "提示",
+                f"没找到术语缓存 json：\n{MC.cache_dir(target, create=False)}\n\n"
+                f"先点「提取术语缓存」。")
+            return
+        self.run_async(
+            lambda: MC.writeback(target, "term"),
+            label="回写术语缓存…", done_label="术语缓存已回写",
+            on_done=lambda st: self._manual_writeback_done(st, term=True))
+
+    # ----------------------------------------------------------------
+    # 手工翻译缓存：提取 / 回写（翻译页）
+    # ----------------------------------------------------------------
+    def _tr_extract_manual_cache(self):
+        """把翻译页选中的文件拆成「写缓存 / 导出 json」两半。"""
+        import manual_cache as MC
+
+        paths = self.fp_translate.ensure()
+        if not paths:
+            messagebox.showwarning("提示", "请先在右侧选择要提取的文件")
+            return
+        paths = self._drop_names_files(paths, "提取句子缓存")
+        if not paths:
+            return
+        self.run_async(
+            lambda: MC.extract_sentences(paths),
+            label=f"提取句子缓存（{len(paths)} 个文件）…",
+            done_label="句子缓存已提取",
+            on_done=lambda st: self._manual_extract_done(st, term=False))
+
+    def _tr_writeback_manual_cache(self):
+        """把 Text_chinese_cache 里填好的句子译文回写缓存 + 译文文件。"""
+        import manual_cache as MC
+
+        basis = self.fp_translate.ensure() or [config.Runtime.input_file]
+        if not MC.known_files(basis, "sentence"):
+            messagebox.showinfo(
+                "提示",
+                f"没找到句子缓存 json：\n{MC.cache_dir(basis, create=False)}\n\n"
+                f"先点「提取句子缓存」。")
+            return
+        self.run_async(
+            lambda: MC.writeback(basis, "sentence"),
+            label="回写句子缓存…", done_label="句子缓存已回写",
+            on_done=lambda st: self._manual_writeback_done(st, term=False))
 
     # ================================================================
     # 页面：术语检查报告（只读缓存与术语表；改译名不走模型，重翻走模型）
@@ -6808,6 +6960,8 @@ class App:
                       "「原文 ⇒ 译文」作为上文参考，可在「设置」里改句数或关闭。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left").pack(anchor="w", pady=(10, 0))
+        # ★ 手工翻译：把这一批句子拆成「不用模型 / 要送模型」两半
+        self._manual_cache_row(c2.body, term=False)
 
         # 下层：开始
         c3 = RoundCard(left, radius=16, pad=18)
@@ -11582,9 +11736,13 @@ class App:
     # ---------- 菜单 5（开启DEBUG）：小工具 ----------
     _DEBUG_MODE_DESC = {
         "main": "方式①（通用）：在 Main 的 pbCallTitle 里写 $DEBUG=true，"
-                "启动即调试模式（F9 开调试菜单）；同时把该函数里的 "
-                "Scene_DebugIntro.new 换成 Scene_Intro.new，"
-                "开局直接进正常标题，不再停在调试开场画面。"
+                "启动即调试模式（F9 开调试菜单）；同时废掉同一个函数里"
+                "「$DEBUG 就走调试开场画面」的那个分支 —— "
+                "`return Scene_DebugIntro.new if $DEBUG` 整行注释；"
+                "`if $DEBUG … else … end` 则把条件改成恒假（if false），"
+                "保证走到 else 里的正常标题。"
+                "★ 只动条件、不改写，游戏自己的标题参数（如 "
+                "`Scene_Intro.new(['intro1'], 'splash')`）原样保留。"
                 "★ 这是启动时开 $DEBUG 的方式；方式②–⑦ 都不会写"
                 "（还会把以前留下的清掉）—— 需要 $DEBUG 时用本方式。",
         "keys": "方式②：删掉各处「需要 $DEBUG 才生效」的条件，让它们无条件可用。"

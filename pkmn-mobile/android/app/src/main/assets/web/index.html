@@ -380,7 +380,10 @@ try { if (window.__NIGHT__ === true) document.body.classList.add("night"); } cat
             <span id="browseTitle">浏览</span>
             <button class="mini" id="browseClose">关闭</button>
         </div>
-        <div class="sheet-path" id="browsePath"></div>
+        <div class="sheet-path" style="display:flex;align-items:center;gap:7px">
+            <div id="browsePath" style="flex:1;min-width:0;overflow-x:auto;white-space:nowrap"></div>
+            <button class="mini" id="browseRoot" style="flex:none">🏠 根目录</button>
+        </div>
         <div class="sheet-list" id="browseList"></div>
     </div>
 </div>
