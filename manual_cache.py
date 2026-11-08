@@ -113,17 +113,21 @@ def _basis_path(basis):
 
 
 def game_root_of(path):
-    """游戏根目录（复用 problem_io 的判定，含「往上找 Data/Scripts.rxdata」）。"""
+    """游戏根目录（复用 problem_io 的判定，含「往上找 Data/Scripts.rxdata」）。
+
+    ★ basis 可能是路径，也可能是路径列表（翻译页传的是选中文件列表）：
+      必须先经 _basis_path 取出一个字符串再交给 problem_io，否则列表会被
+      str() 成 "['E:\\…']"，拼出「<程序目录>\\['E:\\…']」这种假路径。
+    """
+    p = _basis_path(path)
+    if not p:
+        return os.getcwd()
     try:
         import problem_io as PI
-        return PI.game_root_of(path)
+        return PI.game_root_of(p)
     except Exception as e:                       # noqa: BLE001
         log.debug("判定游戏根目录失败（退回所选目录）：%s", e)
-        p = _basis_path(path)
-        if not p:
-            return os.getcwd()
-        p = os.path.abspath(p if os.path.isdir(p) else os.path.dirname(p))
-        return p
+        return os.path.abspath(p if os.path.isdir(p) else os.path.dirname(p))
 
 
 def cache_dir(basis, create=True):
@@ -153,14 +157,23 @@ def _write_json(path, data):
     return path
 
 
-def _read_json(path):
+def _read_json_ex(path):
+    """读 json，返回 (dict, 错误文本)。解析失败时 dict={}，错误文本带行列号。"""
     try:
         with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        return (data if isinstance(data, dict) else {}), ""
+    except json.JSONDecodeError as e:
+        msg = f"第{e.lineno}行第{e.colno}列：{e.msg}"
+        log.warning("读手工翻译缓存失败（跳过 %s）：%s", path, msg)
+        return {}, msg
     except Exception as e:                       # noqa: BLE001
         log.warning("读手工翻译缓存失败（跳过 %s）：%s", path, e)
-        return {}
+        return {}, str(e)
+
+
+def _read_json(path):
+    return _read_json_ex(path)[0]
 
 
 def _items_of(data):
@@ -485,19 +498,26 @@ def extract_sentences(paths, basis=None, progress=None):
 # ================================================================
 # ② 回写
 # ================================================================
-def known_files(basis, mode=None):
-    """当前目录里已有的 json（界面提示用）。"""
+def scan_cache(basis, mode=None):
+    """扫描缓存目录，返回 {"dir", "files": [可读 json], "broken": [(路径, 错误)]}。"""
     d = cache_dir(basis, create=False)
+    out = {"dir": d, "files": [], "broken": []}
     if not os.path.isdir(d):
-        return []
-    out = []
+        return out
     for p in sorted(glob.glob(os.path.join(d, "*.json"))):
-        if mode:
-            data = _read_json(p)
-            if str(data.get("type") or "") not in (mode, ""):
-                continue
-        out.append(p)
+        data, err = _read_json_ex(p)
+        if err:
+            out["broken"].append((p, err))
+            continue
+        if mode and str(data.get("type") or "") not in (mode, ""):
+            continue
+        out["files"].append(p)
     return out
+
+
+def known_files(basis, mode=None):
+    """当前目录里已有的可读 json（界面提示用）。"""
+    return scan_cache(basis, mode)["files"]
 
 
 def writeback(basis, mode=None):
@@ -511,11 +531,12 @@ def writeback(basis, mode=None):
     """
     import commands as C
 
-    out_dir = cache_dir(basis, create=False)
-    paths = known_files(basis, mode)
+    scan = scan_cache(basis, mode)
+    out_dir = scan["dir"]
+    paths = scan["files"]
     st = {"dir": out_dir, "files": 0, "applied": 0, "added": 0,
           "updated": 0, "file_lines": 0, "missing": 0, "skipped": 0,
-          "terms_added": 0}
+          "terms_added": 0, "broken": scan["broken"]}
     if not paths:
         return st
 

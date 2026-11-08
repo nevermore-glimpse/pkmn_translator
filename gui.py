@@ -6353,6 +6353,15 @@ class App:
         """回写完成后统一提示。"""
         st = st or {}
         if not st.get("applied"):
+            broken = st.get("broken") or []
+            if broken:
+                detail = "\n".join(
+                    f"{os.path.basename(p)}：{err}" for p, err in broken[:5])
+                messagebox.showwarning(
+                    "缓存 json 格式错误",
+                    f"以下缓存 json 无法解析：\n{detail}\n\n"
+                    f"修正 JSON 格式后再试（注意转义双引号、反斜杠与换行）。")
+                return
             extra = f"（{st['missing']} 份找不到对应文本）" \
                 if st.get("missing") else ""
             messagebox.showinfo(
@@ -6434,10 +6443,22 @@ class App:
         import manual_cache as MC
 
         basis = self.fp_translate.ensure() or [config.Runtime.input_file]
-        if not MC.known_files(basis, "sentence"):
+        scan = MC.scan_cache(basis, "sentence")
+        if scan["broken"]:
+            detail = "\n".join(
+                f"{os.path.basename(p)}：{err}" for p, err in scan["broken"][:5])
+            messagebox.showwarning(
+                "句子缓存 json 格式错误",
+                f"以下缓存 json 无法解析：\n{detail}\n\n"
+                f"常见原因：手工 / 外部工具编辑时没有转义英文双引号（\"）、"
+                f"反斜杠（\\），或把换行写成了真实换行。\n"
+                f"修正 JSON 格式后再点「回写已翻句子缓存」。\n\n"
+                f"目录：{scan['dir']}")
+            return
+        if not scan["files"]:
             messagebox.showinfo(
                 "提示",
-                f"没找到句子缓存 json：\n{MC.cache_dir(basis, create=False)}\n\n"
+                f"没找到句子缓存 json：\n{scan['dir']}\n\n"
                 f"先点「提取句子缓存」。")
             return
         self.run_async(
