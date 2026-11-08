@@ -14,7 +14,8 @@ r"""
 
            · **不用送模型**的条目 → 直接写进该文件的翻译缓存
              `*_cache.json`：整句术语直译（命中术语表）、整句 `#{…}`
-             占位符、单个字母、纯控制符、资源路径、预过滤（无可译文本）。
+             占位符、单个字母、纯控制符、资源路径、预过滤（无可译文本）、
+             参考译文命中（程序目录「翻译中间文件」夹里的对照 json）。
              这些和真正翻译时写进去的值逐字节一致，下次翻译直接命中缓存。
            · **要送模型**的条目 → 导出成
              `<游戏根目录>/Text_chinese_cache/<源文件名>.json`，一个源文件一份，
@@ -54,7 +55,7 @@ import os
 from types import SimpleNamespace
 
 import config
-from cache import Cache, atomic_replace
+from cache import Cache, atomic_replace, reference_translations
 from logger import get_logger
 
 log = get_logger("manual_cache")
@@ -213,10 +214,12 @@ def split_file(path):
     """
     解析一个文本文件并按正常翻译的口径分流。
 
-    返回 {"path","section","cache","translated","auto","todo","cached","entries"}
-      · auto   : {原文: 译文}，**不用送模型**的条目（整句术语直译 / 各类跳过）
+    返回 {"path","section","cache","translated","auto","todo","cached","entries","ref"}
+      · auto   : {原文: 译文}，**不用送模型**的条目（整句术语直译 / 各类跳过
+                 / 参考译文命中）
       · todo   : [原文, ...]，要送模型翻的（缓存里还没有的）
       · cached : 已经在翻译缓存里的条数（这次不再处理）
+      · ref    : auto 里命中程序目录「翻译中间文件」夹参考译文的条数
     """
     import commands as C
     import parser as P
@@ -228,6 +231,7 @@ def split_file(path):
     lines, _nl = P.read_file(path, config.INPUT_ENCODING)
     entries, _special = P.extract_entries(lines)
     have = _read_cache_data(cache_path)
+    ref_map = reference_translations()
 
     try:
         PR.load_terms()
@@ -236,6 +240,7 @@ def split_file(path):
 
     auto, todo, seen = {}, [], set()
     cached = 0
+    ref_hits = 0
     for _ln, txt in entries:
         if not txt or txt in seen:
             continue
@@ -266,11 +271,17 @@ def split_file(path):
                 and not PR.has_translatable_text(txt):
             auto[txt] = txt
             continue
+        # ★ 参考译文：与 _translate_core 同口径，命中就直接写缓存、不导出
+        ref = ref_map.get(txt)
+        if ref is not None:
+            auto[txt] = ref
+            ref_hits += 1
+            continue
         todo.append(txt)
 
     return {"path": path, "section": sec, "cache": cache_path,
             "translated": out_path, "auto": auto, "todo": todo,
-            "cached": cached, "entries": len(entries)}
+            "cached": cached, "entries": len(entries), "ref": ref_hits}
 
 
 # ================================================================
@@ -368,7 +379,7 @@ def _extract(files, mode, basis, progress=None):
 
     out_dir = cache_dir(basis)
     st = {"dir": out_dir, "type": mode, "files": 0, "auto": 0, "todo": 0,
-          "cached": 0, "written": [], "skipped": 0, "problems": [],
+          "cached": 0, "ref": 0, "written": [], "skipped": 0, "problems": [],
           "entries": 0}
     used = set()
     total = len(files)
@@ -425,9 +436,11 @@ def _extract(files, mode, basis, progress=None):
         st["auto"] += len(r["auto"])
         st["todo"] += len(items)
         st["cached"] += r["cached"]
-        log.info("[%d/%d] %s：跳过类 %d 条写缓存，待翻 %d 条 → %s",
+        st["ref"] += r.get("ref", 0)
+        log.info("[%d/%d] %s：跳过类 %d 条写缓存（参考译文命中 %d 条），"
+                 "待翻 %d 条 → %s",
                  i, total, os.path.basename(path), len(r["auto"]),
-                 len(items), os.path.basename(out))
+                 r.get("ref", 0), len(items), os.path.basename(out))
         if progress:
             progress(i, total, os.path.basename(path))
 

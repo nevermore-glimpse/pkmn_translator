@@ -25,7 +25,7 @@ import replacement as REPL
 import restoration as RESTORE
 import settings
 import translator as T
-from cache import Cache, atomic_replace, load_edits
+from cache import Cache, atomic_replace, load_edits, reference_translations
 from logger import get_logger, log_once, reset_once
 from translator import (OllamaClient, resolve_concurrency,
                         translate_with_retry)
@@ -1606,6 +1606,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
         return {"entries": 0, "todo": 0, "done": 0, "failed": 0}
 
     cache = Cache(cache_path)
+    ref_map = reference_translations()
 
     seen, todo = set(), []
     skipped_pure = 0
@@ -1613,6 +1614,7 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
     skipped_prefilter = 0
     skipped_hash_ph = 0        # ★ 整句只有 #{...}（如 #{count}）：原样写缓存
     skipped_letter = 0         # ★ 单个字母（如 A / ñ）：原文即译文，不送模型
+    ref_hits = 0               # ★ 命中程序目录「翻译中间文件」夹的参考译文
     whole_hits = []           # ★ 整句命中手工术语：直接写缓存，不送模型
     for _, txt in entries:
         if txt in seen:
@@ -1665,6 +1667,13 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
             cache.put(txt, txt)
             skipped_prefilter += 1
             continue
+        # ★ 参考译文：命中程序目录「翻译中间文件」夹里的对照缓存，
+        #   直接把译文写进本文件缓存，不送模型。
+        ref = ref_map.get(txt)
+        if ref is not None:
+            cache.put(txt, ref)
+            ref_hits += 1
+            continue
         todo.append(txt)
 
     if whole_hits:
@@ -1707,9 +1716,15 @@ def _translate_core(src_path, lines=None, newline=None, show_header=True,
         emit(f"[过滤] 整句 #{{}} 占位符 {skipped_hash_ph} 条"
              f"（如 #{{count}}，原文即译文，不送模型）")
 
+    if ref_hits:
+        cache.save()
+        log.info("参考译文命中 %d 条（已写入缓存，不送模型）", ref_hits)
+        emit(f"[参考译文] {ref_hits} 条命中程序目录「{config.WORK_DIR_NAME}」"
+             f"夹里的对照缓存，已直接写缓存（不送模型）")
+
     n_cache = (len(seen) - len(todo) - skipped_pure - skipped_path
                - skipped_prefilter - len(whole_hits) - skipped_hash_ph
-               - skipped_letter)
+               - skipped_letter - ref_hits)
     emit(f"[待翻] 唯一 {len(seen)}  需翻 {len(todo)}  缓存命中 {n_cache}")
 
     # ---------- 批量翻译 ----------

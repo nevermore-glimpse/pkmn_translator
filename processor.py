@@ -1138,13 +1138,80 @@ def _check_case_conflicts(terms):
             log.warning("  … 其余 %d 组省略", len(conflicts) - 10)
 
 
+# ----------------------------------------------------------------
+# pokemon_terms：随程序分发的官方多语言名字表（pokemon_terms/ 目录下
+# terms_<语言代码>_zh-Hans.json）。按当前源语言取一份并进术语池，
+# 与 term_dict.py 重复的词以 term_dict 为准（用户校对过的优先）。
+# ----------------------------------------------------------------
+_POKEMON_TERM_LANGS = {
+    "英文": "en", "英语": "en", "english": "en", "en": "en", "eng": "en",
+    "西班牙文": "es", "西班牙语": "es", "西班牙": "es", "spanish": "es",
+    "es": "es", "español": "es", "欧洲西班牙文": "es", "欧洲西班牙语": "es",
+    "西班牙文（欧洲）": "es", "西班牙文(欧洲)": "es", "es-es": "es",
+    "法文": "fr", "法语": "fr", "french": "fr", "fr": "fr", "français": "fr",
+    "德文": "de", "德语": "de", "german": "de", "de": "de", "deutsch": "de",
+    "意大利文": "it", "意大利语": "it", "italian": "it", "it": "it",
+    "italiano": "it",
+    "日文": "ja", "日语": "ja", "japanese": "ja", "jp": "ja", "jpn": "ja",
+    "韩文": "ko", "韩语": "ko", "korean": "ko", "ko": "ko", "한국어": "ko",
+    "繁体中文": "zh-Hant", "繁中": "zh-Hant", "中文（繁体）": "zh-Hant",
+    "中文(繁体)": "zh-Hant", "zh-tw": "zh-Hant", "zh_hant": "zh-Hant",
+    "葡萄牙文": "pt-BR", "葡萄牙语": "pt-BR", "portuguese": "pt-BR",
+    "pt": "pt-BR", "português": "pt-BR",
+}
+
+
+def _pokemon_terms_file():
+    """当前源语言对应的 pokemon_terms 词典路径；无匹配 / 不存在返回 None。"""
+    lang = (getattr(config, "SOURCE_LANG", "") or "").strip().lower()
+    code = _POKEMON_TERM_LANGS.get(lang)
+    if not code:
+        return None
+    d = (config.resource_dir("pokemon_terms")
+         or os.path.join(config.BASE_DIR, "pokemon_terms"))
+    path = os.path.join(d, f"terms_{code}_zh-Hans.json")
+    return path if os.path.isfile(path) else None
+
+
+def _load_pokemon_terms():
+    """读取 pokemon_terms 词典 → [(词, 中文)]。坏值（？？？等）跳过。"""
+    path = _pokemon_terms_file()
+    if not path:
+        return [], None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        log.debug("pokemon_terms 读取失败（跳过）：%s", e)
+        return [], None
+    pairs = []
+    for k, v in data.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
+        k, v = k.strip(), v.strip()
+        if not k or not v or v == k or "？" in v or v in ("???", "—"):
+            continue
+        if _is_placeholder_token(k):
+            continue
+        pairs.append((k, v))
+    return pairs, os.path.basename(path)
+
+
 def _terms_file_key():
     try:
         st = os.stat(config.TERM_FILE)
-        return (config.TERM_FILE, st.st_mtime, st.st_size,
-                bool(config.APPLY_TERMS))
+        key = (config.TERM_FILE, st.st_mtime, st.st_size,
+               bool(config.APPLY_TERMS))
     except OSError:
-        return (config.TERM_FILE, 0, 0, bool(config.APPLY_TERMS))
+        key = (config.TERM_FILE, 0, 0, bool(config.APPLY_TERMS))
+    # pokemon_terms 也纳入签名：文件增删改后 load_terms 会重新合并
+    p = _pokemon_terms_file()
+    try:
+        st2 = os.stat(p) if p else None
+        key += (p, st2.st_mtime if st2 else 0, st2.st_size if st2 else 0)
+    except OSError:
+        key += (p, 0, 0)
+    return key
 
 
 def _load_term_sections():
@@ -1299,6 +1366,21 @@ def load_terms(force=False):
         good.append((k, v))
     if skipped_ph:
         log.info("术语表跳过 %d 条占位符型伪术语（@0@ 等）", skipped_ph)
+
+    # ★ pokemon_terms 官方名字表并入术语池：只取当前源语言的一份，
+    #   与 term_dict 重复的词以 term_dict 为准（用户校对优先）。
+    pt_pairs, pt_name = _load_pokemon_terms()
+    if pt_pairs:
+        have = {k.lower() for k, _ in good}
+        added_pt = 0
+        for k, v in pt_pairs:
+            if k.lower() in have:
+                continue
+            have.add(k.lower())
+            good.append((k, v))
+            added_pt += 1
+        log_once(("pokemon_terms", pt_name, added_pt),
+                 "pokemon_terms 术语并入：%s（新增 %d 条）", pt_name, added_pt)
 
     good.sort(key=lambda x: -len(x[0]))
 

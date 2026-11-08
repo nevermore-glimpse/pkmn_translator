@@ -3,9 +3,10 @@
     "cross_sheet": 95,
     "groups": 148,
     "same_sheet": 53,
-    "variants": 309
+    "variants": 159,
+    "pokemon_terms_conflicts": 17
   },
-  "generated_at": "2026-10-18T18:40:29+08:00",
+  "generated_at": "2026-11-08T14:25:40+08:00",
   "sections": {
     "ABILITY_NAMES": {
       "alerta": "预知梦",
@@ -15,7 +16,12 @@
       "commander": "发号施令",
       "descarga": "下载",
       "imán": "磁力",
-      "peluche": "毛茸茸"
+      "peluche": "毛茸茸",
+      "turbine": "蒸汽机",
+      "ira": "怒火冲天",
+      "sandsturm": "扬沙",
+      "kraftkoloss": "大力士",
+      "schnüffler": "察觉"
     },
     "ITEM_NAMES": {
       "antídoto": "解毒药",
@@ -32,7 +38,11 @@
       "metrónomo": "节拍器",
       "roca helada": "冰冷岩石",
       "taladro": "挖洞钻",
-      "té": "茶"
+      "té": "茶",
+      "métronome": "节拍器",
+      "metronom": "节拍器",
+      "scanner": "探测器",
+      "？？？": "？？？"
     },
     "MOVE_NAMES": {
       "arremetida": "突飞猛扑",
@@ -84,7 +94,16 @@
       "thunderbolt": "十万伏特",
       "thunderclap": "迅雷",
       "torbellino": "吹飞",
-      "trueno": "打雷"
+      "trueno": "打雷",
+      "turbine": "吹飞",
+      "vol": "飞翔",
+      "ira": "愤怒",
+      "métronome": "挥指",
+      "metronom": "挥指",
+      "scanner": "看穿",
+      "sandsturm": "沙暴",
+      "kraftkoloss": "蛮力",
+      "schnüffler": "气味侦测"
     },
     "REGION_LOCATION_NAMES": {
       "gracidea": "葛拉西蒂亚",
@@ -102,7 +121,8 @@
       "arceus": "阿尔宙斯",
       "genesect": "盖诺赛克特",
       "kyurem": "酋雷姆",
-      "rotom": "洛托姆"
+      "rotom": "洛托姆",
+      "ゴースト": "鬼斯通"
     },
     "TRAINER_TYPE_NAMES": {
       "black belt": "空手道王",
@@ -129,7 +149,10 @@
       "eléctrico": "电",
       "psychic": "超能",
       "psíquico": "超能",
-      "siniestro": "恶"
+      "siniestro": "恶",
+      "ゴースト": "幽灵",
+      "vol": "飞行",
+      "？？？": "???"
     }
   },
   "source": "术语表（Glossary）.xlsx",
@@ -1453,6 +1476,11 @@
         "dst": "超能",
         "section": "TYPE_NAMES",
         "sheet": "属性名称"
+      },
+      {
+        "dst": "超能力",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名"
       }
     ],
     "rainbow": [
@@ -1974,7 +2002,140 @@
         "section": "TRAINER_TYPE_NAMES",
         "sheet": "训练家类型"
       }
+    ],
+    "ゴースト": [
+      {
+        "dst": "鬼斯通",
+        "section": "SPECIES_NAMES",
+        "sheet": "宝可梦名"
+      },
+      {
+        "dst": "幽灵",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名"
+      }
+    ],
+    "turbine": [
+      {
+        "dst": "吹飞",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名"
+      },
+      {
+        "dst": "蒸汽机",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名"
+      }
+    ],
+    "vol": [
+      {
+        "dst": "飞翔",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名"
+      },
+      {
+        "dst": "飞行",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名"
+      }
+    ],
+    "ira": [
+      {
+        "dst": "愤怒",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名"
+      },
+      {
+        "dst": "怒火冲天",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名"
+      }
+    ],
+    "métronome": [
+      {
+        "dst": "挥指",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名"
+      },
+      {
+        "dst": "节拍器",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名"
+      }
+    ],
+    "metronom": [
+      {
+        "dst": "挥指",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名"
+      },
+      {
+        "dst": "节拍器",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名"
+      }
+    ],
+    "scanner": [
+      {
+        "dst": "看穿",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名"
+      },
+      {
+        "dst": "探测器",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名"
+      }
+    ],
+    "sandsturm": [
+      {
+        "dst": "沙暴",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名"
+      },
+      {
+        "dst": "扬沙",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名"
+      }
+    ],
+    "kraftkoloss": [
+      {
+        "dst": "蛮力",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名"
+      },
+      {
+        "dst": "大力士",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名"
+      }
+    ],
+    "schnüffler": [
+      {
+        "dst": "气味侦测",
+        "section": "MOVE_NAMES",
+        "sheet": "招式名"
+      },
+      {
+        "dst": "察觉",
+        "section": "ABILITY_NAMES",
+        "sheet": "特性名"
+      }
+    ],
+    "？？？": [
+      {
+        "dst": "？？？",
+        "section": "ITEM_NAMES",
+        "sheet": "道具名"
+      },
+      {
+        "dst": "???",
+        "section": "TYPE_NAMES",
+        "sheet": "属性名"
+      }
     ]
   },
-  "version": 1
+  "version": 1,
+  "pokemon_terms_merged_at": "2026-11-08T14:25:40+08:00"
 }

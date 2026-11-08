@@ -114,6 +114,61 @@ def record_edits(pairs, cache_path=None):
     return n
 
 
+# ================================================================
+# 参考译文缓存（程序目录下的「翻译中间文件」夹）
+# ================================================================
+# 用户可把其它项目翻好的「原文 → 译文」对照 json 放进程序（exe / 源码）
+# 目录下的「翻译中间文件」夹。翻译 / 提取句子缓存时，待翻句子命中参考
+# 译文就直接写进该文件的缓存，不送模型、也不导出到提取缓存。
+_ref_lock = threading.Lock()
+_ref_data = {}
+_ref_sig = None
+
+
+def reference_translations():
+    """
+    参考译文夹里所有 json 合并成的 {原文: 译文}。
+
+    · 只收「键、值都是非空字符串」的条目，结构不符的 json 自然被跳过；
+    · 同一句出现在多份 json 里时，文件名排序靠前的优先；
+    · 按（文件名, mtime, 大小）签名缓存，夹里内容变了自动重载；
+    · 每个文件只需调一次，拿到字典后自行 get。
+    """
+    global _ref_data, _ref_sig
+    d = config.resource_dir(config.WORK_DIR_NAME) or ""
+    sig = None
+    if d:
+        try:
+            sig = tuple(sorted(
+                (n, os.path.getmtime(os.path.join(d, n)),
+                 os.path.getsize(os.path.join(d, n)))
+                for n in os.listdir(d) if n.lower().endswith(".json")))
+        except OSError:
+            sig = None
+    with _ref_lock:
+        if sig == _ref_sig:
+            return _ref_data
+        data = {}
+        for name, _mtime, _size in sig or ():
+            p = os.path.join(d, name)
+            try:
+                with open(p, "r", encoding="utf-8-sig") as f:
+                    obj = json.load(f)
+            except Exception as e:
+                log.warning("参考译文读取失败（跳过 %s）：%s", p, e)
+                continue
+            if not isinstance(obj, dict):
+                continue
+            for k, v in obj.items():
+                if isinstance(k, str) and k.strip() \
+                        and isinstance(v, str) and v.strip():
+                    data.setdefault(k, v)
+        _ref_data, _ref_sig = data, sig
+        if data:
+            log.info("参考译文加载：%s（%d 条）", d, len(data))
+        return _ref_data
+
+
 class Cache:
     def __init__(self, path, save_every=None):
         self.path = path

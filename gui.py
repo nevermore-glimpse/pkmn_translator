@@ -6336,8 +6336,9 @@ class App:
                 "没有可导出的条目：\n"
                 "选中的文件里没有待翻的原文（都在翻译缓存或术语表里了）。")
             return
+        ref_note = f"（含参考译文命中 {st['ref']} 条）" if st.get("ref") else ""
         msg = (f"已处理 {st.get('files', 0)} 个文件：\n"
-               f"· 不用送模型的 {st.get('auto', 0)} 条已写进翻译缓存\n"
+               f"· 不用送模型的 {st.get('auto', 0)} 条已写进翻译缓存{ref_note}\n"
                f"· 待翻的 {st.get('todo', 0)} 条已导出成 {len(written)} 份 json\n\n"
                f"{st.get('dir')}")
         if st.get("problems"):
