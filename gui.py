@@ -1234,12 +1234,16 @@ class FilePanel(tk.Frame):
     """
     右侧「待操作文件」侧边栏：单个文件 / 整个文件夹 + 勾选列表。
 
-    mode:
+    mode（= 本页「认」的产物，选到别的东西会自动换算成它）:
       "source"     —— 翻译页：源文件，不限格式，只跳过译文与检查报告
-      "report"     —— 重翻检查报告页：只识别 *_translated_report.txt
-      "cache"      —— 术语重翻页：只识别翻译缓存 *_cache.json
-      "translated" —— 换行重排页：只识别译文 *_translated.txt
+      "cache"      —— 重翻检查报告 / 术语重翻 / 前缀字典 / 换行重排页：
+                      统一按翻译缓存 *_cache.json 列出来（缓存是这几步真正
+                      被改的东西，报告与译文都由它派生）
+      "translated" —— 保留：只识别译文 *_translated.txt
       "dict"       —— 前缀字典页：固定用工具目录下的 prefix_dict.json，不给选
+
+    ★ 选文件 / 选文件夹时一律先换算：报告 → 缓存、源文件 → 缓存、
+      译文 → 缓存（翻译页反过来：缓存 / 报告 / 译文 → 源文件）。
     """
 
     # 翻译页需要跳过的后缀
@@ -1255,7 +1259,7 @@ class FilePanel(tk.Frame):
 
     def __init__(self, master, bg=CARD, width=272, mode="source",
                  on_change=None, app=None, allow_game_root=False,
-                 on_game_root=None):
+                 on_game_root=None, hint=None, title=None):
         tk.Frame.__init__(self, master, bg=bg, width=width)
         self.bg = bg
         self.mode = mode
@@ -1264,6 +1268,8 @@ class FilePanel(tk.Frame):
         self.panel_w = width          # ★ 供 clear() 等重画提示文字时算 wraplength
         self.allow_game_root = allow_game_root
         self.on_game_root = on_game_root
+        self.hint_override = hint     # 本页自定义的提示文案（多行）
+        self.title_override = title   # 本页自定义的选文件对话框标题
         self.game_root = None
         self.files = []
         self.vars = {}
@@ -1341,11 +1347,16 @@ class FilePanel(tk.Frame):
 
     # ---------- 筛选规则 ----------
     def _hint_text(self):
+        if self.hint_override:
+            return self.hint_override
         if self.mode == "report":
-            return "点击上方按钮选择检查报告\n（只识别 *_translated_report.txt）"
+            return ("点击上方按钮选择检查报告\n"
+                    "（只列已生成的 *_translated_report.txt；\n"
+                    "　选源文件 / 缓存也会自动换成对应报告）")
         if self.mode == "cache":
             return ("点击上方按钮选择翻译缓存\n"
-                    "（只识别 *_cache.json，也就是翻译时生成的那个缓存）")
+                    "（只列 *_cache.json；\n"
+                    "　选源文件 / 译文 / 报告会自动换成对应缓存）")
         if self.mode == "translated":
             return ("点击上方按钮选择译文文件\n"
                     "（只识别 *_translated.txt）")
@@ -1385,6 +1396,62 @@ class FilePanel(tk.Frame):
         return [p for p in paths
                 if os.path.isfile(p) and self._accept(os.path.basename(p), p)]
 
+    # ---------- 换算：选错类型也能用 ----------
+    def _convert(self, path):
+        """
+        把选到的任意文件换算成**本页认的产物**。
+
+        ★ 游戏汉化各页统一按「翻译缓存」走：选了源文件 / 译文 / 检查报告，
+          一律换成对应的 *_cache.json（缓存才是这几步真正被改的东西，
+          报告与译文都由它派生）。
+          翻译页反向：选了缓存 / 报告 / 译文，换回**源文件**。
+        """
+        if not path:
+            return None
+        if self._accept(os.path.basename(path), path):
+            return path
+        try:
+            if self.mode == "report":
+                return commands.report_path_for(path)
+            if self.mode == "cache":
+                return commands.cache_path_for(path)
+            if self.mode == "translated":
+                return commands.translated_path_for(path)
+            if self.mode == "source":
+                return commands.source_of(path)
+        except Exception:                     # noqa: BLE001
+            return None
+        return path
+
+    def _resolve(self, paths):
+        """选中路径 → (换算后存在的, 换算后还缺的)。"""
+        keep, missing = [], []
+        for p in paths or []:
+            c = self._convert(p)
+            if not c:
+                continue
+            if os.path.isfile(c):
+                if c not in keep:
+                    keep.append(c)
+            elif os.path.isfile(p):
+                missing.append(p)
+        return keep, missing
+
+    _MISSING_NOTE = {
+        "report": "这些文件还没有检查报告，先把它们翻译完（或点「刷新报告」）：",
+        "cache": "这些文件还没有翻译缓存，先翻译一遍：",
+        "translated": "这些文件还没有译文，先翻译一遍：",
+        "source": "找不到这些文件对应的源文件：",
+    }
+
+    def _missing_note(self, missing):
+        head = self._MISSING_NOTE.get(self.mode)
+        if not head or not missing:
+            return self._hint_text().replace("\n", "")
+        names = "\n".join(os.path.basename(m) for m in missing[:6])
+        more = f"\n… 共 {len(missing)} 个" if len(missing) > 6 else ""
+        return f"{head}\n{names}{more}"
+
     # ---------- 选择 ----------
     def _initial(self):
         d = config.Runtime.last_dir
@@ -1392,12 +1459,13 @@ class FilePanel(tk.Frame):
 
     def pick_file(self):
         if self.mode == "report":
-            title = "选择检查报告（*_translated_report.txt）"
+            title = "选择检查报告（选源文件 / 缓存会自动换成对应报告）"
             types = [("检查报告", "*_translated_report.txt"),
-                     ("所有文件", "*.*")]
+                     ("源文件 / 缓存（自动换算）", "*.*")]
         elif self.mode == "cache":
-            title = "选择翻译缓存（*_cache.json）"
-            types = [("翻译缓存", "*_cache.json"), ("所有文件", "*.*")]
+            title = "选择翻译缓存（*_cache.json；选别的会自动换算）"
+            types = [("翻译缓存", "*_cache.json"),
+                     ("源文件 / 译文 / 报告（自动换算）", "*.*")]
         elif self.mode == "translated":
             title = "选择译文文件（*_translated.txt）"
             types = [("译文文件", "*_translated.txt"), ("所有文件", "*.*")]
@@ -1406,12 +1474,17 @@ class FilePanel(tk.Frame):
         else:
             title = "选择要处理的文件"
             types = [("所有文件", "*.*")]
+        if self.title_override:
+            title = self.title_override
         paths = filedialog.askopenfilenames(
             title=title, initialdir=self._initial(), filetypes=types)
-        paths = self._filter(list(paths))
-        if paths:
-            config.Runtime.set_dir(os.path.dirname(paths[0]))
-            self.add_files(paths)
+        keep, missing = self._resolve(list(paths))
+        keep = self._filter(keep)
+        if not keep:
+            messagebox.showinfo("提示", self._missing_note(missing))
+            return
+        config.Runtime.set_dir(os.path.dirname(keep[0]))
+        self.add_files(keep)
 
     def pick_dir(self):
         if self.mode == "dict":
@@ -1421,13 +1494,10 @@ class FilePanel(tk.Frame):
         if not folder:
             return
         config.Runtime.set_dir(folder)
-        files = sorted(
-            os.path.join(folder, f)
-            for f in os.listdir(folder)
-            # ★ 只收文件（别把「翻译中间文件」这类子目录也列进来）
-            if self._accept(f, os.path.join(folder, f))
-            and os.path.isfile(os.path.join(folder, f))
-        )
+        # ★ 先不按后缀硬筛，把候选路径原样收起来，交给 _resolve 统一换算 ——
+        #   这样在报告页选源文件夹时，缓存 / 源文件会被换成对应报告，
+        #   绝不会把 *_cache.json 当成「检查报告」列进待操作清单。
+        raw = [os.path.join(folder, f) for f in sorted(os.listdir(folder))]
         # ★ 再扫一层「翻译中间文件」夹 —— 缓存 / 报告 / 润色稿现在都放里面，
         #   用户选源文件夹时应该能直接选到它们（否则得再点进子目录一次）。
         #   游戏文本常按子目录分组（如 Text_chinese/A、/B），所以子目录下的
@@ -1441,52 +1511,47 @@ class FilePanel(tk.Frame):
         for cand in candidates:
             wd = os.path.join(cand, wd_name)
             if os.path.isdir(wd):
-                files += sorted(
-                    os.path.join(wd, f)
-                    for f in os.listdir(wd)
-                    if self._accept(f, os.path.join(wd, f))
-                    and os.path.isfile(os.path.join(wd, f))
-                )
-            if len(files) >= 2000:      # 防大目录卡死，与 pick_game_root 同上限
+                raw += [os.path.join(wd, f) for f in sorted(os.listdir(wd))]
+            if len(raw) >= 2000:        # 防大目录卡死，与 pick_game_root 同上限
                 break
+        keep, missing = self._resolve(raw)
+        files = self._filter(keep)
         if not files:
-            messagebox.showinfo("提示", self._hint_text().replace("\n", ""))
+            messagebox.showinfo("提示", self._missing_note(missing))
             return
         self.add_files(files)
 
     def pick_game_root(self):
-        """选游戏主程序 exe → 推出游戏根目录 → 扫描里面的 txt 文件。"""
+        """选游戏主程序 exe → 推出游戏根目录 → 扫描里面的文本文件。"""
         folder, _exe = pick_game_exe_dialog(
             self, initialdir=self._initial(),
-            title="选择游戏主程序（会自动扫描游戏目录里的 .txt）")
+            title="选择游戏主程序（会自动扫描游戏目录里的文本文件）")
         if not folder:
             return
         config.Runtime.set_dir(folder)
-        found = []
+        raw = []
         for root, dirs, files in os.walk(folder):
-            # 别钻进太深的目录，也跳过生成物目录
+            # 别钻进太深的目录
             depth = os.path.relpath(root, folder).count(os.sep)
             if depth > 4:
                 dirs[:] = []
                 continue
-            # ★ 跳过工具建的「翻译中间文件」夹（里面全是缓存 / 报告 / 润色稿）
-            wd = getattr(config, "WORK_DIR_NAME", "")
-            if wd:
-                dirs[:] = [d for d in dirs if d != wd]
             for f in files:
-                if not f.lower().endswith(".txt"):
+                if not f.lower().endswith((".txt", ".json")):
                     continue
-                if not self._accept(f, os.path.join(root, f)):
-                    continue
-                found.append(os.path.join(root, f))
-                if len(found) >= 2000:
+                raw.append(os.path.join(root, f))
+                if len(raw) >= 4000:
                     break
-            if len(found) >= 2000:
+            if len(raw) >= 4000:
                 break
-        found.sort()
+        # ★ 扫到的是源文件 / 译文 / 报告 / 缓存的原样路径，本页要的可能是
+        #   缓存（换行重排页）—— 交给 _resolve 换算后再列，没缓存 / 没译文的
+        #   自然被滤掉。
+        found, missing = self._resolve(raw)
+        found = self._filter(found)
         if not found:
-            messagebox.showinfo(
-                "提示", f"该目录下没找到可处理的 .txt 文件：\n{folder}")
+            messagebox.showinfo("提示", self._missing_note(missing)
+                                or f"该目录下没找到可处理的文本文件：\n{folder}")
             return
         self.game_root = folder
         self.root_lbl.config(text=os.path.basename(folder) or folder)
@@ -1498,6 +1563,16 @@ class FilePanel(tk.Frame):
                 pass
 
     def add_files(self, paths, silent=False):
+        # ★ 兜底：不管谁调进来（ensure / 菜单同步 / 选择器），一律换成本页
+        #   认的产物并过滤一遍 —— 缓存页里只会出现 *_cache.json，
+        #   翻译页里只会出现源文件。
+        #   字典页例外：prefix_dict.json 可能还没生成，也要照样列出来。
+        if self.mode == "dict":
+            paths = [p for p in (paths or [])
+                     if self._accept(os.path.basename(p), p)]
+        else:
+            keep, _missing = self._resolve(list(paths or []))
+            paths = self._filter(keep)
         if self._hint and self._hint.winfo_exists():
             self._hint.destroy()
             self._hint = None
@@ -4254,12 +4329,12 @@ class App:
             pass
 
     def _make_file_panel(self, holder, mode, allow_game_root=False,
-                         on_game_root=None):
+                         on_game_root=None, hint=None, title=None):
         """统一创建右侧文件侧边栏，并把「翻译」页的选择同步给其它子页面。"""
         fp = FilePanel(holder.body, bg=CARD, mode=mode,
                        on_change=self._sync_file_panels, app=self,
                        allow_game_root=allow_game_root,
-                       on_game_root=on_game_root)
+                       on_game_root=on_game_root, hint=hint, title=title)
         fp.pack(fill="both", expand=True)
         self.file_panels.append(fp)
         return fp
@@ -4291,23 +4366,21 @@ class App:
         「游戏汉化 → 翻译」页选中文件后，自动同步到其它子页面。
 
         ★ 各菜单认的文件不一样，这里统一做一次换算：
-            重翻检查报告 → 检查报告 *_translated_report.txt
-            术语重翻 → 翻译缓存 *_cache.json
-            换行重排 → 译文 *_translated.txt
-            前缀字典 → 字典文件固定，不同步
+            重翻检查报告 / 术语重翻 / 前缀字典 / 换行重排 → 翻译缓存 *_cache.json
+            翻译 → 源文件
           源文件的换算走 commands.source_of()，所以把缓存 / 译文直接拖进来也能认。
         """
         paths = list(paths or [])
-        # ★ 先统一换回源文件：术语重翻里勾的是缓存、换行重排里勾的是译文，
+        # ★ 先统一换回源文件：术语重翻里勾的是缓存、换行重排里勾的是缓存，
         #   直接同步过去会把这些文件塞进翻译页，翻译时会当成文本去读。
         base = [commands.source_of(p) for p in paths]
         for fp in self.file_panels:
             if fp is None or not fp.winfo_exists():
                 continue
-            if fp.mode == "report":
-                target = [commands.report_path_for(p) for p in base]
-            elif fp.mode == "cache":
+            if fp.mode == "cache":
                 target = [commands.cache_path_for(p) for p in base]
+            elif fp.mode == "report":
+                target = [commands.report_path_for(p) for p in base]
             elif fp.mode == "translated":
                 target = [commands.translated_path_for(p) for p in base]
             elif fp.mode == "dict":
@@ -5121,7 +5194,7 @@ class App:
         paths = self._report_sources()
         if not paths:
             messagebox.showwarning("提示",
-                                   "请先选择检查报告（*_translated_report.txt）")
+                                   "请先在右侧选择翻译缓存（*_cache.json）")
             return
         try:
             n_files, n_edit = commands.count_manual_edits(paths)
@@ -7208,7 +7281,14 @@ class App:
                                 scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
-        fp = self._make_file_panel(fp_holder, "report")
+        # ★ 本页按「翻译缓存」走：缓存才是重翻真正被改的东西，报告 / 译文
+        #   都由它派生。选源文件、译文或报告都会自动换成对应 *_cache.json。
+        fp = self._make_file_panel(
+            fp_holder, "cache",
+            hint=("点击上方按钮选择要重翻的翻译缓存\n"
+                  "（只列 *_cache.json；\n"
+                  "　选源文件 / 译文 / 报告会自动换成对应缓存）"),
+            title="选择要重翻的翻译缓存（*_cache.json；选别的会自动换算）")
         self.fp_report = fp
 
         # ★ 术语冲突解决视图（占左侧主区域，与报告视图互相切换；
@@ -7602,7 +7682,7 @@ class App:
         paths = self._report_sources()
         if not paths:
             messagebox.showwarning("提示",
-                                   "请先选择检查报告（*_translated_report.txt）")
+                                   "请先在右侧选择翻译缓存（*_cache.json）")
             return
 
         def work():
@@ -7619,10 +7699,10 @@ class App:
         """把当前报告里的问题句子按源文件导出成 problem_sentence_*.json。"""
         import problem_io as PI
 
-        reports = self.fp_report.ensure()
+        reports = self._report_sources()
         if not reports:
             messagebox.showwarning("提示",
-                                   "请先选择检查报告（*_translated_report.txt）")
+                                   "请先在右侧选择翻译缓存（*_cache.json）")
             return
         hits = list(getattr(self, "report_hits", []) or [])
         if not hits:
@@ -7656,11 +7736,11 @@ class App:
         """读 problem/problem_sentence_*.json，写回缓存 + 译文文件并刷新报告。"""
         import problem_io as PI
 
-        reports = self.fp_report.ensure()
+        reports = self._report_sources()
         basis = reports[0] if reports else ""
         if not basis:
             messagebox.showwarning("提示",
-                                   "请先选择检查报告（*_translated_report.txt）")
+                                   "请先在右侧选择翻译缓存（*_cache.json）")
             return
         if not PI.known_problem_files(basis):
             messagebox.showinfo(
@@ -7867,7 +7947,7 @@ class App:
         srcs = self._conflict_source_paths()
         if not srcs:
             messagebox.showinfo(
-                "提示", "请先在右侧选择检查报告（*_translated_report.txt）")
+                "提示", "请先在右侧选择翻译缓存（*_cache.json）")
             return
         rows = commands.load_conflict_rows(srcs)
         if not rows:
@@ -8044,7 +8124,7 @@ class App:
         paths = self._report_sources()
         if not paths:
             messagebox.showwarning(
-                "提示", "请先在右侧选择检查报告（*_translated_report.txt）")
+                "提示", "请先在右侧选择翻译缓存（*_cache.json）")
             return
         try:
             n_files, n_edit = commands.count_manual_edits(paths)
@@ -8247,15 +8327,20 @@ class App:
         win.grab_set()
 
     def _report_sources(self):
-        """重翻检查报告页选的是检查报告，这里换回真正的源文件。"""
+        """
+        重翻检查报告页选的是**翻译缓存**，这里换回真正的源文件。
+
+        ★ 页面统一按缓存视图走（缓存才是重翻真正被改的东西），检查、重翻、
+          导出问题句子这些命令吃的是源文件，所以入口处换算一次。
+        """
         paths = self.fp_report.ensure()
         srcs = []
         for p in paths:
-            s = commands.source_path_for_report(p)
-            if s:
+            s = commands.source_of(p)
+            if s and os.path.exists(s):
                 srcs.append(s)
             else:
-                self._append_log(f"[跳过] 找不到报告对应的源文件：{p}\n")
+                self._append_log(f"[跳过] 找不到缓存对应的源文件：{p}\n")
         return self._drop_names_files(srcs, "检查报告 / 重翻")
 
     def _do_retranslate_report(self):
@@ -8997,13 +9082,20 @@ class App:
         c1.grid(row=0, column=0, sticky="nsew")
         self._build_reflow_panel(c1.body)
 
-        # ---- 右侧：待操作的译文 txt 文件 ----
+        # ---- 右侧：待重排的翻译缓存 ----
         fp_holder = RoundCard(page, radius=16, pad=8, width=272,
                                 scrollable=True)
         fp_holder.grid(row=0, column=1, sticky="nsew")
         fp_holder.grid_propagate(False)
-        self.fp_reflow = self._make_file_panel(fp_holder, "translated",
-                                               allow_game_root=True)
+        # ★ 与其它汉化子页统一：列的是翻译缓存 *_cache.json（重排真正改的是
+        #   译文，而译文由缓存派生）。选源文件 / 译文 / 报告都会自动换算。
+        self.fp_reflow = self._make_file_panel(
+            fp_holder, "cache", allow_game_root=True,
+            hint=("点击上方按钮选择要重排的翻译缓存\n"
+                  "（只列 *_cache.json；\n"
+                  "　选源文件 / 译文 / 报告会自动换成对应缓存）\n"
+                  "也可点「游戏主程序」扫游戏目录（只列已翻译的文件）"),
+            title="选择要重排的翻译缓存（*_cache.json；选别的会自动换算）")
 
     def _build_reflow_panel(self, body):
         self.reflow_cfgs = {}
@@ -9398,8 +9490,12 @@ class App:
     def _do_reflow(self):
         paths = self.fp_reflow.ensure()
         if not paths:
-            messagebox.showwarning("提示", "请先在右侧选择要重排的文件")
+            messagebox.showwarning("提示",
+                                   "请先在右侧选择要重排的翻译缓存（*_cache.json）")
             return
+        # ★ 右侧列的是缓存，名字类判定要按**源文件名**来（缓存名多一截后缀
+        #   会把 *_NAMES 这类规则漏掉），所以先换回源文件再筛。
+        paths = [commands.source_of(p) for p in paths]
         paths = self._drop_names_files(paths, "换行重排")
         if not paths:
             return

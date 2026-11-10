@@ -1019,6 +1019,16 @@ _MULTI_RE = None
 _MULTI_MAP = {}
 _MULTI_MAP_LOWER = {}
 
+# ★ 多词术语的「首词索引」：{首词小写: [(原文, 译文), ...]}
+#   多词术语有 1 万多条，拼成一条巨型正则每句要试一万多个分支（实测 1.6 ms/句）。
+#   而「能当首词的词」只有几千个 —— 句子先切词查这张表：
+#     · 一个都不沾 → 这句不可能有多词命中，整条正则直接跳过（零成本）；
+#     · 沾到几个   → 只在这几条里做子串查找（通常十几个），不做正则。
+#   口径是「宁可多跑不可漏跑」：首词取术语第一个词字 token 的小写，
+#   token 化与正文扫描用的是同一个 `_TOKEN_RE`。
+_MULTI_BY_FIRST = {}
+_MULTI_NO_FIRST = []         # 一个词字都没有的术语（纯标点），永远参与
+
 # ★ 整句匹配表：{小写原文: (原文, 译文)}，**术语表里的全部条目都收**
 #   （包括 term_dict.py 里 AUTO 块的自动提取术语）—— 整句就是一条术语时
 #   直接用该术语的译文，不送模型。见 match_whole_term。
@@ -1029,6 +1039,25 @@ _TERM_WHOLE = {}
 #   （Thunderstone / Firestone）由 match_whole_term 最后一层回退接住。
 #   冲突先到先得（good 已按原文长度降序，更具体的优先），冲突时记日志。
 _TERM_WHOLE_CONCAT = {}
+
+# ----------------------------------------------------------------
+# ★ 术语「标点折叠」索引：空格 / 制表符 / 全角空格 / 句点 / 连字符 / 下划线
+#   全部当分隔符，折叠时直接删掉再比对。
+#     Thunder Stone ≡ Thunderstone ≡ Thunder.Stone ≡ Thunder_Stone ≡ Thunder-Stone
+#   用来接住「同一个名字在文本里换了写法」的情况（游戏文本里常见
+#   `Thunder_stone`、`Thunder.Stone` 这种 patch 后留下的变体）。
+#   ★ 只在**原样查表 miss 之后**才走这一层，原样命中的永远优先。
+#   ★ 撇号（' ’）和其余标点**不折叠**：Farfetch'd 不能被并成 Farfetchd。
+# ----------------------------------------------------------------
+_TERM_FOLD_STRIP = " \t\u3000._-"
+_FOLD_RE = re.compile(r"[ \t\u3000._\-]+")
+_TERM_FOLD = {}              # {折叠键: (原文, 译文)}
+_TERM_FOLD_MAX = 0           # 折叠键最长长度（扫描时限定回溯深度）
+
+
+def _fold_term(s):
+    """术语 / 文本的折叠键：小写 + 删掉空格、制表、全角空格、点、连字符、下划线。"""
+    return _FOLD_RE.sub("", (s or "").lower())
 
 # ★ 按文件分派的术语表（term_sections.json，由 scripts/gen_term_sections.py 生成）：
 #   _TERM_SECTIONS {section 名: {小写原文: 该 section 的译文}}
@@ -1140,8 +1169,9 @@ def _check_case_conflicts(terms):
 
 # ----------------------------------------------------------------
 # pokemon_terms：随程序分发的官方多语言名字表（pokemon_terms/ 目录下
-# terms_<语言代码>_zh-Hans.json）。按当前源语言取一份并进术语池，
-# 与 term_dict.py 重复的词以 term_dict 为准（用户校对过的优先）。
+# terms_<语言代码>_zh-Hans.json）。★ **全部语言一起并入**术语池（不再只取
+# 设置里那份源语言），与 term_dict.py 重复的词以 term_dict 为准（用户校对
+# 过的优先）。
 # ----------------------------------------------------------------
 _POKEMON_TERM_LANGS = {
     "英文": "en", "英语": "en", "english": "en", "en": "en", "eng": "en",
@@ -1161,40 +1191,73 @@ _POKEMON_TERM_LANGS = {
 }
 
 
-def _pokemon_terms_file():
-    """当前源语言对应的 pokemon_terms 词典路径；无匹配 / 不存在返回 None。"""
+def _pokemon_terms_dir():
+    """pokemon_terms 目录（打包版走 resource_dir）。"""
+    return (config.resource_dir("pokemon_terms")
+            or os.path.join(config.BASE_DIR, "pokemon_terms"))
+
+
+def _pokemon_terms_files():
+    """
+    目录下**所有**多语言术语文件 `terms_<语言>_zh-Hans.json`。
+
+    ★ 不再按设置里的「源语言」只挑一份：同一个词在别的语言里也可能出现，
+      源语言填错、或者文本里多语混排时，只有那一份会全盘漏掉。
+      排序：源语言那份排最前（同词重复时以它为准），其余按文件名。
+    """
+    d = _pokemon_terms_dir()
+    try:
+        names = [n for n in sorted(os.listdir(d))
+                 if n.startswith("terms_") and n.endswith("_zh-Hans.json")]
+    except OSError:
+        return []
+    if not names:
+        return []
     lang = (getattr(config, "SOURCE_LANG", "") or "").strip().lower()
     code = _POKEMON_TERM_LANGS.get(lang)
-    if not code:
-        return None
-    d = (config.resource_dir("pokemon_terms")
-         or os.path.join(config.BASE_DIR, "pokemon_terms"))
-    path = os.path.join(d, f"terms_{code}_zh-Hans.json")
-    return path if os.path.isfile(path) else None
+    pref = f"terms_{code}_zh-Hans.json" if code else None
+    if pref in names:
+        names.remove(pref)
+        names.insert(0, pref)
+    return [os.path.join(d, n) for n in names]
 
 
 def _load_pokemon_terms():
-    """读取 pokemon_terms 词典 → [(词, 中文)]。坏值（？？？等）跳过。"""
-    path = _pokemon_terms_file()
-    if not path:
-        return [], None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        log.debug("pokemon_terms 读取失败（跳过）：%s", e)
-        return [], None
-    pairs = []
-    for k, v in data.items():
-        if not isinstance(k, str) or not isinstance(v, str):
+    """
+    读取**全部**多语言术语文件 → ([(词, 中文)], [文件名, ...])。
+
+    坏值（？？？等）跳过；同一个词条在多个文件里出现时以排在前面的文件为准
+    （源语言那份优先），同词不同译不会互相打架。
+    """
+    paths = _pokemon_terms_files()
+    if not paths:
+        return [], []
+    pairs, names = [], []
+    seen = set()
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:                # noqa: BLE001
+            log.debug("pokemon_terms 读取失败（跳过 %s）：%s", path, e)
             continue
-        k, v = k.strip(), v.strip()
-        if not k or not v or v == k or "？" in v or v in ("???", "—"):
+        if not isinstance(data, dict):
             continue
-        if _is_placeholder_token(k):
-            continue
-        pairs.append((k, v))
-    return pairs, os.path.basename(path)
+        names.append(os.path.basename(path))
+        for k, v in data.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                continue
+            k, v = k.strip(), v.strip()
+            if not k or not v or v == k or "？" in v or v in ("???", "—"):
+                continue
+            if _is_placeholder_token(k):
+                continue
+            lk = k.lower()
+            if lk in seen:
+                continue
+            seen.add(lk)
+            pairs.append((k, v))
+    return pairs, names
 
 
 def _terms_file_key():
@@ -1204,13 +1267,15 @@ def _terms_file_key():
                bool(config.APPLY_TERMS))
     except OSError:
         key = (config.TERM_FILE, 0, 0, bool(config.APPLY_TERMS))
-    # pokemon_terms 也纳入签名：文件增删改后 load_terms 会重新合并
-    p = _pokemon_terms_file()
-    try:
-        st2 = os.stat(p) if p else None
-        key += (p, st2.st_mtime if st2 else 0, st2.st_size if st2 else 0)
-    except OSError:
-        key += (p, 0, 0)
+    # pokemon_terms 也纳入签名：任何一个多语言文件增删改后 load_terms 重新合并
+    sig = []
+    for p in _pokemon_terms_files():
+        try:
+            st2 = os.stat(p)
+            sig.append((p, st2.st_mtime, st2.st_size))
+        except OSError:
+            sig.append((p, 0, 0))
+    key += tuple(sig)
     return key
 
 
@@ -1322,14 +1387,18 @@ def load_terms(force=False):
     global _TERMS
     global _TERM_SINGLE, _TERM_MULTI, _MULTI_RE
     global _MULTI_MAP, _MULTI_MAP_LOWER, _TERMS_LOADED_KEY
+    global _MULTI_BY_FIRST, _MULTI_NO_FIRST
     global _TERM_WHOLE, _TERM_WHOLE_CONCAT
+    global _TERM_FOLD, _TERM_FOLD_MAX
 
     if not config.APPLY_TERMS:
         if _TERMS or _TERM_SINGLE:
             _TERMS = []
             _TERM_SINGLE, _TERM_MULTI = {}, []
             _MULTI_RE, _MULTI_MAP, _MULTI_MAP_LOWER = None, {}, {}
+            _MULTI_BY_FIRST, _MULTI_NO_FIRST = {}, []
             _TERM_WHOLE = {}
+            _TERM_FOLD, _TERM_FOLD_MAX = {}, 0
             _TERMS_LOADED_KEY = None
         log.info("术语替换已关闭（APPLY_TERMS=False）")
         return
@@ -1367,9 +1436,9 @@ def load_terms(force=False):
     if skipped_ph:
         log.info("术语表跳过 %d 条占位符型伪术语（@0@ 等）", skipped_ph)
 
-    # ★ pokemon_terms 官方名字表并入术语池：只取当前源语言的一份，
-    #   与 term_dict 重复的词以 term_dict 为准（用户校对优先）。
-    pt_pairs, pt_name = _load_pokemon_terms()
+    # ★ pokemon_terms 官方名字表并入术语池：**所有语言文件全量并入**（不再
+    #   只看源语言那份），与 term_dict 重复的词以 term_dict 为准（用户校对优先）。
+    pt_pairs, pt_names = _load_pokemon_terms()
     if pt_pairs:
         have = {k.lower() for k, _ in good}
         added_pt = 0
@@ -1379,8 +1448,9 @@ def load_terms(force=False):
             have.add(k.lower())
             good.append((k, v))
             added_pt += 1
-        log_once(("pokemon_terms", pt_name, added_pt),
-                 "pokemon_terms 术语并入：%s（新增 %d 条）", pt_name, added_pt)
+        log_once(("pokemon_terms", tuple(pt_names), added_pt),
+                 "pokemon_terms 术语并入：%d 个语言文件（新增 %d 条）：%s",
+                 len(pt_names), added_pt, "、".join(pt_names))
 
     good.sort(key=lambda x: -len(x[0]))
 
@@ -1402,6 +1472,16 @@ def load_terms(force=False):
 
     _MULTI_MAP = dict(_TERM_MULTI)
     _MULTI_MAP_LOWER = {k.lower(): v for k, v in _TERM_MULTI}
+
+    # ★ 首词索引：句子先查这张表，一个首词都不沾就整条正则都不用跑
+    _MULTI_BY_FIRST, _MULTI_NO_FIRST = {}, []
+    for k, v in _TERM_MULTI:
+        toks = _TOKEN_RE.findall(k)
+        if not toks:
+            _MULTI_NO_FIRST.append((k, v))
+            continue
+        _MULTI_BY_FIRST.setdefault(toks[0].lower(), []).append((k, v))
+
     _MULTI_RE = None
     if _TERM_MULTI:
         alternation = '|'.join(re.escape(k) for k, _ in _TERM_MULTI)
@@ -1450,6 +1530,22 @@ def load_terms(force=False):
     if concat_conflicts:
         log.info("整句连写回退索引：%d 条，%d 条同键冲突（保留先到的）",
                  len(_TERM_WHOLE_CONCAT), concat_conflicts)
+
+    # ---- 标点折叠索引：空格 / 点 / 连字符 / 下划线 一视同仁 ----
+    #   Thunderstone ≡ Thunder Stone ≡ Thunder.Stone ≡ Thunder_Stone ≡
+    #   Thunder-Stone。只在原样查表 miss 之后才用（find_terms 的最后一层、
+    #   match_whole_term 的最后一层），原样命中的永远优先。
+    _TERM_FOLD, _TERM_FOLD_MAX = {}, 0
+    for k, v in good:
+        fk = _fold_term(k)
+        if len(fk) < 3 or fk.isdigit() or fk in _TERM_FOLD:
+            continue            # 先到先得：good 已按原文长度降序
+        _TERM_FOLD[fk] = (k, v)
+        if len(fk) > _TERM_FOLD_MAX:
+            _TERM_FOLD_MAX = len(fk)
+    log_once(("term_fold", len(_TERM_FOLD), _TERM_FOLD_MAX),
+             "术语折叠索引：%d 条（最长键 %d 字；空格 / 点 / 连字符 / 下划线等效）",
+             len(_TERM_FOLD), _TERM_FOLD_MAX, logger=log)
 
     _load_term_sections()
 
@@ -1617,6 +1713,10 @@ def match_whole_term(text, section=None):
         # 连写回退：正文 = 多词术语的连写变体（Thunderstone ← Thunder Stone）
         if _TERM_WHOLE_CONCAT:
             hit = _TERM_WHOLE_CONCAT.get(core_lower.replace(" ", ""))
+        if not hit and _TERM_FOLD:
+            # 标点折叠回退：空格 / 点 / 连字符 / 下划线写法不同也算命中
+            # （Thunder-Stone / Thunder_Stone / Thunder.Stone）
+            hit = _TERM_FOLD.get(_fold_term(core_lower))
         if not hit:
             return None
     return (hit[0], text[:s] + hit[1] + text[e:])
@@ -1695,6 +1795,150 @@ def render_term_dst(src, section=None):
     return " / ".join(parts)
 
 
+_WORD_CHAR_RE = re.compile(r"[" + _WORD_CHARS + r"]")
+
+
+def _multi_scan(text, low=None):
+    """
+    多词 / 含标点术语的扫描 → [(起点, 终点, 文本里的写法, 译文)]，按位置升序、互不重叠。
+
+    ★ 首词预筛（主路径）：先按 `_TOKEN_RE` 把句子切词，查 `_MULTI_BY_FIRST`。
+        · 一个首词都不沾 → 这句不可能有多词命中，直接返回 []。
+          1 万多条术语的巨型正则**根本不用跑**（原本占单句 1.6 ms 的大头）。
+        · 沾到几个首词   → 只在这几条候选里做子串查找（通常十几个），
+          边界用 `_WORD_CHAR_RE` 卡，与正则的 `(?<![词字])(?![词字])` 等价。
+    ★ 兜底：小写折叠改变了字符长度（个别语种，位置映射会错位）、或者没有首词
+      索引时，退回全量正则 `_MULTI_RE` / 逐条匹配，结果与旧版完全一致。
+    """
+    if not _TERM_MULTI:
+        return []
+    if low is None:
+        low = text.lower()
+
+    if not _MULTI_BY_FIRST or len(low) != len(text):
+        # 兜底：全量正则（_MULTI_RE 没编出来时逐条扫）
+        if _MULTI_RE is not None:
+            out = []
+            for m in _MULTI_RE.finditer(text):
+                matched = m.group(1)
+                dst = _MULTI_MAP.get(matched)
+                if dst is None:
+                    dst = _MULTI_MAP_LOWER.get(matched.lower())
+                if not dst:
+                    continue
+                out.append((m.start(1), m.end(1), matched, dst))
+            return out
+        cand = _TERM_MULTI
+    else:
+        cand = []
+        keyed = set()
+        for m in _TOKEN_RE.finditer(text):
+            k = m.group(0).lower()
+            if k in keyed:
+                continue
+            keyed.add(k)
+            bucket = _MULTI_BY_FIRST.get(k)
+            if bucket:
+                cand.extend(bucket)
+        if not cand:
+            cand = list(_MULTI_NO_FIRST)
+            if not cand:
+                return []            # 预筛结论：这句没有任何多词术语可命中
+
+    out = []
+    for k, v in cand:
+        if not v:
+            continue
+        kl = k.lower()
+        n = len(kl)
+        start = 0
+        while True:
+            i = low.find(kl, start)
+            if i < 0:
+                break
+            j = i + n
+            if ((i == 0 or not _WORD_CHAR_RE.match(text[i - 1]))
+                    and (j >= len(text) or not _WORD_CHAR_RE.match(text[j]))):
+                out.append((i, j, text[i:j], v))
+                start = j
+            else:
+                start = i + 1
+    if not out:
+        return []
+    # 同起点先取最长（等价于原来「alternation 长度降序」的最长优先），再去重叠
+    out.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+    picked = []
+    for it in out:
+        if any(it[0] < b and a < it[1] for a, b, _s, _d in picked):
+            continue
+        picked.append(it)
+    return picked
+
+
+def _fold_scan(text):
+    """
+    在「折叠影子串」上扫术语，接住标点写法不同的变体。
+
+    做法：把 text 里的空格 / 制表 / 全角空格 / 点 / 连字符 / 下划线全删掉得到
+    影子串（同时记住每个影子字符在原文里的下标），在影子上按**最长优先**查
+    `_TERM_FOLD`。所以：
+
+        Thunder Stone ≡ Thunderstone ≡ Thunder.Stone ≡ Thunder_Stone
+
+    命中要求：
+      · 原文区间左右**不能紧邻词字** —— 否则等于把一个词从中间切开
+        （`eyes` 里不能报出 `yes`）；
+      · 已经原样命中的区间由调用方排除（原样匹配永远优先）。
+
+    返回 [(原文起点, 原文终点, 术语原文, 术语译文)]，按位置升序。
+    """
+    if not _TERM_FOLD or _TERM_FOLD_MAX <= 0 or not text:
+        return []
+    shadow, pos = [], []
+    for i, ch in enumerate(text.lower()):
+        if ch in _TERM_FOLD_STRIP:
+            continue
+        shadow.append(ch)
+        pos.append(i)
+    s = "".join(shadow)
+    n = len(s)
+    if n < 3:
+        return []
+    # ★ 只在 **token 起点**尝试：折叠命中的左边界必然是分隔符或串首，
+    #   所以起点一定是某个 token 的开头 —— 长句能把尝试次数从「每个字符」
+    #   降到「每个词」，快一个数量级。
+    orig_to_shadow = {o: k for k, o in enumerate(pos)}
+    starts = []
+    for m in _TOKEN_RE.finditer(text):
+        k = orig_to_shadow.get(m.start())
+        if k is not None:
+            starts.append(k)
+    if not starts:
+        return []
+    out = []
+    covered_to = -1                 # 影子坐标：上一个命中已经吃到的位置
+    for i in starts:
+        if i < covered_to or i >= n:
+            continue
+        hit = None
+        for j in range(min(n, i + _TERM_FOLD_MAX), i, -1):
+            t = _TERM_FOLD.get(s[i:j])
+            if t:
+                hit = (i, j, t)
+                break
+        if not hit:
+            continue
+        i0, i1, (src, dst) = hit
+        o0, o1 = pos[i0], pos[i1 - 1] + 1
+        # 边界：左右紧邻词字说明这是别的词的一部分，不算命中
+        if (o0 > 0 and _WORD_CHAR_RE.match(text[o0 - 1])) or \
+                (o1 < len(text) and _WORD_CHAR_RE.match(text[o1])):
+            continue
+        out.append((o0, o1, src, dst))
+        covered_to = i1
+    return out
+
+
 def find_terms(text, derived_out=None, allow_derived=None):
     """
     找出 text 中命中的术语，返回 [(原文, 译文), ...]（去重，保持出现顺序）。
@@ -1709,7 +1953,7 @@ def find_terms(text, derived_out=None, allow_derived=None):
     allow_derived=None 时取 config.TERM_DERIVED_MATCH（默认开）；
     菜单 5 的 \tg[] 术语预填会传 False，保持那边只认整词。
     """
-    if not text or (not _TERM_SINGLE and not _MULTI_RE):
+    if not text or (not _TERM_SINGLE and not _TERM_MULTI):
         return []
 
     if allow_derived is None:
@@ -1720,15 +1964,9 @@ def find_terms(text, derived_out=None, allow_derived=None):
     result = []
     spans = []
 
-    if _MULTI_RE:
-        for m in _MULTI_RE.finditer(text):
-            matched = m.group(1)
-            dst = _MULTI_MAP.get(matched)
-            if dst is None:
-                dst = _MULTI_MAP_LOWER.get(matched.lower())
-            if not dst:
-                continue
-            spans.append((m.start(1), m.end(1)))
+    if _TERM_MULTI:
+        for start, end, matched, dst in _multi_scan(text):
+            spans.append((start, end))
             key = matched.lower()
             if key in seen:
                 continue
@@ -1764,6 +2002,19 @@ def find_terms(text, derived_out=None, allow_derived=None):
                 continue
             seen.add(key)
             result.append(hit)
+
+    # ★ 标点折叠回退：原样查表没接住的写法（Thunder_stone / Thunder.Stone /
+    #   Thunder-Stone / thunder stone）在这里补一次。与已命中区间重叠的跳过，
+    #   原样匹配永远优先。
+    if _TERM_FOLD:
+        for o0, o1, src, dst in _fold_scan(text):
+            if any(o0 < b and a < o1 for a, b in spans):
+                continue
+            key = src.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append((src, dst))
 
     return result
 
