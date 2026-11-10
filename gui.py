@@ -6403,7 +6403,20 @@ class App:
         """提取完成后统一提示（两页共用一个文案模板）。"""
         st = st or {}
         written = st.get("written") or []
+        empty = int(st.get("empty") or 0)
+        empty_note = (f"· 另有 {empty} 个文件没有待翻条目（已全部在缓存里），"
+                      f"未导出 json，直接生成了译文文件\n") if empty else ""
         if not written:
+            if empty:
+                msg = (f"{empty} 个文件都没有待翻条目（已全部在缓存里），"
+                       f"未导出 json，"
+                       f"译文文件已生成（共 {st.get('translated_lines', 0)} 行）："
+                       f"\n\n{st.get('dir')}")
+                if st.get("problems"):
+                    msg += f"\n\n⚠ {len(st['problems'])} 个文件处理失败，详见日志"
+                self.q.put(("log", f"[手工{'术语' if term else '句子'}缓存] {msg}\n"))
+                messagebox.showinfo("已提取", msg)
+                return
             messagebox.showinfo(
                 "提示",
                 "没有可导出的条目：\n"
@@ -6412,8 +6425,9 @@ class App:
         ref_note = f"（含参考译文命中 {st['ref']} 条）" if st.get("ref") else ""
         msg = (f"已处理 {st.get('files', 0)} 个文件：\n"
                f"· 不用送模型的 {st.get('auto', 0)} 条已写进翻译缓存{ref_note}\n"
-               f"· 待翻的 {st.get('todo', 0)} 条已导出成 {len(written)} 份 json\n\n"
-               f"{st.get('dir')}")
+               f"· 待翻的 {st.get('todo', 0)} 条已导出成 {len(written)} 份 json\n"
+               f"{empty_note}"
+               f"\n{st.get('dir')}")
         if st.get("problems"):
             msg += f"\n\n⚠ {len(st['problems'])} 个文件处理失败，详见日志"
         self.q.put(("log", f"[手工{'术语' if term else '句子'}缓存] {msg}\n"))

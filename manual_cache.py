@@ -20,6 +20,9 @@ r"""
            · **要送模型**的条目 → 导出成
              `<游戏根目录>/Text_chinese_cache/<源文件名>.json`，一个源文件一份，
              里面带 `items`（原文 → 空译文）与 `prompt`（本次该用的提示词）。
+           · **一条都不剩**（全都已翻 / 全是跳过类，items 会是空的）→
+             不导出 json：只写翻译缓存并直接把 `*_translated.txt` 生成出来。
+             空 items 的 json 对人没有意义，回写时也只是白扫一遍。
 
       ② **回写**（回写已翻术语缓存 / 回写已翻句子缓存）
          读上面那批 JSON，把 `items` 里填好的译文写回：
@@ -381,19 +384,53 @@ def _merge_old_items(items, old_path):
     return items
 
 
+def _drop_stale_json(out_path):
+    """
+    删掉旧版本留下的「items 为空」的缓存 json。
+
+    ★ 只删 items 真的为空的：旧 json 里只要有键（待翻或已填译文），
+      就说明还有活要干，必须留着给回写用。
+    """
+    if not os.path.isfile(out_path):
+        return
+    try:
+        if _items_of(_read_json(out_path)):
+            return
+        os.remove(out_path)
+        log.info("删除旧的空 items 缓存 json：%s", os.path.basename(out_path))
+    except OSError as e:                         # noqa: BLE001
+        log.warning("删除空 items 缓存 json 失败（忽略）：%s：%s", out_path, e)
+
+
+def _write_translated_of(src_file, cache_path):
+    """用该文件现有的整份缓存直接生成 `*_translated.txt`，返回写入行数。"""
+    if not cache_path:
+        return 0
+    try:
+        return _write_translated(src_file, Cache(cache_path))
+    except Exception as e:                       # noqa: BLE001
+        log.error("生成译文文件失败（%s）：%s", src_file, e)
+        return 0
+
+
 def _extract(files, mode, basis, progress=None):
     """
     分流 + 写缓存 + 导出 json（mode = "term" / "sentence"）。
 
-    返回 {"dir","type","files","auto","todo","cached","written",
-          "skipped","problems","entries"}
+    返回 {"dir","type","files","auto","todo","cached","written","empty",
+          "translated_lines","skipped","problems","entries"}
+
+    ★ 分流后 items 为空（所有条目都已在缓存 / 全被跳过类吃掉了，
+      例如 ABILITY_NAMES.txt 整份都翻过了）的文件**不再导出空 json**：
+      直接写缓存 + 生成译文文件。空 json 对人没有意义，只会让回写时
+      白扫一遍，还会把「已全部翻完」的文件混进待翻列表。
     """
     import bridge
 
     out_dir = cache_dir(basis)
     st = {"dir": out_dir, "type": mode, "files": 0, "auto": 0, "todo": 0,
-          "cached": 0, "ref": 0, "written": [], "skipped": 0, "problems": [],
-          "entries": 0}
+          "cached": 0, "ref": 0, "written": [], "empty": 0,
+          "translated_lines": 0, "skipped": 0, "problems": [], "entries": 0}
     used = set()
     total = len(files)
 
@@ -422,11 +459,30 @@ def _extract(files, mode, basis, progress=None):
                 st["problems"].append((path, f"写缓存失败：{e}"))
 
         # ---------- 要送模型的：导出 json ----------
+        items = {t: "" for t in r["todo"]}
+        name = _json_name(_stem(path), used)
+        out = os.path.join(out_dir, f"{name}.json")
+        items = _merge_old_items(items, out)
+
+        if not items:
+            # ---------- 提取后 items 为空：不导出 json，直接出译文文件 ----------
+            _drop_stale_json(out)
+            n_lines = _write_translated_of(path, r["cache"]) if r["entries"] else 0
+            st["files"] += 1
+            st["entries"] += r["entries"]
+            st["auto"] += len(r["auto"])
+            st["cached"] += r["cached"]
+            st["ref"] += r.get("ref", 0)
+            st["empty"] += 1
+            st["translated_lines"] += n_lines
+            log.info("[%d/%d] %s：无待翻条目，不导出 json（写缓存 %d 条，"
+                     "译文文件 %d 行）", i, total, os.path.basename(path),
+                     len(r["auto"]), n_lines)
+            if progress:
+                progress(i, total, os.path.basename(path))
+            continue
+
         try:
-            items = {t: "" for t in r["todo"]}
-            name = _json_name(_stem(path), used)
-            out = os.path.join(out_dir, f"{name}.json")
-            items = _merge_old_items(items, out)
             payload = {
                 "type": mode,
                 "file": os.path.abspath(path),
@@ -457,8 +513,10 @@ def _extract(files, mode, basis, progress=None):
         if progress:
             progress(i, total, os.path.basename(path))
 
-    log.info("提取缓存完成：%d 个文件，写缓存 %d 条，导出待翻 %d 条 → %s",
-             st["files"], st["auto"], st["todo"], out_dir)
+    log.info("提取缓存完成：%d 个文件（其中 %d 个无待翻条目，直接出译文 %d 行），"
+             "写缓存 %d 条，导出待翻 %d 条 → %s",
+             st["files"], st["empty"], st["translated_lines"], st["auto"],
+             st["todo"], out_dir)
     return st
 
 
