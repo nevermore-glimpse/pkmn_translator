@@ -4947,6 +4947,28 @@ class App:
                                 "这类游戏暂时开不了调试", why)
                         else:
                             messagebox.showerror("生成调试启动器失败", why)
+                elif kind == "dbg_heal_done":
+                    r = payload or {}
+                    if not r.get("ok"):
+                        self.dbg_heal_lbl.config(
+                            text=f"✘ {r.get('reason') or '失败'}",
+                            fg=ERR_COLOR)
+                    elif "removed" in r:
+                        n = r.get("removed") or 0
+                        self.dbg_heal_lbl.config(
+                            text=(f"✔ 已移除 F7 分支（{n} 行）" if n
+                                  else "· 没找到植入过的 F7 分支"),
+                            fg=C_OK if n else C_KEY)
+                    elif r.get("changed"):
+                        self.dbg_heal_lbl.config(
+                            text=f"✔ 已植入（{r.get('why') or '当前版本'}）"
+                                 f"—— 进游戏按 F7 即回满队伍",
+                            fg=C_OK)
+                    else:
+                        self.dbg_heal_lbl.config(
+                            text=f"· 已经是「{r.get('why') or '当前版本'}」"
+                                 f"这一套了，无需改动",
+                            fg=C_KEY)
                 elif kind == "pbs_extract_done":
                     out, _res = payload if isinstance(payload, tuple) \
                         else ([], None)
@@ -11765,10 +11787,12 @@ class App:
         self._debug_mode_cb.bind("<<ComboboxSelected>>",
                                  self._on_debug_mode_change)
         self._set_debug_mode_value("main")
-        self.dbg_mode_desc = tk.Label(c2.body, text="", bg=CARD, fg=C_HINT,
+        # ★ 这里以前是一大段「方式①~⑧ 的说明文字」（跟着下拉框变）；
+        #   用户要求删掉所有方式的描述文本，只留一条「没有 Data」的警告位
+        #   （平时不占地方，锁定方式时才 pack 出来）。
+        self.dbg_mode_warn = tk.Label(c2.body, text="", bg=CARD, fg=C_WARN,
                                       font=FONT_SMALL, justify="left",
                                       wraplength=560)
-        self.dbg_mode_desc.pack(anchor="w", pady=(4, 0))
         self._on_debug_mode_change()
         self.dbg_do_lbl = tk.Label(c2.body, text="", bg=CARD, fg=C_KEY,
                                    font=FONT_SMALL, justify="left",
@@ -11782,6 +11806,35 @@ class App:
                       "条件都没认出来时，会问你要不要按官方基准补行。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
+
+        # ---- 中层之二：F7 自动治愈队伍 ----
+        c2b = RoundCard(inner, radius=16, pad=16, auto_height=True)
+        c2b.pack(fill="x", pady=(0, 10))
+        head2b = tk.Frame(c2b.body, bg=CARD)
+        head2b.pack(fill="x")
+        tk.Label(head2b, text="开启 F7 自动治愈队伍", bg=CARD, fg=C_TITLE,
+                 font=FONT_TITLE).pack(side="left")
+
+        row2d = tk.Frame(c2b.body, bg=CARD)
+        row2d.pack(fill="x", pady=(8, 0))
+        self.dbg_heal_btn = GlassButton(
+            row2d, "开始植入", width=140, height=46, primary=True, bg=CARD,
+            command=self._do_heal_patch)
+        self.dbg_heal_btn.pack(side="left")
+        GlassButton(row2d, "撤销植入", width=108, height=40, bg=CARD,
+                    font=FONT_SMALL,
+                    command=self._do_heal_restore).pack(side="right")
+        tk.Label(c2b.body,
+                 text="· 在 Scene_Map#update 里挂一个 F7 分支，按 F7 回满队伍"
+                      "（HP / 状态 / PP），代码照调试菜单的 heal 项分版本生成\n"
+                      "· 不设 $DEBUG，开不开调试都能用；重复点不会堆叠",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
+                 wraplength=560).pack(anchor="w", pady=(6, 0))
+        self.dbg_heal_lbl = tk.Label(c2b.body, text="", bg=CARD, fg=C_KEY,
+                                     font=FONT_SMALL, justify="left",
+                                     wraplength=560)
+        self.dbg_heal_lbl.pack(anchor="w", pady=(6, 0))
+        attach_label_copy(self.dbg_heal_lbl, self, "F7 治愈结果")
 
         # ---- 下层：使用提示 ----
         c3 = RoundCard(inner, radius=16, pad=16, auto_height=True)
@@ -11865,69 +11918,6 @@ class App:
                  justify="left", wraplength=200).pack(anchor="w", padx=10,
                                                       pady=(6, 0))
 
-    # ---------- 菜单 5（开启DEBUG）：小工具 ----------
-    _DEBUG_MODE_DESC = {
-        "main": "方式①（通用）：在 Main 的 pbCallTitle 里写 $DEBUG=true，"
-                "启动即调试模式（F9 开调试菜单）；同时废掉同一个函数里"
-                "「$DEBUG 就走调试开场画面」的那个分支 —— "
-                "`return Scene_DebugIntro.new if $DEBUG` 整行注释；"
-                "`if $DEBUG … else … end` 则把条件改成恒假（if false），"
-                "保证走到 else 里的正常标题。"
-                "★ 只动条件、不改写，游戏自己的标题参数（如 "
-                "`Scene_Intro.new(['intro1'], 'splash')`）原样保留。"
-                "★ 这是启动时开 $DEBUG 的方式；方式②–⑦ 都不会写"
-                "（还会把以前留下的清掉）—— 需要 $DEBUG 时用本方式。",
-        "keys": "方式②：删掉各处「需要 $DEBUG 才生效」的条件，让它们无条件可用。"
-                "会**自动认版本**：★ 如果一个都认不出来，"
-                "会弹窗问你要不要**按游戏版本的官方基准**，在对应位置补上"
-                "「去掉 debug 条件」的代码。",
-        "special": "方式③：照着 F9 的样子，在 Scene_Map#update 里加一个 "
-                   "**F6 键**分支 —— 按下 F6 **直接** `$DEBUG = true` 并弹窗提示"
-                   "v16/v17 加独立 if 块，v18 起加 elsif 分支，各版本都认。",
-        "special_menu": "方式④：位置同方式③（Scene_Map#update 里的 F6 键），"
-                        "但**直接打开调试菜单**"
-                        "—— 按 F6 不再只是设 $DEBUG，"
-                        "而是立刻把调试菜单弹出来。"
-                        "v16/v17 独立 if 块，v18 起 elsif 分支。",
-        "repel": "方式⑤：除虫喷雾 `pbRepel` 开头注入 —— $DEBUG 不为真就设为真"
-                 "并提示（用一次除虫喷雾即开调试）。",
-        "repel_menu": "方式⑥：同方式⑤的位置（除虫喷雾的 `pbRepel` 开头，"
-                      "v16–v18 在 PItem_ItemEffects、v19+ 在 Item_Effects），"
-                      "但**直接打开调试菜单**，不再等 F9。",
-        "rewrite": "方式⑦（改名调试函数 · 规避反调试）："
-                   "  · 从**官方基准**（Essentials 16–21.1 原版）里抠出每个版本的 "
-                   "debug 菜单函数，**函数名全部改掉**"
-                   "**函数体逐字保留官方实现**（菜单项齐全），直接顶掉游戏里的原函数；\n"
-                   "  · 把游戏脚本里所有**旧函数调用点**全部改道到新名字；\n"
-                   "  · UI 里显示的 `\"Debug\"` 选项名统一改成 `\"助手\"`；\n"
-                   "  · **按版本正式注册 T 键**："
-                   "在插件里挂 T 键开菜单（T 不在被屏蔽的 F4–F12 里）。\n"
-                   "★ 全程**不设 $DEBUG** —— 反调试有 `exit if $DEBUG`，一设就退游戏。\n"
-                   "★ 重新定义的函数**名字不含 d-e-b-u-g**，不在反调试检测范围内。\n"
-                   "★ 改动**多处都写**：① 独立插件 `Plugins/zzz_pkmn_aide/`；"
-                   "② 游戏脚本 `Scene_Map` 末尾（双保险）；"
-                   "③ **直接编进 `Data/PluginScripts.rxdata`**"
-                   "④ **关掉 `PluginManager.needCompiling?`**"
-                   "（rxdata 固定，不再被 `Plugins/` 目录重编译覆盖）。\n"
-                   "★ 顺带修两类「开 $DEBUG 才暴露」的插件坑："
-                   "① 给**依赖别的插件**的调用加 `defined?` 保护"
-                   "② 把 rxdata 里的**加载顺序摆正**\n",
-        "launcher": "方式⑧（调试启动器）：生成 **宝可梦调试启动器.exe**（自带 "
-                    "Python，玩家电脑**不用装 Python**）+ 一份 "
-                    "`_pkmn_debug_launcher.json` 配置，双击 exe 即以调试模式"
-                    "进游戏 —— **不改游戏本体、不动存档**。"
-                    "★ exe 是**所有游戏共用同一份固定文件**，各游戏的差异"
-                    "（游戏 exe 名 / 运行库 / 注入钩子）全写在那个 json 里。"
-                    "适配 v16–v21.1：启动时**运行时看进程实际加载了哪个 dll**，"
-                    "RGSS*.dll（v16–v18）→ 内存补丁；"
-                    "msvcrt-ruby*.dll（mkxp-z，v19–v21.1）→ 原生命令行 "
-                    "`debug` 参数。"
-                    "会自动补齐最小可用 Data/*.dat 与 pbs/*.txt（真数据，"
-                    "不是空文件），避免开调试后触发全量重编译报错。"
-                    "适合脚本被加密打包（单 exe）的游戏；"
-                    "**也是唯一不需要 Data 文件夹的方式**。",
-    }
-
     def _set_debug_mode_value(self, key):
         """把内部 key 换算成下拉框显示的文字。"""
         for k, lab in self._debug_mode_labels:
@@ -11945,17 +11935,15 @@ class App:
         return "main"
 
     def _on_debug_mode_change(self, _e=None):
-        # 没有 Data 时被锁成 launcher，描述文字由 _dbg_lock_modes 负责，
-        # 这里不要覆盖掉它的警告。
+        # 没有 Data 时被锁成 launcher，警告由 _dbg_lock_modes 负责，
+        # 这里不要覆盖掉它。
         if getattr(self, "debug_modes_locked", False):
             if hasattr(self, "dbg_launcher_btn"):
                 self.dbg_launcher_btn.set_enabled(True)
             return
-        key = self._debug_mode_key()
-        self.dbg_mode_desc.config(text=self._DEBUG_MODE_DESC.get(key, ""))
         # 方式⑧是独立按钮，提示去点它
         if hasattr(self, "dbg_launcher_btn"):
-            on = (key == "launcher")
+            on = (self._debug_mode_key() == "launcher")
             self.dbg_launcher_btn.set_enabled(on)
 
     def _dbg_pick_exe(self):
@@ -12032,6 +12020,8 @@ class App:
         self.dbg_do_lbl.config(text="")
         if hasattr(self, "dbg_ow_lbl"):
             self.dbg_ow_lbl.config(text="")
+        if hasattr(self, "dbg_heal_lbl"):
+            self.dbg_heal_lbl.config(text="")
         # ★ 没有 Data：强制切到「调试启动器」，其它方式全部禁用
         if not has_data:
             self._set_debug_mode_value("launcher")
@@ -12055,16 +12045,17 @@ class App:
                 cb.config(state="disabled" if locked else "readonly")
             except Exception:
                 pass
-        if hasattr(self, "dbg_mode_desc"):
+        if hasattr(self, "dbg_mode_warn"):
             if locked:
-                self.dbg_mode_desc.config(
+                self.dbg_mode_warn.config(
                     text="⚠ 这个游戏目录里没有 Data 文件夹：只能用"
                          "「方式⑧ 调试启动器」开调试（不改游戏本体、"
                          "不依赖 Data，脚本打包进 exe 的游戏也适用）。"
-                         "其它方式已禁用。",
-                    fg=C_WARN)
+                         "其它方式已禁用。")
+                self.dbg_mode_warn.pack(anchor="w", pady=(4, 0),
+                                        before=self.dbg_do_lbl)
             else:
-                self.dbg_mode_desc.config(fg=C_HINT)
+                self.dbg_mode_warn.pack_forget()
                 self._on_debug_mode_change()
         if hasattr(self, "dbg_launcher_btn"):
             self.dbg_launcher_btn.set_enabled(
@@ -12588,6 +12579,42 @@ class App:
             return res
 
         self.run_async(work, label="生成调试启动器中…", done_label="生成完成")
+
+    # ---------- 菜单 5 之二：F7 自动治愈队伍 ----------
+    def _do_heal_patch(self):
+        """在 Scene_Map#update 里植入 F7 治愈分支。"""
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        self.show("log")
+
+        def work():
+            import engine_tools as ET
+            res = ET.patch_heal_key(d, emit=lambda s: self._emit_log(s))
+            self.q.put(("dbg_heal_done", res))
+            return res
+
+        self.run_async(work, label="植入 F7 治愈中…", done_label="植入完成")
+
+    def _do_heal_restore(self):
+        """撤销 F7 治愈分支（只抠掉植入的那几行）。"""
+        d = self._dbg_folder_data()
+        if not d:
+            return
+        if not messagebox.askyesno(
+                "撤销植入",
+                "把植入到 Scene_Map 里的 F7 治愈分支移除？\n"
+                "只删本工具加的那几行，脚本里别的改动原样保留。"):
+            return
+        self.show("log")
+
+        def work():
+            import engine_tools as ET
+            res = ET.restore_heal_key(d, emit=lambda s: self._emit_log(s))
+            self.q.put(("dbg_heal_done", res))
+            return res
+
+        self.run_async(work, label="撤销 F7 治愈中…", done_label="撤销完成")
 
     # ================================================================
     # 菜单 3：PBS编辑
