@@ -35,53 +35,16 @@ else:
 # ================================================================
 # ★ 电脑版还有「⑧ 调试启动器」—— 那是生成 Windows 的 exe，手机上做不到，
 #   所以这里不列。其余①–⑦ 全部实现。
+# ★ 与电脑版保持一致：**不写每种方式的说明文字**（电脑版 v1.9.8 起已删掉
+#   下拉框下面那一大段 desc），这里只留下拉框显示用的 label。
 MODES = [
-    {
-        "key": "main",
-        "label": "① 通用（写 Main，启动即调试）",
-        "desc": "在 Main 的 mainFunction 里写 $DEBUG=true —— 进游戏就是调试模式。\n"
-                "★ 这是**唯一**会开 $DEBUG 的方式；②–⑦ 都不会写 $DEBUG，"
-                "需要 $DEBUG 时请用本方式。",
-    },
-    {
-        "key": "keys",
-        "label": "② 删条件（F9/队伍/穿墙 免 $DEBUG 可用）",
-        "desc": "把各处「需要 $DEBUG 才生效」的条件删掉，让这些功能无条件可用"
-                "（F9 存档、队伍界面、穿墙等）。\n"
-                "自动认版本：v16/v17 的 `if $DEBUG and Input.press?(…)`、"
-                "v18 起的 `return true if $DEBUG && …`、`… if $DEBUG`、"
-                "`\"condition\" => proc { … $DEBUG }` 都认。\n"
-                "★ 本方式不设 $DEBUG，还会把以前留下的清掉。",
-    },
-    {
-        "key": "special",
-        "label": "③ F6 键（按 F6 直接开调试 + 提示）",
-        "desc": "改写 F6 键分支：按下 F6 **直接** $DEBUG = true 并弹窗提示"
-                "（不再判断 !$DEBUG，按下去就提示）。",
-    },
-    {
-        "key": "special_menu",
-        "label": "④ F6 键（按 F6 直接开调试菜单）",
-        "desc": "③ 的菜单版 —— 按 F6 不只设 $DEBUG，还直接打开调试菜单。",
-    },
-    {
-        "key": "repel",
-        "label": "⑤ 除虫喷雾（用喷雾即设 $DEBUG）",
-        "desc": "在除虫喷雾 pbRepel 开头注入：$DEBUG 不为真就设为真。",
-    },
-    {
-        "key": "repel_menu",
-        "label": "⑥ 除虫喷雾（用喷雾即开调试菜单）",
-        "desc": "⑤ 的菜单版 —— 用一次除虫喷雾直接打开调试菜单。",
-    },
-    {
-        "key": "rewrite",
-        "label": "⑦ 改名调试函数（顶掉原函数，按 T 开菜单）",
-        "desc": "把官方基准里的调试函数整套改名，顶掉游戏里的原函数，"
-                "再把全库调用点一起改名，并按版本注册 T 键。\n"
-                "★ 全程**不设 $DEBUG** —— 有些游戏的反调试里有 `exit if $DEBUG`，"
-                "一设就退游戏。反调试特别狠时用这条。",
-    },
+    {"key": "main",         "label": "① 通用（写 Main，启动即调试）"},
+    {"key": "keys",         "label": "② 删条件（F9/队伍/穿墙 免 $DEBUG 可用）"},
+    {"key": "special",      "label": "③ F6 键（按 F6 直接开调试 + 提示）"},
+    {"key": "special_menu", "label": "④ F6 键（按 F6 直接开调试菜单）"},
+    {"key": "repel",        "label": "⑤ 除虫喷雾（用喷雾即设 $DEBUG）"},
+    {"key": "repel_menu",   "label": "⑥ 除虫喷雾（用喷雾即开调试菜单）"},
+    {"key": "rewrite",      "label": "⑦ 改名调试函数（顶掉原函数，按 T 开菜单）"},
 ]
 
 MODE_KEYS = tuple(m["key"] for m in MODES)
@@ -311,6 +274,40 @@ def api_restore(ctx):
     return JU.ok({"task_id": t.id})
 
 
+def api_heal(ctx):
+    """
+    「开启 F7 自动治愈队伍」—— 植入 / 撤销（body.undo=True）。
+
+    与电脑版菜单5 的同一个模块一一对应：调 core/engine_tools.py 的
+    `patch_heal_key` / `restore_heal_key`，代码按引擎版本或函数指纹生成，
+    在 Scene_Map#update 里挂一个 F7 分支（按下回满队伍 HP/状态/PP）。
+
+    ★ 手机上没有 F7 实体键 —— 但这是**改游戏本体**的功能，改完在 PC 上跑
+      或用带键盘的映射工具按 F7 照样生效；手机上内测也可以用软键盘映射。
+      功能本身跟电脑版完全一致，所以照搬。
+    """
+    _DT, ET, _EB, GS = _load_core()
+    body = ctx["body"]
+    d = _dir(body)
+    valid, why = GS.check_game_root(d)
+    if not valid:
+        return JU.err(why)
+    undo = bool(body.get("undo"))
+
+    def job(emit, progress, cancelled):
+        emit(f"[F7治愈] 目录：{d}")
+        if undo:
+            rep = ET.restore_heal_key(d, emit=emit)
+        else:
+            rep = ET.patch_heal_key(d, emit=emit)
+        if not rep.get("ok"):
+            emit(f"[F7治愈] ✘ {rep.get('reason') or '失败'}")
+        return JU.clean(rep)
+
+    t = tasks.create("撤销F7治愈" if undo else "植入F7治愈", job)
+    return JU.ok({"task_id": t.id})
+
+
 def dispatch(ctx, action):
     table = {
         "modes": api_modes,
@@ -320,6 +317,7 @@ def dispatch(ctx, action):
         "disable": api_disable,
         "restore": api_restore,
         "backups": api_backups,
+        "heal": api_heal,
     }
     fn = table.get(action)
     if not fn:

@@ -796,7 +796,10 @@ _MARK = "[pkmn-debug]"
 # 撞上这些就说明已经越界了（见 patch_special_key 的 _marked_run_end）。
 _FOREIGN_MARKS = ("方式二", "方式四", "方式五", "方式六", "方式七", "方式八",
                   "已去掉 $DEBUG", "原条件", "按基准补行", "翻译工具注入",
-                  "pkmn-aide", "pbAide")
+                  "pkmn-aide", "pbAide",
+                  # ★ F7 治愈块跟 F6 块会紧挨着插在同一个位置，
+                  #   不把它算成「别家标记」的话，重跑 F6 注入会顺手吃掉它。
+                  "F7 自动治愈队伍")
 
 # 方式二要扫的脚本（找不到就跳过）
 _KEYS_SCRIPTS = (
@@ -1434,6 +1437,215 @@ def _f6_block(ref_line, menu, tag, is_elsif):
                 + body_body
                 + [f"{indent}end  # {_MARK}"])
     return [b + eol for b in body]
+
+
+# ================================================================
+# 独立功能：F7 自动治愈队伍（不属于「开启 DEBUG 的方式」）
+# ================================================================
+# 照抄调试菜单里「Heal Party」那一项的做法，在 **Scene_Map#update** 里挂一个
+# F7 分支：按下 F7 → 队伍里每只宝可梦 heal（回满 HP / 状态 / PP）+ 一句提示。
+#
+# ★ 不判断 $DEBUG：这是给玩家的便利功能，跟开没开调试无关。
+# ★ 各版本的 heal_party 写法不一样，这里照**官方实现**逐字搬：
+#     v16 / v17 / v18   `for i in $Trainer.party` + `i.heal`
+#     v19 / v19.1       `$Trainer.party.each { |pkmn| pkmn.heal }`
+#     v20 及以上        `$player.party.each { |pkmn| pkmn.heal }`
+#       （v20 把 `$Trainer` 改名成 `$player`，直接用旧名会 nil 崩）
+#    弹消息：v16 / v17 只定义了 `Kernel.pbMessage`（裸 `pbMessage` 那时不存在），
+#     v18 起才有裸 `pbMessage`。写错就是 NoMethodError，所以必须分版本。
+_HEAL_TAG = "F7 自动治愈队伍"
+# 备份标记（跟「覆盖」用的 .pkmn-overwrite- 分开，免得「还原覆盖」误碰）
+HEAL_BAK_MARK = ".pkmn-heal-"
+
+# 版本 → (队伍引用, 弹消息的函数, 循环写法)
+_HEAL_VERSIONS = {
+    "16": ("$Trainer.party", "Kernel.pbMessage", "for"),
+    "17": ("$Trainer.party", "Kernel.pbMessage", "for"),
+    "18": ("$Trainer.party", "pbMessage", "for"),
+    "19": ("$Trainer.party", "pbMessage", "each"),
+    "19.1": ("$Trainer.party", "pbMessage", "each"),
+    "20": ("$player.party", "pbMessage", "each"),
+    "20.1": ("$player.party", "pbMessage", "each"),
+    "21": ("$player.party", "pbMessage", "each"),
+    "21.1": ("$player.party", "pbMessage", "each"),
+}
+# 版本读不到时拿来认世代的脚本（拼起来看指纹）
+_HEAL_PROBE_SCRIPTS = ("Scene_Map", "Debug_Menu", "Debug", "Trainer", "Player",
+                       "PItem_ItemEffects", "Item_Effects", "PField_Field")
+
+
+def _map_update_anchor(lines):
+    """
+    在 Scene_Map 里找「F9 调试分支」那一行 → 行号（找不到返回 None）。
+
+      v16 / v17   `if $DEBUG and Input.press?(Input::F9)`   → 独立 if，返回本行
+      v18 起      `elsif Input.press?(Input::F9)`           → elsif 链，返回本行
+      都认不出    退到 `unless $game_player.moving?` /
+                  `if !$game_player.moving?` 那一行（照它插独立 if 块）
+    """
+    for i, ln in enumerate(lines):
+        if "Input::F9" not in ln:
+            continue
+        if re.match(r"^[ \t]*(elsif|if)\b", ln):
+            return i
+    for i, ln in enumerate(lines):
+        if re.match(r"^[ \t]*(unless\s+\$game_player\.moving\?|"
+                    r"if\s+!\$game_player\.moving\?)", ln):
+            return i
+    return None
+
+
+def _heal_probe(game_dir):
+    """把几份「能看出这游戏是哪个世代」的脚本拼起来（指纹用）。"""
+    want = {_norm_script_name(n) for n in _HEAL_PROBE_SCRIPTS}
+    out = []
+    for _mode, _key, _path, sname, text in GS.iter_named_scripts(game_dir):
+        s = _norm_script_name(sname)
+        if s and any(s == w or s.endswith(w) for w in want):
+            out.append(text or "")
+    return "\n".join(out)
+
+
+def _heal_family(version, probe):
+    """
+    挑一份跟这个游戏对得上的 heal 代码 → (版本键, 依据说明)。
+
+      ① 先看引擎版本号（Settings / Essentials::VERSION）；
+      ② **读不到 / 认不出**（脚本被加密、作者删了 VERSION）时按函数指纹认：
+           · 脚本里在用 `$player.party`          → v20+ 那一套
+           · 有裸 `pbMessage(`（v18 起才有）      → v18 那一套
+           · 只有 `Kernel.pbMessage`             → v16 / v17 那一套
+           · 全认不出                            → 按最新版 v21.1 处理
+    """
+    ver = (version or "").strip()
+    if ver in _HEAL_VERSIONS:
+        return ver, f"引擎版本 v{ver}"
+    if re.search(r"\$player\s*\.\s*party", probe):
+        return "20", "读不到版本，按指纹：脚本里在用 $player.party"
+    if re.search(r"(?<![.\w])pbMessage\s*\(", probe):
+        if re.search(r"\$Trainer\s*\.\s*party", probe):
+            return "18", "读不到版本，按指纹：$Trainer.party + 裸 pbMessage"
+        return "20", "读不到版本，按指纹：裸 pbMessage（v18 起）"
+    if "Kernel.pbMessage" in probe:
+        return "16", "读不到版本，按指纹：只有 Kernel.pbMessage（v16/v17）"
+    return "21.1", "读不到版本，指纹也认不出，按最新版 v21.1 处理"
+
+
+def _heal_block(ref_line, family, why, is_elsif):
+    """照着 `ref_line` 的缩进 / 行尾生成 F7 分支（已带行尾）。"""
+    party, msg, loop = _HEAL_VERSIONS[family]
+    indent = re.match(r"^([ \t]*)", ref_line).group(1)
+    eol = "\r" if ref_line.endswith("\r") else ""
+    pad = indent + "  "
+    if loop == "for":
+        body = [f"{pad}for pkmn in {party}  # {_MARK}",
+                f"{pad}  pkmn.heal  # {_MARK}",
+                f"{pad}end  # {_MARK}"]
+    else:
+        body = [f"{pad}{party}.each {{ |pkmn| pkmn.heal }}  # {_MARK}"]
+    body.append(f'{pad}{msg}(_INTL("队伍已全部治愈！"))  # {_MARK}')
+    if is_elsif:
+        rows = [f"{indent}elsif Input.trigger?(Input::F7)  # {_MARK} "
+                f"{_HEAL_TAG}（{why}）"] + body
+    else:
+        rows = ([f"{indent}if Input.trigger?(Input::F7)  # {_MARK} "
+                 f"{_HEAL_TAG}（{why}）"] + body
+                + [f"{indent}end  # {_MARK}"])
+    return [r + eol for r in rows]
+
+
+def _heal_strip(lines):
+    """
+    抠掉本工具此前植入的 **F7 块** → (新的行列表, 删掉了几行)。
+
+    ★ 认块：块首 = 同时含 `Input::F7` 与 `_MARK` 的行；块体 = 紧跟其后、
+      含 `_MARK` 且不含「别的功能」标记的连续行（`end  # _MARK` 也算）。
+    ★ 必须排除别的功能的标记（F6 / 方式二~八 / 方式七 的 aide 块），
+      否则紧挨着的别家块会被一起吃掉。
+    """
+    foreign = tuple(_FOREIGN_MARKS) + ("F6", "方式三", "方式七")
+    heads = [i for i, x in enumerate(lines)
+             if "Input::F7" in x and _MARK in x]
+    if not heads:
+        return lines, 0
+    drop = set()
+    for h in heads:
+        drop.add(h)
+        j = h + 1
+        while j < len(lines) and _MARK in lines[j] \
+                and not any(m in lines[j] for m in foreign):
+            drop.add(j)
+            j += 1
+    return [x for i, x in enumerate(lines) if i not in drop], len(drop)
+
+
+def patch_heal_key(game_dir, version=None, emit=None):
+    """
+    独立模块「开启 F7 自动治愈队伍」的**开始植入**：在 Scene_Map#update 里
+    照着 F9 调试分支的位置加一个 F7 分支，按下即回满队伍。
+
+    ★ 幂等：先抠掉上次植入的 F7 块再插，重复点不会堆叠出两份。
+    ★ 位置跟着场景走：v18 起是 `elsif`（塞在 F9 前面），v16/v17 是独立
+      `if … end` 块（塞在 `if $DEBUG and Input.press?(Input::F9)` 前面）。
+    ★ 用哪套队伍引用 / 弹消息函数，按引擎版本或函数指纹决定（见 _heal_family）。
+    """
+    def say(msg):
+        if emit:
+            emit(msg)
+    head = "[F7 治愈]"
+    tgt = find_game_script(game_dir, "Scene_Map")
+    if not tgt:
+        say(f"{head} · 游戏里没找到「Scene_Map」脚本")
+        return {"ok": False, "reason": "找不到 Scene_Map 脚本"}
+    lines, dropped = _heal_strip(tgt["text"].split("\n"))
+    if dropped:
+        say(f"{head} · 已先清除上次植入的 {dropped} 行（重装，不会堆叠）")
+    anchor = _map_update_anchor(lines)
+    if anchor is None:
+        say(f"{head} · Scene_Map 的 update 里既没有 F9 调试分支、也没有 "
+            "moving? 判断，没法确定 F7 挂哪儿")
+        return {"ok": False, "reason": "Scene_Map 里找不到注入锚点"}
+    ver = (version or "").strip() or GS.essentials_version(game_dir)
+    fam, why = _heal_family(ver, _heal_probe(game_dir))
+    is_elsif = lines[anchor].lstrip().startswith("elsif")
+    body = _heal_block(lines[anchor], fam, why, is_elsif)
+    new_text = "\n".join(lines[:anchor] + body + lines[anchor:])
+    if new_text == tgt["text"]:
+        say(f"{head} · 已经是「{why}」这一套了，无需改动")
+        return {"ok": True, "script": tgt["name"], "changed": False,
+                "version": ver, "family": fam, "why": why}
+    try:
+        _write_script(tgt, new_text, emit=emit, mark=HEAL_BAK_MARK)
+    except (OSError, RuntimeError) as e:
+        say(f"{head} ✘ 写入失败：{e}")
+        return {"ok": False, "reason": str(e)}
+    say(f"{head} ✔ 已在「{tgt['name']}」的 update 里植入 F7"
+        f"（{why}；{'elsif 分支' if is_elsif else '独立 if 块'}）")
+    return {"ok": True, "script": tgt["name"], "changed": True,
+            "version": ver, "family": fam, "why": why,
+            "branch": "elsif" if is_elsif else "if"}
+
+
+def restore_heal_key(game_dir, emit=None):
+    """撤销「F7 自动治愈队伍」：只抠掉植入的那几行，其它改动原样保留。"""
+    def say(msg):
+        if emit:
+            emit(msg)
+    tgt = find_game_script(game_dir, "Scene_Map")
+    if not tgt:
+        say("[F7 治愈] · 游戏里没找到「Scene_Map」脚本")
+        return {"ok": False, "reason": "找不到 Scene_Map 脚本"}
+    lines, dropped = _heal_strip(tgt["text"].split("\n"))
+    if not dropped:
+        say("[F7 治愈] · 没找到植入过的 F7 分支，无需还原")
+        return {"ok": True, "removed": 0, "changed": False}
+    try:
+        _write_script(tgt, "\n".join(lines), emit=emit, mark=HEAL_BAK_MARK)
+    except (OSError, RuntimeError) as e:
+        say(f"[F7 治愈] ✘ 写入失败：{e}")
+        return {"ok": False, "reason": str(e)}
+    say(f"[F7 治愈] ✔ 已从「{tgt['name']}」移除 {dropped} 行 F7 分支")
+    return {"ok": True, "removed": dropped, "changed": True}
 
 
 # ---- 方式五 / 方式六：除虫喷雾 ----

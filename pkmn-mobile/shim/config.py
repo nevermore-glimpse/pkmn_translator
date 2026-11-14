@@ -137,7 +137,7 @@ def resource_dir(name):
 # 应用信息（防御性导出，保持与电脑版同名）
 # ================================================================
 APP_NAME = "宝可梦同人工具"
-VERSION = os.environ.get("PKMN_VERSION", "1.8.2")
+VERSION = os.environ.get("PKMN_VERSION", "1.8.3")
 APP_TITLE = f"{APP_NAME} v{VERSION}"
 
 # ★ 电脑版「翻译中间文件」目录名（桌面批量翻译把缓存/报告/润色稿放这里）。

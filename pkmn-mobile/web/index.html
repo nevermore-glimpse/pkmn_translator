@@ -81,7 +81,6 @@ try { if (window.__NIGHT__ === true) document.body.classList.add("night"); } cat
             <div class="row">
                 <select id="debugMode" class="inp"></select>
             </div>
-            <div id="debugModeDesc" class="hint desc"></div>
             <div class="check">
                 <input type="checkbox" id="optForce" checked>
                 <label for="optForce">引擎被改过也继续写入<br>
@@ -103,6 +102,20 @@ try { if (window.__NIGHT__ === true) document.body.classList.add("night"); } cat
                 <button class="btn primary" id="btnEnable">开启 DEBUG</button>
                 <button class="btn" id="btnDisable">关闭 DEBUG</button>
                 <button class="btn ghost" id="btnRestore">还原备份</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-h">开启 F7 自动治愈队伍</div>
+            <div class="hint" style="margin-bottom:9px">
+                在 <b>Scene_Map#update</b> 里挂一个 F7 分支，按 F7 回满队伍
+                （HP / 状态 / PP）。代码照调试菜单的 heal 项<b>按版本生成</b>
+                （读不到版本时按函数指纹认），<b>不设 $DEBUG</b>，开不开调试都能用；
+                重复点不会堆叠。
+            </div>
+            <div class="btns">
+                <button class="btn primary" id="btnHealPatch">开始植入</button>
+                <button class="btn ghost" id="btnHealUndo">撤销植入</button>
             </div>
         </div>
 

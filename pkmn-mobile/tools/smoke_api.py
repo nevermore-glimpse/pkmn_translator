@@ -115,6 +115,23 @@ def main():
     r = call(base, "GET", "/api/debug/backups?dir=" + urllib.parse.quote(game))
     report(r.get("ok") is True, "GET /api/debug/backups")
 
+    # ---------- 3.5 F7 自动治愈队伍（接口层；真写盘见 test_heal_e2e.py） ----------
+    print("\n[3.5] F7 自动治愈队伍")
+    r = call(base, "GET", "/api/debug/modes")
+    modes = (r.get("data") or {}).get("modes") or []
+    report(len(modes) == 7 and all("desc" not in m for m in modes),
+           "GET /api/debug/modes（7 种，已按电脑版删掉 desc）",
+           f"{len(modes)} 种")
+
+    r = call(base, "POST", "/api/debug/heal", {"dir": game})
+    report(bool((r.get("data") or {}).get("task_id")),
+           "POST /api/debug/heal 拿到 task_id",
+           r.get("message", "")[:110])
+    r = call(base, "POST", "/api/debug/heal", {"dir": game, "undo": True})
+    report(bool((r.get("data") or {}).get("task_id")),
+           "POST /api/debug/heal（undo）拿到 task_id",
+           r.get("message", "")[:110])
+
     # ---------- 4. 存档接口（喂坏数据，看能不能优雅报错） ----------
     print("\n[4] 存档接口")
     bad = os.path.join(ROOT, "tmp", "bad.rxdata")

@@ -176,7 +176,9 @@ def main():
         want = ["main", "keys", "special", "special_menu",
                 "repel", "repel_menu", "rewrite"]
         check("开启方式①–⑦ 齐全", keys == want, "keys=" + ",".join(keys))
-        check("每个方式都带说明文字", bool(modes) and all(m.get("desc") for m in modes))
+        # ★ v1.8.3 起与电脑版一致：不再给每种方式配 desc 说明文字
+        check("方式已按电脑版删掉 desc 说明", bool(modes)
+              and all(not m.get("desc") for m in modes))
         # 只有方式① 允许写 $DEBUG —— 这条规则两端口径必须一致
         src = open(os.path.join(PY_ROOT, "server", "api_debug.py"),
                    encoding="utf-8").read()

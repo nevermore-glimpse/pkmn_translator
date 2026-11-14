@@ -584,13 +584,6 @@ main {
     text-decoration: none;
 }
 
-/* 开启方式说明里带换行，必须保留 */
-.hint.desc {
-    white-space: pre-line;
-    margin-top: 8px;
-    line-height: 1.75;
-}
-
 /* 下拉框长得和输入框一致 */
 select.inp {
     appearance: none;

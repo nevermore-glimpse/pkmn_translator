@@ -530,6 +530,7 @@
 
   // ------------------------------------------------------------
   // 开启方式（①–⑦，清单由后端给，避免前后端各写一份）
+  // ★ 与电脑版一致：**不再显示每种方式的说明文字**（电脑版 v1.9.8 已删除）。
   // ------------------------------------------------------------
   let DEBUG_MODES = [];
 
@@ -544,15 +545,8 @@
     sel.innerHTML = DEBUG_MODES.map((m) =>
       `<option value="${esc(m.key)}">${esc(m.label)}</option>`).join("");
     sel.value = "main";
-    renderModeDesc();
   }
 
-  function renderModeDesc() {
-    const m = DEBUG_MODES.find((x) => x.key === $("debugMode").value);
-    $("debugModeDesc").textContent = m ? m.desc : "";
-  }
-
-  $("debugMode").addEventListener("change", renderModeDesc);
   loadModes();
 
   // ------------------------------------------------------------
@@ -724,6 +718,26 @@
             loadDebugStatus);
   });
   bindCancel("btnCancel", "debugLog");
+
+  // ------------------------------------------------------------
+  // F7 自动治愈队伍（独立功能，跟开不开 DEBUG 无关）
+  // ------------------------------------------------------------
+  $("btnHealPatch").addEventListener("click", () => {
+    const dir = gameDir();
+    if (!dir) return toast("先选游戏主程序");
+    runTask("/api/debug/heal", { dir }, "debugLog", "debugBar", "btnCancel",
+            loadDebugStatus);
+  });
+  $("btnHealUndo").addEventListener("click", async () => {
+    const dir = gameDir();
+    if (!dir) return toast("先选游戏主程序");
+    if (!await confirmBox("撤销植入",
+      "把植入到 Scene_Map 里的 F7 治愈分支移除？" +
+      "<span class=\"warn\">只删本工具加的那几行，脚本里别的改动原样保留。</span>",
+      "确认撤销", true)) return;
+    runTask("/api/debug/heal", { dir, undo: true },
+            "debugLog", "debugBar", "btnCancel", loadDebugStatus);
+  });
 
   // ------------------------------------------------------------
   // 基准覆盖
