@@ -4431,10 +4431,13 @@ class App:
     # ---------- 手工翻译缓存（「翻译」页与「术语提取」页共用） ----------
     def _manual_cache_row(self, parent, term=True):
         """
-        「模型与模式」下面那一行：提取缓存 / 回写已翻缓存。
+        「模型与模式」下面那一行：提取缓存 / 回写已翻缓存 / 回写 PBS。
 
         term=True  → 术语提取页（只处理名字文件，回写时并进术语表）
         term=False → 翻译页（处理非术语类文件）
+
+        ★ 「回写PBS」两页都有：把缓存里的译文直接替换进游戏的 PBS txt
+          （见 pbs_writeback），编译走 PBS 的 v20+ 游戏才用得上。
         """
         row = tk.Frame(parent, bg=CARD)
         row.pack(fill="x", pady=(10, 0))
@@ -4448,12 +4451,21 @@ class App:
                     command=(self._te_writeback_manual_cache if term
                              else self._tr_writeback_manual_cache)
                     ).pack(side="left", padx=(8, 0))
+        # ★ 回写 PBS：把缓存里的译文直接替换进 PBS 里的 txt 源表
+        #   （v20+ 的游戏是靠 PBS 编译的，光有 *_translated.txt 用不上）
+        GlassButton(row, "回写PBS", width=104, height=36, bg=CARD,
+                    font=FONT_SMALL,
+                    command=(self._te_writeback_pbs if term
+                             else self._tr_writeback_pbs)
+                    ).pack(side="left", padx=(8, 0))
         tk.Label(parent,
-                 text="提取：不用送模型的条目先写进翻译缓存，要翻的按文件导出到"
-                      "游戏根目录的 Text_chinese_cache（一个文件一份 json，"
-                      "带该文件的提示词与术语表）。\n"
-                      "回写：把 json 里的译文倒回翻译缓存、生成已翻译文件"
-                      + ("，并把「原文 → 译文」并进术语表。" if term else "。"),
+                 text="提取：不用送模型的条目写进缓存，要翻的导出到"
+                      "Text_chinese_cache。\n"
+                      "回写：译文倒回缓存、生成已翻译文件"
+                      + ("，并进术语表。" if term else "。")
+                      + "\n回写PBS：用缓存译文替换 PBS 里的 txt"
+                        "（特性/道具/招式/宝可梦/属性），"
+                        "改前备份到 PBS/.cn_backup。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
                  wraplength=560).pack(anchor="w", pady=(6, 0))
 
@@ -6574,6 +6586,106 @@ class App:
             lambda: MC.writeback(basis, "sentence"),
             label="回写句子缓存…", done_label="句子缓存已回写",
             on_done=lambda st: self._manual_writeback_done(st, term=False))
+
+    # ----------------------------------------------------------------
+    # 回写 PBS：用缓存里的译文替换游戏 PBS 里的 txt 源表
+    # ----------------------------------------------------------------
+    def _te_writeback_pbs(self):
+        """术语页：拿术语缓存的译文回写 PBS。"""
+        target = self._te_target_ready(None)
+        if not target:
+            return
+        self._pbs_writeback(target)
+
+    def _tr_writeback_pbs(self):
+        """翻译页：拿句子缓存的译文回写 PBS。"""
+        basis = self.fp_translate.ensure() or [config.Runtime.input_file]
+        self._pbs_writeback(basis)
+
+    def _pbs_writeback(self, basis):
+        """
+        先预演一遍（不落盘），把「哪个文件改几行」摆给用户看，确认后再动手。
+
+        ★ 写盘前会把原文件备份到 `PBS/.cn_backup`（首次改动才备份，
+          所以里面始终是最初那份原文）。
+        """
+        import pbs_writeback as PW
+
+        root = PW.game_root_of(basis)
+        try:
+            pre = PW.apply(root, write=False)
+        except Exception as e:                   # noqa: BLE001
+            messagebox.showerror("回写 PBS 失败", f"扫描 PBS 时出错：\n{e}")
+            return
+
+        if not pre["ok"]:
+            reason = pre.get("reason")
+            if reason == "pbs_missing":
+                msg = (f"没找到 PBS 文件夹：\n{pre['pbs']}\n\n"
+                       f"回写 PBS 要求游戏根目录下有一个放 txt 表的 PBS 文件夹"
+                       f"（游戏根目录：{pre['root']}）。")
+            elif reason == "pbs_empty":
+                msg = f"PBS 文件夹里没有 txt 文件：\n{pre['pbs']}"
+            else:
+                msg = ("没找到可用的翻译缓存。\n\n"
+                       "回写 PBS 读的是「翻译中间文件」夹里的 *_cache.json"
+                       "（特性名 / 道具名 / 招式名 / 图鉴 …）。\n"
+                       f"游戏根目录：{pre['root']}\n\n"
+                       "先点「提取术语缓存」或「提取句子缓存」把要翻的条目翻好，"
+                       "回写完缓存后再点这个按钮。")
+            messagebox.showwarning("无法回写 PBS", msg)
+            return
+
+        if not pre["total"]:
+            messagebox.showinfo(
+                "无可回写",
+                f"扫了 {pre['scanned']} 个 PBS 文本，没有可替换的条目。\n\n"
+                f"用到的缓存：\n{self._pbs_cache_text(pre)}\n\n"
+                "可能原因：PBS 里已经全是译文，或者缓存里的原文与 PBS 对不上"
+                "（比如 PBS 被改过）。")
+            return
+
+        lines = "\n".join(f"· {f['cls']}  {f['name']}：{f['lines']} 行"
+                          for f in pre["files"][:15])
+        if len(pre["files"]) > 15:
+            lines += f"\n… 另有 {len(pre['files']) - 15} 个文件"
+        skip = ""
+        if pre.get("skipped"):
+            skip = "\n\n跳过：" + "；".join(
+                f"{n}（{r}）" for n, r in pre["skipped"][:5])
+        if not messagebox.askyesno(
+                "回写 PBS",
+                f"将替换 {pre['total']} 行 / {len(pre['files'])} 个文件：\n\n"
+                f"{lines}{skip}\n\n"
+                f"用到的缓存：\n{self._pbs_cache_text(pre)}\n\n"
+                f"PBS 目录：{pre['pbs']}\n"
+                f"改动前会把原文备份到：{os.path.join(pre['pbs'], PW.BAK_DIR)}\n\n"
+                f"确认写入？"):
+            return
+
+        self.run_async(lambda: PW.apply(root, write=True),
+                       label="回写 PBS…", done_label="PBS 已回写",
+                       on_done=self._pbs_writeback_done)
+
+    @staticmethod
+    def _pbs_cache_text(st):
+        """把「用到了哪些缓存」拼成几行给对话框看。"""
+        names = {"ability": "特性", "items": "道具", "moves": "招式",
+                 "pokemon": "宝可梦", "types": "属性"}
+        rows = [f"· {names.get(k, k)}：{'、'.join(v)}"
+                for k, v in (st.get("caches") or {}).items() if v]
+        return "\n".join(rows) or "（无）"
+
+    def _pbs_writeback_done(self, st):
+        st = st or {}
+        msg = (f"已替换 {st.get('total', 0)} 行 / "
+               f"{len(st.get('files') or [])} 个文件")
+        if st.get("skipped"):
+            msg += f"\n跳过 {len(st['skipped'])} 个文件（见运行日志）"
+        if st.get("backup") and os.path.isdir(st["backup"]):
+            msg += f"\n\n原文已备份到：\n{st['backup']}"
+        self.q.put(("log", f"[回写 PBS] {msg}\n"))
+        messagebox.showinfo("PBS 已回写", msg)
 
     # ================================================================
     # 页面：术语检查报告（只读缓存与术语表；改译名不走模型，重翻走模型）
