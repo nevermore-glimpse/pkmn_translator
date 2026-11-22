@@ -9,7 +9,7 @@
      `$DEBUG = true`、复刻原引导逻辑、屏蔽 `pbCompiler`（打包版磁盘没有 PBS）。
      补丁只在内存，关游戏即失效。
 
-  ② mkxp-z 引擎（v19–v21.1）—— 命令行参数 `Game.exe debug`（引擎原生把
+  ② mkxp-z 引擎（v19–v22）—— 命令行参数 `Game.exe debug`（引擎原生把
      $DEBUG/$TEST 置真），再于游戏目录 mkxp.json 挂一个 preload 脚本兜底。
 
 ★ 补齐数据方案（应对 $DEBUG 触发的全量重编译）：
@@ -57,7 +57,7 @@ LAUNCHER_CFG = "_pkmn_debug_launcher.json"
 
 RUNTIME_LABEL = {
     "rgss": "RGSS（v16–v18）",
-    "mkxp": "mkxp-z（v19–v21.1）",
+    "mkxp": "mkxp-z（v19–v22）",
     "unknown": "未知",
 }
 

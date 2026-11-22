@@ -74,7 +74,7 @@ MODULES = {
     "ow": api_overwrite,     # 基准覆盖
     "font": api_font,        # 字体替换
     "settings": api_settings, # 外观偏好（夜间模式等）持久化
-    "pbs": api_pbs,          # PBS 编辑（v16~v21 的 txt 读写 + 编译）
+    "pbs": api_pbs,          # PBS 编辑（v16~v22 的 txt 读写 + 编译）
 }
 
 _MIME = {

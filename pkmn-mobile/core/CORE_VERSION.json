@@ -1,6 +1,6 @@
 {
   "source": "E:/pkmn_translator",
-  "synced_at": "2026-11-14 21:24:27",
+  "synced_at": "2026-11-23 00:14:04",
   "modules": [
     "rmarshal.py",
     "save_tools.py",
@@ -11,7 +11,11 @@
     "pbs_edit.py",
     "pbs_legacy.py",
     "engine_tools.py",
-    "plugin_tools.py"
+    "engine_src.py",
+    "plugin_tools.py",
+    "mini_data.py",
+    "launcher.py",
+    "launcher_exe.py"
   ],
   "files": {
     "rmarshal.py": {
@@ -23,36 +27,52 @@
       "size": 208430
     },
     "debug_tool.py": {
-      "sha256": "f94a2aa7ca4e2c00c11cbe5bcb28a0069b68db67561b347759c029d0ebbfd381",
-      "size": 54643
+      "sha256": "8294e0372e97775a5295916dcebd8daccdca763d1816f50d786ab5b95a727a78",
+      "size": 57855
     },
     "game_scripts.py": {
-      "sha256": "ffc06b584d2723f0f259b6b9e7841b701602ff7ff76f73e8a008268b62826312",
-      "size": 79521
+      "sha256": "8925c5ae3ffffdbed5e1c7fa20b9a2806c33f5877217062a05e279ba6895013f",
+      "size": 81396
     },
     "essentials_base.py": {
-      "sha256": "fd5908a2cf7c66c451ef6dfcbf2424240e7c8c9329c813d38b8b5d6f4b9927d8",
-      "size": 23213
+      "sha256": "57cc31c95806ce3e49c78e718faf5c494f927d0dccdb7e62689e25705a36e9d4",
+      "size": 23214
     },
     "logger.py": {
       "sha256": "e64c4499c6a74a310801d4057e12f86d44f3bb20ee5923662beb276560471472",
       "size": 7684
     },
     "pbs_edit.py": {
-      "sha256": "bd2dc6fc41e0cd3b3533c817c43c01f5ab72bceef1bd4939a80b5df52018b72f",
-      "size": 194927
+      "sha256": "04a19e8e70076c63a8f4c9ab3867276a023759b74645861a05bdab1bb954425b",
+      "size": 190665
     },
     "pbs_legacy.py": {
       "sha256": "3835fe99a66803d03f6a0d6fcaa5587654d49dfdc7031f844561513af4284dc2",
       "size": 95794
     },
     "engine_tools.py": {
-      "sha256": "98b2c20f9118a4ecaec2ec00d8e8c565bb6c5c1e1695af786390ed0d5c45808e",
-      "size": 169947
+      "sha256": "adfaff748cbe31548f40dd5aabf975b6eadc77a8a4c35cd2749bd5585f7a7703",
+      "size": 187746
+    },
+    "engine_src.py": {
+      "sha256": "4cfc08c945ec4aaf9a8492f4c9eb0669afd9e81820ae186c9ee2804bdc3c5db7",
+      "size": 15286
     },
     "plugin_tools.py": {
-      "sha256": "8dfaf2842909ceeb6906f206be9e781671fcb2bac3fdfaf84618ebc50913ae9d",
-      "size": 63588
+      "sha256": "811693e215ca4afd3e6eaadace00b1a8bada4b4541d5ba0ba87c79330fe08ddf",
+      "size": 63475
+    },
+    "mini_data.py": {
+      "sha256": "017e5674a669da39388a5c8d4c88eb5ef361c9742a95bb68c41c58a4b6f09a5f",
+      "size": 40615
+    },
+    "launcher.py": {
+      "sha256": "33d34fd4976c4dbc3828f92c5acb8f2d3c93ce8cf2a80be48373768cd3d58036",
+      "size": 41887
+    },
+    "launcher_exe.py": {
+      "sha256": "9d1a8aabb74a402d5afb6788b4a5f7773ae1beae785aa808e77e30731ba99ab3",
+      "size": 19661
     }
   }
 }

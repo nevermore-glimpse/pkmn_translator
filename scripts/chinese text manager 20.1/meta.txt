@@ -1,5 +1,5 @@
 Name       = 中文文本处理
-Version    = 1.3.8
+Version    = 2.0.0
 Essentials = 20.1
 Link       = https://bbs.pokefans.cn/threads/20-1-21-11-1-6.223/
 Credits    = 木亦会枯,楠楠楠小鸟
@@ -13,3 +13,6 @@ Credits    = 木亦会枯,楠楠楠小鸟
 # - getFormattedText / getFormattedTextFast / pbDrawShadowText
 #   改为基于 Essentials 20.1 引擎源码 + 中文补丁，避免调用新版专有 API
 #=====================================================================
+# 2.0.0：
+# - 只保留中文自动换行和替换字体两个功能
+# - 删除文本垂直偏移 / 自动排版 / 地图文本去空格等功能

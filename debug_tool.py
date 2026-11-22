@@ -468,7 +468,7 @@ def _restore_intro_lines(text):
     return "\n".join(lines), n
 
 
-def remove_debug_from_main(game_dir, emit=None):
+def remove_debug_from_main(game_dir, emit=None, include_scene=True):
     """
     把 Main 里我们写过的 `$DEBUG = true` 那行**删掉**（`pbCallTitle` 第一行
     与旧版 `mainFunction` 的位置都查）。返回 {"removed", "targets"}。
@@ -524,6 +524,30 @@ def remove_debug_from_main(game_dir, emit=None):
             f"（{'、'.join(parts)}）")
     if not rep["removed"]:
         say("[DEBUG] · Main 里本来就没有方式① 留下的改动，不用清理")
+
+    # ★ 方式① 现在写的是 Scene_Map#update，也要清
+    sc = _scene_map_target(game_dir) if include_scene else None
+    if sc:
+        lines = sc["text"].split("\n")
+        changed = 0
+        for i, ln in enumerate(lines):
+            if re.match(r"^[ \t]*def\s+update\b", ln):
+                for j in range(i + 1, min(i + 8, len(lines))):
+                    if DEBUG_LINE in lines[j] and EB.PATCH_MARK in lines[j]:
+                        lines.pop(j)
+                        changed += 1
+                        break
+                break
+        if changed:
+            try:
+                _write_text(sc["mode"], sc["path"], sc["key"],
+                            "\n".join(lines), old_text=sc["text"], emit=emit)
+                rep["removed"] += 1
+                rep["targets"].append({"mode": sc["mode"],
+                                       "where": str(sc["key"])})
+                say("[DEBUG] ✔ 已清理 Scene_Map#update 里方式① 的改动")
+            except (OSError, RuntimeError) as e:
+                say(f"[DEBUG] ⚠ 清理 Scene_Map#update 失败：{e}")
     return rep
 
 
@@ -952,15 +976,25 @@ def status(game_dir):
            "debug_on": False, "debug_partial": False,
            "antidebug": False, "antidebug_fixed": False, "backups": []}
     mains = find_main_sources(game_dir)
+    main_flags = []
     if mains:
         out["has_main"] = True
-        flags = []
         for src in mains:
             st = src["match"].start()
             body = src["text"][st:st + 300]
-            flags.append(bool(_DEBUG_SET_RE.search(body)))
-        out["debug_on"] = all(flags)
-        out["debug_partial"] = any(flags) and not all(flags)
+            main_flags.append(bool(_DEBUG_SET_RE.search(body)))
+    # ★ 方式①现在写 Scene_Map#update，这里也要认
+    scene_on = False
+    sc = _scene_map_target(game_dir)
+    if sc:
+        m = re.search(r"^([ \t]*)def\s+update\b", sc["text"], re.M)
+        if m:
+            body = sc["text"][m.start():m.start() + 400]
+            scene_on = bool(_DEBUG_SET_RE.search(body))
+    main_on = bool(main_flags) and all(main_flags)
+    out["debug_on"] = bool(scene_on or main_on)
+    out["debug_partial"] = bool((main_flags and not main_on) or
+                                (main_on != scene_on and mains))
     out["antidebug"] = bool(find_antidebug_sources(game_dir))
     out["antidebug_fixed"] = antidebug_fixed(game_dir)
     out["backups"] = list_backups(game_dir)
@@ -1032,6 +1066,77 @@ def restore(game_dir, emit=None):
 # ================================================================
 # 一键开启
 # ================================================================
+def _scene_map_target(game_dir):
+    """找 Scene_Map 脚本 → 脚本 dict（读不到返回 None）。"""
+    for mode, key, path, name, text in GS.iter_named_scripts(game_dir,
+                                                           both=True):
+        short = re.sub(r"^.*[/\\]", "", str(name))
+        norm = re.sub(r"[^0-9a-z]+", "", short.lower())
+        if norm == "scenemap" or norm.endswith("scenemap"):
+            return {"mode": mode, "key": key, "path": path, "name": name,
+                    "text": text}
+    return None
+
+
+def patch_scene_map_update(text):
+    """
+    方式①：在 `Scene_Map#update` 的第一行插入 `$DEBUG = true`。
+
+    返回 {"added", "existed", "line"}；找不到 update 返回 None。
+    """
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        m = re.match(r"^([ \t]*)def\s+update\b", ln)
+        if not m:
+            continue
+        indent = m.group(1) + "  "
+        eol = "\r" if ln.endswith("\r") else ""
+        body = indent + DEBUG_LINE + "  # " + EB.PATCH_MARK + " 方式一" + eol
+        # 已经写过（同一行的标记）→ 不再插
+        for j in range(i + 1, min(i + 8, len(lines))):
+            if DEBUG_LINE in lines[j] and EB.PATCH_MARK in lines[j]:
+                return {"added": False, "existed": True, "line": j}
+        return {"added": True, "existed": False, "line": i + 1,
+                "text": "\n".join(lines[:i + 1] + [body] + lines[i + 1:])}
+    return None
+
+
+def patch_scene_map_debug(game_dir, emit=None):
+    """把方式①的 `$DEBUG = true` 写进 Scene_Map#update。返回报告 dict。"""
+    def say(msg):
+        if emit:
+            emit(msg)
+    rep = {"targets": [], "reason": ""}
+    src = _scene_map_target(game_dir)
+    if not src:
+        rep["reason"] = "游戏里没找到 Scene_Map 脚本，无法写入 $DEBUG"
+        say(f"[DEBUG] ✘ {rep['reason']}")
+        return rep
+    info = patch_scene_map_update(src["text"])
+    if info is None:
+        rep["reason"] = "Scene_Map 里没找到 def update，无法写入 $DEBUG"
+        say(f"[DEBUG] ✘ {rep['reason']}")
+        return rep
+    rec = {"mode": src["mode"], "where": str(src["key"]), "fn": "update",
+           "added": info["added"], "existed": info["existed"],
+           "written": False}
+    rep["targets"].append(rec)
+    if not info["added"]:
+        say("[DEBUG] · Scene_Map#update 里已经有 $DEBUG = true，跳过")
+        return rep
+    try:
+        bak = _write_text(src["mode"], src["path"], src["key"],
+                          info["text"], old_text=src["text"], emit=emit)
+    except (OSError, RuntimeError) as e:
+        rep["reason"] = f"写入 Scene_Map#update 失败：{e}"
+        say(f"[DEBUG] ✘ {rep['reason']}")
+        return rep
+    rep["backup"] = bak
+    rec["written"] = True
+    say("[DEBUG] ✔ 已在 Scene_Map#update 第一行写入 $DEBUG = true")
+    return rep
+
+
 def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
                  write_debug=True):
     """
@@ -1091,7 +1196,9 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
         if force:
             say("[DEBUG] · 你已勾选「仍要继续」，照常执行")
 
-    # ---------- ② pbCallTitle 第一行写 $DEBUG=true ----------
+    # ---------- ② Scene_Map#update 第一行写 $DEBUG=true ----------
+    # ★ 方式①已改为写 Scene_Map#update（不再是 Main 的 pbCallTitle）：
+    #   一进地图就开调试，标题画面不会先跳 Scene_DebugIntro。
     if not write_debug:
         # ★ 只有方式①（通用）需要这一步。其余方式一律不写：
         #   · 方式② 删条件的做法本来就是把「需要 $DEBUG 才生效」的判定删掉；
@@ -1109,51 +1216,24 @@ def enable_debug(game_dir, emit=None, force=False, antidebug_plan=None,
         except (OSError, RuntimeError) as e:
             say(f"[DEBUG] ⚠ 清理残留 {DEBUG_LINE} 失败：{e}")
     else:
-        mains = find_main_sources(game_dir)
-        if not mains:
-            rep["reason"] = ("脚本里没找到 `def pbCallTitle`（也没有 "
-                             "`def mainFunction`），没法写 $DEBUG=true")
-            say(f"[DEBUG] ✘ {rep['reason']}")
+        # ★ 先清掉旧版方式①写在 Main 里的那行，避免两处叠加。
+        try:
+            old = remove_debug_from_main(game_dir, emit=emit,
+                                          include_scene=False)["removed"]
+            if old:
+                say(f"[DEBUG] · 已清掉 Main 里的旧 {DEBUG_LINE}（{old} 处）")
+        except (OSError, RuntimeError) as e:
+            say(f"[DEBUG] ⚠ 清理 Main 里的旧 {DEBUG_LINE} 失败：{e}")
+        d = patch_scene_map_debug(game_dir, emit=emit)
+        rep["debug"] = d
+        if d.get("reason"):
+            rep["reason"] = d["reason"]
             return rep
-        rep["debug"] = {"targets": []}
-        if len(mains) > 1:
-            say(f"[DEBUG] Main 有 {len(mains)} 处（解包 .rb 与 Scripts.rxdata "
-                "并存），两处都写，免得改了不生效的那份")
-        for src in mains:
-            fn_name = ("pbCallTitle" if src.get("rx") is _PB_CALL_TITLE_RE
-                       else "mainFunction")
-            if src.get("rx") is _MAIN_FUNC_RE:
-                new_text, info = patch_main_function(src["text"])
-            else:
-                new_text, info = patch_pb_call_title(src["text"])
-            where = _where(src)
-            rec = {"mode": src["mode"], "where": str(src["key"]),
-                   "added": info["added"], "existed": info["existed"],
-                   "intro": info.get("intro", 0),
-                   "fn": fn_name, "written": False}
-            rep["debug"]["targets"].append(rec)
-            if not info["added"] and not rec["intro"]:
-                say(f"[DEBUG] · {where} 的 {fn_name} 里已经有 {DEBUG_LINE}，"
-                    "跳过")
-                continue
-            try:
-                bak = _write_text(src["mode"], src["path"], src["key"],
-                                  new_text, old_text=src["text"], emit=emit)
-            except (OSError, RuntimeError) as e:
-                rep["reason"] = f"写入 {DEBUG_LINE} 失败（{where}）：{e}"
-                say(f"[DEBUG] ✘ {rep['reason']}")
-                return rep
-            _note_backup(rep, bak)
+        if d.get("backup"):
+            _note_backup(rep, d["backup"])
             rep["changed"] = True
-            rec["written"] = True
-            if info["added"]:
-                say(f"[DEBUG] ✔ 已在 {fn_name} 第一行写入 {DEBUG_LINE}"
-                    f"（{where}）")
-            else:
-                say(f"[DEBUG] · {where} 的 {fn_name} 里已经有 {DEBUG_LINE}")
-            if rec["intro"]:
-                say(f"[DEBUG] ✔ 已注释 {fn_name} 里的调试开场分支"
-                    f"（{rec['intro']} 行），启动直接走正常标题")
+        if any(t.get("written") for t in d.get("targets") or []):
+            rep["changed"] = True
 
     # ---------- ③ 清掉「反调试」（Scene_Map 里把 $DEBUG 摁死那一段） ----------
     ad_srcs = find_antidebug_sources(game_dir)

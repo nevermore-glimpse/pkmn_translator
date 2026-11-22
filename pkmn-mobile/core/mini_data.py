@@ -17,10 +17,10 @@ r"""
 **空文件会在这一步直接炸掉**（Marshal 读 0 字节报 ``ArgumentError``）。
 
 因此本模块不再写空文件，而是写**结构正确、内容最少**的真数据：
-用 rubymarshal 生成 Ruby Marshal 字节，字段取 v19–v21.1 各版
+用 rubymarshal 生成 Ruby Marshal 字节，字段取 v19–v22 各版
 ``GameData::*#initialize`` 的**并集**（多出来的 ivar Ruby 不校验，
 缺了的才有默认值兜底），所以同一份结构能同时喂饱 v19 / v19.1 / v20 /
-v20.1 / v21 / v21.1。同时补一份最小可编译的 PBS，万一真触发了编译也不报错。
+v20.1 / v21 / v21.1 / v22。同时补一份最小可编译的 PBS，万一真触发了编译也不报错。
 
 ## 参照
 
@@ -34,6 +34,7 @@ v20.1 / v21 / v21.1。同时补一份最小可编译的 PBS，万一真触发了
 """
 import json
 import os
+import re
 import time
 
 from rubymarshal.classes import RubyObject, Symbol
@@ -907,9 +908,13 @@ def family_of(version, game_dir=None):
         return "v19"
     if v.startswith("20"):
         return "v20"
-    if v.startswith("21"):
+    if v.startswith("21") or v.startswith("22"):
         return "v21"
     if v[:2] in ("16", "17", "18"):
+        return "legacy"
+    # ★ 运行时优先：RGSS 一定是 v16–v18。否则下面看到 tm.dat 之类会把
+    #   v16 误判成 v19（官方 v16 的 Data 里就有 tm.dat）。
+    if _looks_rgss(game_dir):
         return "legacy"
     # ① 先看 Data 目录里已有什么（最省事，也不读脚本）
     d = os.path.join(game_dir or "", "Data")
@@ -935,11 +940,46 @@ def family_of(version, game_dir=None):
             return "v19"
         if v.startswith("20"):
             return "v20"
-        if v.startswith("21"):
+        if v.startswith("21") or v.startswith("22"):
             return "v21"
         if v[:2] in ("16", "17", "18"):
             return "legacy"
+    # ③ 运行时兜底：目录里有 RGSS 运行库 / Game.ini 指向 RGSS → v16–v18。
+    #    这些游戏绝不能按 v21 补数据（字段与脚本引擎都不对）。
+    if _looks_rgss(game_dir):
+        return "legacy"
     return "v21"      # 认不出就按最新那档（写多不写少，多出来的文件没人读）
+
+
+def _looks_rgss(game_dir):
+    """目录里有没有 RGSS 运行库 / Game.ini 的 Library=RGSS。"""
+    if not game_dir or not os.path.isdir(game_dir):
+        return False
+    # 交给 launcher 的运行时判定：它会先看 mkxp 证据，避免把「移植到
+    # mkxp-z 的 v16 游戏」误判成 RGSS。
+    try:
+        import launcher
+        kind = launcher.detect_runtime(game_dir)
+        if kind in ("rgss", "mkxp"):
+            return kind == "rgss"
+    except Exception:                            # noqa: BLE001
+        pass
+    try:
+        for n in os.listdir(game_dir):
+            low = n.lower()
+            if low.startswith("rgss") and low.endswith(".dll"):
+                return True
+    except OSError:
+        pass
+    try:
+        p = os.path.join(game_dir, "Game.ini")
+        if os.path.isfile(p):
+            txt = io.open(p, "r", encoding="utf-8", errors="replace").read()
+            if re.search(r"(?im)^\s*Library\s*=\s*RGSS", txt):
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def _pbs_dir(game_dir):

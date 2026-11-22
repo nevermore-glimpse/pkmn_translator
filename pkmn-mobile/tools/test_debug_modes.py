@@ -222,11 +222,15 @@ def main():
                    str(rep.get("mode_error") or ""))
 
             main_text = read_script(game, "Main") or ""
+            scene_text = read_script(game, "Scene_Map") or ""
             has_debug = "$DEBUG" in main_text
+            scene_debug = ("$DEBUG=true" in scene_text
+                           or "$DEBUG = true" in scene_text)
 
             # ★★ 最关键的一条：只有方式① 才允许写 $DEBUG
+            #   方式① 现在写 Scene_Map#update（不再写 Main）
             if mode == "main":
-                report(has_debug, "★ 方式① 写出了 $DEBUG=true")
+                report(scene_debug, "★ 方式① 在 Scene_Map#update 写出了 $DEBUG=true")
             else:
                 report(not has_debug,
                        f"★ 方式 {mode} 没有写 $DEBUG=true（否则可能被反调试踢出）")

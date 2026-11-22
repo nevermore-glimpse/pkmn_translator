@@ -767,6 +767,55 @@ def add_rxdata_script(path, title, source, before_title="Main"):
     return at
 
 
+def upsert_rxdata_script(path, title, source, before_title="Main"):
+    """
+    往 `Scripts.rxdata` 写入一个**固定标题**的脚本：已有同名条目就原地替换，
+    没有才在 Main 之前新增。返回 (下标, 是否新增)。
+    """
+    try:
+        with open(path, "rb") as f:
+            obj = _rb_load_bytesafe(f)
+    except Exception as e:                        # noqa: BLE001
+        raise RuntimeError(rxdata_error_text(path, e)) from e
+    if not isinstance(obj, list):
+        raise RuntimeError(f"{os.path.basename(path)} 不是脚本列表，放弃写入")
+    blob = zlib.compress(str(source).encode("utf-8"))
+    want = re.sub(r"[^0-9a-z]+", "", str(title).lower())
+    for i, e in enumerate(obj):
+        if isinstance(e, (list, tuple)) and len(e) >= 2 and \
+                re.sub(r"[^0-9a-z]+", "", _text(e[1]).lower()) == want:
+            entry = list(e)
+            entry[2] = blob
+            obj[i] = entry
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:
+                _rb_write_safe(f, obj)
+            os.replace(tmp, path)
+            return i, False
+    used = set()
+    for e in obj:
+        if isinstance(e, (list, tuple)) and e and isinstance(e[0], int):
+            used.add(e[0])
+    sid = (max(used) + 1) if used else 1
+    while sid in used:
+        sid += 1
+    entry = [sid, str(title).encode("utf-8"), blob]
+    at = len(obj)
+    if before_title:
+        w = re.sub(r"[^0-9a-z]+", "", str(before_title).lower())
+        for i, e in enumerate(obj):
+            if isinstance(e, (list, tuple)) and len(e) >= 2 and \
+                    re.sub(r"[^0-9a-z]+", "", _text(e[1]).lower()) == w:
+                at = i
+                break
+    obj.insert(at, entry)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        _rb_write_safe(f, obj)
+    os.replace(tmp, path)
+    return at, True
+
+
 def add_script_file(game_dir, name, source, folder="", index=1):
     """
     往脚本目录下**新增**一个 `.rb` 脚本（已解包 / loader 形态的游戏用）。

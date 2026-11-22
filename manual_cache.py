@@ -40,13 +40,24 @@ JSON 格式
       "section": "ITEM_NAMES",
       "note": "用法说明（改哪一列、别动哪一列；翻译时看下方 prompt）",
       "prompt": {
-        "system": "<完整 system 提示词（含类别段）>",
-        "user_template": "<给模型的翻译指令：只改 items 右边的值，术语照 terms 块>",
+        "system": "<完整 system 提示词（含类别段；配对时附带名字/描述说明）>",
+        "user_template": "<给模型的翻译指令：只改 items 右边的值，术语照 terms 块；配对时说明「名字:描述」格式>",
         "output_format": "<输出成 items 同结构的 JSON>",
         "terms": {"原文术语": "术语译文"}      ← 本文件命中的术语，翻的时候照它用
       },
       "items": {"原文": ""}                    ← 只改右边的值
     }
+
+    名字类文件与描述配对提取时，额外带：
+
+      "pair": {"desc_file": "<描述文件>", "desc_section": "ABILITY_DESCRIPTIONS",
+               "name_section": "ABILITY_NAMES",
+               "name_label": "特性名", "desc_label": "特性说明",
+               "format": "Name:Description"},
+      "known": {"名字:描述": ["左侧已命中的译文或 null", "右侧已命中的译文或 null"]}
+
+      items 的键就是「名字:描述」（宝可梦为「名字:图鉴」）；
+      回写时左侧写名字缓存 / 译文 / 术语表，右侧只写描述缓存 / 译文。
 
     ★ items 的键（原文）别动；值留空或与原文相同 = 视为没翻，回写时跳过。
     ★ prompt 只作参考，回写时完全忽略。
@@ -77,6 +88,23 @@ _NOTE_TERM = ("只改 items 里每条**右边的译文**（冒号右边），键
               "改完回程序点「回写已翻术语缓存」："
               "译文会写进该文件的翻译缓存、生成 *_translated.txt，"
               "并把「原文 → 译文」并进术语表自动提取区。")
+def _note_term_paired(pair):
+    """名字 + 描述配对提取时给人看的说明（按类别写明左右两侧是什么）。"""
+    nl = pair.get("name_label") or "名字"
+    dl = pair.get("desc_label") or "描述"
+    return (
+        f"只改 items 里每条**右边的译文**（第一个冒号右边），键（原文）别动。"
+        f"本文件是「{nl}」类文件，键的格式是「{nl}:{dl}」："
+        f"冒号左侧是{nl}，右侧是{dl}；译文也要保持「{nl}译文:{dl}译文」这个格式。"
+        "留空或与原文相同 = 视为没翻，回写时跳过。\n"
+        f"· 左侧{nl}会写进名字类文件的缓存 / 译文与术语表自动提取区；"
+        f"右侧{dl}只写进描述类文件的缓存 / 译文，不写术语表。\n"
+        "· known 里是工具已经命中的一侧译文（没有命中则为 null），回写时会以它为准；"
+        "两侧都已命中的条目不会出现在 items 里。\n"
+        "翻译时照下方 prompt 里的提示词来：system 说明文本类型与整体要求，"
+        "user_template / output_format 说明怎么改、怎么输出，"
+        f"terms 是{nl}与{dl}两侧的术语参考表。\n"
+        "改完回程序点「回写已翻术语缓存」。")
 _NOTE_SENTENCE = ("只改 items 里每条**右边的译文**（冒号右边），键（原文）别动。"
                   "留空或与原文相同 = 视为没翻，回写时跳过。"
                   "翻译时照下方 prompt 里的提示词来：system 说明文本类型与整体要求，"
@@ -100,6 +128,22 @@ _HUMAN_USER_PROMPT = (
 _HUMAN_OUTPUT = (
     '{\n  "原文1": "译文1",\n  "原文2": "译文2"\n}\n'
     "（键 = items 里的原文，原样不动；值 = 译文；条数与 items 相同）")
+
+def _paired_user_prompt(pair):
+    """配对提取的 user_template（按类别写明左右两侧是什么）。"""
+    nl = pair.get("name_label") or "名字"
+    dl = pair.get("desc_label") or "描述"
+    return (
+        f"翻译 items 里的每一条。键是「{nl}:{dl}」：\n"
+        f"· 键里第一个冒号是{nl}与{dl}的分隔符；只把左边翻成{nl}、"
+        f"右边翻成{dl}，译文里保留这个冒号，不要把一条拆成两条或合并。\n"
+        "· 键（原文）一个字符都不要动（包括冒号和描述里的标点）；"
+        "条数与顺序保持不变。\n"
+        f"· 术语参考：terms 里同时收了{nl}与{dl}两侧的术语，"
+        "items 里出现就照它的译名翻，不要另创新译名；"
+        "如果某一侧在 known 里已有译文，直接沿用它。\n"
+        "· 控制码 / 标签 / 占位符（\\n、\\c[1]、#{…}、\\tg[…] 之类）原样保留，不要翻。\n"
+        "· 按 output_format 的格式输出，结构与 items 完全一致。")
 
 
 # ================================================================
@@ -226,7 +270,33 @@ def _read_cache_data(cache_path):
 # ================================================================
 # 分流：照 commands._translate_core 的预分流顺序逐条判定
 # ================================================================
-def split_file(path):
+def _pair_context(path):
+    """
+    名字类文件 → 配对的描述文件信息（不是配对的 section / 读不到配对返回 None）。
+    """
+    import commands as C
+    import term_pairs as TP
+    try:
+        sec = (C._file_section(path) or "").upper()
+    except Exception:                            # noqa: BLE001
+        return None
+    desc_sec = TP.desc_section_of(sec)
+    if not desc_sec:
+        return None
+    desc_file = TP.find_desc_file(path, desc_sec)
+    if not desc_file:
+        return None
+    pairs = TP.name_desc_map(path, desc_sec)
+    if not pairs:
+        return None
+    name_label, desc_label = TP.pair_labels(sec)
+    return {"section": sec, "desc_section": desc_sec,
+            "name_label": name_label, "desc_label": desc_label,
+            "desc_file": desc_file, "pairs": pairs,
+            "index": TP.combo_index(pairs)}
+
+
+def split_file(path, term=False):
     """
     解析一个文本文件并按正常翻译的口径分流。
 
@@ -236,6 +306,9 @@ def split_file(path):
       · todo   : [原文, ...]，要送模型翻的（缓存里还没有的）
       · cached : 已经在翻译缓存里的条数（这次不再处理）
       · ref    : auto 里命中程序目录「翻译中间文件」夹参考译文的条数
+
+    term=True（术语提取）时，若该文件是配对里的名字类文件，则把条目拼成
+    `Name:Description` 提取；两侧都命中整句术语时直接写缓存、不导出。
     """
     import commands as C
     import parser as P
@@ -254,13 +327,46 @@ def split_file(path):
     except Exception as e:                       # noqa: BLE001
         log.warning("术语表加载失败（按空表处理）：%s", e)
 
+    pair = _pair_context(path) if term else None
+    pairs = pair["pairs"] if pair else {}
+    desc_sec = pair["desc_section"] if pair else None
     auto, todo, seen = {}, [], set()
+    auto_desc, known = {}, {}
     cached = 0
     ref_hits = 0
     for _ln, txt in entries:
         if not txt or txt in seen:
             continue
         seen.add(txt)
+        desc = pairs.get(txt) if pair else None
+        if pair and desc:
+            key = f"{txt}:{desc}"
+            if key in have:
+                cached += 1
+                continue
+            left = right = None
+            if txt in have:
+                left = have.get(txt)
+            if getattr(config, "WHOLE_TERM_MATCH", True):
+                if not left:
+                    hit = PR.match_whole_term(txt, section=sec)
+                    left = hit[1] if hit else None
+                hit = PR.match_whole_term(desc, section=desc_sec)
+                right = hit[1] if hit else None
+            if not left:
+                left = ref_map.get(txt)
+            if not right:
+                right = ref_map.get(desc)
+            if left:
+                auto[txt] = left
+            if right:
+                auto_desc[desc] = right
+            if left and right:
+                # 两类都命中：该句直接写缓存，不提取
+                continue
+            known[key] = [left, right]
+            todo.append(key)
+            continue
         if txt in have:
             cached += 1
             continue
@@ -297,7 +403,8 @@ def split_file(path):
 
     return {"path": path, "section": sec, "cache": cache_path,
             "translated": out_path, "auto": auto, "todo": todo,
-            "cached": cached, "entries": len(entries), "ref": ref_hits}
+            "cached": cached, "entries": len(entries), "ref": ref_hits,
+            "auto_desc": auto_desc, "known": known, "pair": pair}
 
 
 # ================================================================
@@ -329,16 +436,70 @@ def _terms_for(texts, section=None):
     return out
 
 
-def build_prompt(section, texts):
+def _terms_for_paired(texts, pair):
+    """
+    配对条目（`名字:描述`）的术语参考：名字、描述两侧分别按自己的 section 取。
+
+    ★ 名字侧额外查一次整句术语（名字本身就是一条术语时也能进 terms）；
+      描述侧只做正文里的术语扫描，避免把整条长描述当成一条“术语”塞进 prompt。
+    """
+    import processor as PR
+    import replacement as REPL
+    import term_pairs as TP
+
+    name_sec = str(pair.get("name_section") or pair.get("section") or "")
+    desc_sec = str(pair.get("desc_section") or "")
+    desc_file = str(pair.get("desc_file") or "")
+    index = TP.combo_index(
+        TP.name_desc_map(desc_file, desc_sec) if desc_file else {})
+    found = {}
+
+    def collect(text, section, whole=False):
+        if not text or not str(text).strip():
+            return
+        try:
+            if getattr(config, "PREFIX_DICT_ENABLE", True):
+                _prefix, body = PR.split_prefix(str(text))
+            else:
+                body = str(text)
+            body, _n = REPL.apply_pre(body)
+            for src, _dst in PR.find_terms(PR.strip_newlines(body)):
+                found.setdefault(src, section)
+            if whole and getattr(config, "WHOLE_TERM_MATCH", True):
+                hit = PR.match_whole_term(str(text), section=section or None)
+                if hit:
+                    found.setdefault(hit[0], section)
+        except Exception as e:                   # noqa: BLE001
+            log.debug("配对术语命中查询失败（忽略）：%s", e)
+
+    for key in texts or ():
+        got = TP.split_combo(key, index)
+        if got:
+            collect(got[0], name_sec, whole=True)
+            collect(got[1], desc_sec, whole=False)
+        else:
+            collect(key, name_sec, whole=True)
+
+    out = {}
+    for src, section in list(found.items())[:MAX_PROMPT_TERMS]:
+        try:
+            out[src] = PR.render_term_dst(src, section=section or None)
+        except Exception:                        # noqa: BLE001
+            continue
+    return out
+
+
+def build_prompt(section, texts, pair=None):
     """
     给模型的翻译指令 + 术语参考。
 
     · system       : 直接取 translator.OllamaClient._system_prompt 的产物 ——
                      类别段、思考块、语言替换全都在里面，与送模型的请求逐字节一致。
                      该函数不用实例状态，给个空对象就够，不建 HTTP 连接池。
-    · user_template: 本模块自己的「改 items 右边的值」指令（见 _HUMAN_USER_PROMPT）。
+    · user_template: 本模块自己的「改 items 右边的值」指令；配对提取时换成
+                     「名字:描述」专用说明（见 _paired_user_prompt）。
     · output_format: 输出成 items 同结构的 JSON。
-    · terms        : 本文件命中的术语表，翻的时候照它用。
+    · terms        : 本文件命中的术语表；配对时名字 / 描述两侧各按自己的 section 取。
 
     ★ 这里**不放** note —— 用法说明只在顶层 note 里写一次（它在 prompt 上方），
       prompt 内部保持「纯给模型看」的内容。
@@ -350,11 +511,19 @@ def build_prompt(section, texts):
         system = TR.OllamaClient._system_prompt(SimpleNamespace(), section)
     except Exception as e:                       # noqa: BLE001
         log.warning("生成 system 提示词失败（留空）：%s", e)
+    if pair:
+        nl = pair.get("name_label") or "名字"
+        dl = pair.get("desc_label") or "描述"
+        system = ((system or "").rstrip()
+                  + f"\n\n本次条目是「{nl}:{dl}」成对文本："
+                    f"冒号左侧按{nl}翻译，右侧按{dl}翻译；译文保留冒号。")
     return {
         "system": system,
-        "user_template": _HUMAN_USER_PROMPT,
+        "user_template": (_paired_user_prompt(pair) if pair
+                          else _HUMAN_USER_PROMPT),
         "output_format": _HUMAN_OUTPUT,
-        "terms": _terms_for(texts, section),
+        "terms": (_terms_for_paired(texts, pair) if pair
+                  else _terms_for(texts, section)),
     }
 
 
@@ -441,7 +610,7 @@ def _extract(files, mode, basis, progress=None):
             st["problems"].append((path, "文件不存在"))
             continue
         try:
-            r = split_file(path)
+            r = split_file(path, term=(mode == "term"))
         except Exception as e:                   # noqa: BLE001
             log.error("分流失败（跳过 %s）：%s", path, e)
             st["problems"].append((path, f"读取失败：{e}"))
@@ -457,6 +626,17 @@ def _extract(files, mode, basis, progress=None):
             except Exception as e:               # noqa: BLE001
                 log.error("写翻译缓存失败（%s）：%s", r["cache"], e)
                 st["problems"].append((path, f"写缓存失败：{e}"))
+        # 描述类条目：写进配对描述文件的缓存
+        if r.get("auto_desc") and r.get("pair"):
+            try:
+                import commands as C
+                dcache = C.cache_path_for(r["pair"]["desc_file"]) or ""
+                c = Cache(dcache)
+                for k, v in r["auto_desc"].items():
+                    c.put(k, v)
+                c.save(force=True)
+            except Exception as e:               # noqa: BLE001
+                log.error("写描述缓存失败：%s", e)
 
         # ---------- 要送模型的：导出 json ----------
         items = {t: "" for t in r["todo"]}
@@ -468,6 +648,14 @@ def _extract(files, mode, basis, progress=None):
             # ---------- 提取后 items 为空：不导出 json，直接出译文文件 ----------
             _drop_stale_json(out)
             n_lines = _write_translated_of(path, r["cache"]) if r["entries"] else 0
+            if r.get("pair"):
+                try:
+                    import commands as C
+                    df = r["pair"]["desc_file"]
+                    dcache = C.cache_path_for(df) or ""
+                    n_lines += _write_translated_of(df, dcache)
+                except Exception as e:           # noqa: BLE001
+                    log.warning("生成描述译文失败（忽略）：%s", e)
             st["files"] += 1
             st["entries"] += r["entries"]
             st["auto"] += len(r["auto"])
@@ -483,16 +671,31 @@ def _extract(files, mode, basis, progress=None):
             continue
 
         try:
+            is_paired = bool(r.get("pair")) and mode == "term"
             payload = {
                 "type": mode,
                 "file": os.path.abspath(path),
                 "cache": r["cache"],
                 "translated": r["translated"],
                 "section": r["section"] or "",
-                "note": _NOTE_TERM if mode == "term" else _NOTE_SENTENCE,
-                "prompt": build_prompt(r["section"], list(items)),
+                "note": (_note_term_paired(r["pair"]) if is_paired
+                         else _NOTE_TERM if mode == "term"
+                         else _NOTE_SENTENCE),
+                "prompt": build_prompt(
+                    r["section"], list(items),
+                    pair=(r.get("pair") if is_paired else None)),
                 "items": items,
             }
+            if r.get("pair"):
+                payload["pair"] = {
+                    "desc_file": r["pair"]["desc_file"],
+                    "desc_section": r["pair"]["desc_section"],
+                    "name_section": r["pair"].get("section") or r["section"],
+                    "name_label": r["pair"].get("name_label") or "名字",
+                    "desc_label": r["pair"].get("desc_label") or "描述",
+                    "format": "Name:Description",
+                }
+                payload["known"] = r.get("known") or {}
             _write_json(out, payload)
             st["written"].append(out)
         except Exception as e:                   # noqa: BLE001
@@ -578,11 +781,56 @@ def known_files(basis, mode=None):
     return scan_cache(basis, mode)["files"]
 
 
+def _split_paired_fixes(fixes, pair, known_map, names_section=""):
+    """
+    `Name:Description` → (名字类 {原文:译文}, 描述类 {原文:译文})。
+
+    左侧写名字缓存 / 术语表；右侧只写描述缓存 / 译文文件。
+    任一侧命中整句术语（提取时记在 known 里，或现在重查一次）时用术语译文。
+    """
+    import processor as PR
+    import term_pairs as TP
+
+    desc_file = str(pair.get("desc_file") or "")
+    desc_sec = str(pair.get("desc_section") or "")
+    pairs = TP.name_desc_map(desc_file, desc_sec) if desc_file else {}
+    index = TP.combo_index(pairs)
+    name_fixes, desc_fixes = {}, {}
+    for key, val in (fixes or {}).items():
+        got = TP.split_combo(key, index)
+        if not got:
+            name_fixes[key] = val
+            continue
+        name, desc = got
+        if ":" in val:
+            vleft, vright = val.split(":", 1)
+        else:
+            vleft, vright = val, ""
+        left = (known_map.get(key) or [None, None])[0]
+        right = (known_map.get(key) or [None, None])[1]
+        if not left and getattr(config, "WHOLE_TERM_MATCH", True):
+            hit = PR.match_whole_term(name, section=names_section or None)
+            left = hit[1] if hit else None
+        if not right and getattr(config, "WHOLE_TERM_MATCH", True):
+            hit = PR.match_whole_term(desc, section=desc_sec or None)
+            right = hit[1] if hit else None
+        left = (left or vleft or "").strip()
+        right = (right or vright or "").strip()
+        if left:
+            name_fixes[name] = left
+        if right:
+            desc_fixes[desc] = right
+    return name_fixes, desc_fixes
+
+
 def writeback(basis, mode=None):
     """
     读 `Text_chinese_cache/*.json`，把译文写回缓存 + 生成译文文件。
 
     mode: "term" / "sentence" / None（不过滤）
+
+    ★ 术语模式下，配对的 `Name:Description` 会拆开：
+      左侧写名字类文件的缓存 / 译文 / 术语表，右侧只写描述类文件的缓存 / 译文。
 
     返回 {"dir","files","applied","added","updated","file_lines",
           "missing","skipped","terms_added"}
@@ -618,6 +866,15 @@ def writeback(basis, mode=None):
         if not fixes:
             continue
 
+        pair = data.get("pair") if isinstance(data.get("pair"), dict) else None
+        desc_fixes = {}
+        if pair and pair.get("desc_file"):
+            fixes, desc_fixes = _split_paired_fixes(
+                fixes, pair, data.get("known") or {},
+                names_section=str(data.get("section") or ""))
+            if not desc_fixes and not fixes:
+                continue
+
         # ---------- ① 翻译缓存 ----------
         recorded = str(data.get("cache") or "")
         canonical = C.cache_path_for(src_file) or ""
@@ -638,10 +895,31 @@ def writeback(basis, mode=None):
             cache.put(src, dst)
         cache.save(force=True)
 
-        # ---------- ② 译文文件 ----------
-        n_lines = _write_translated(src_file, cache)
+        # ---------- ①.5 描述类缓存（配对的才写） ----------
+        if desc_fixes:
+            df = str(pair.get("desc_file") or "")
+            dcache_path = C.cache_path_for(df) or ""
+            dcache = Cache(dcache_path)
+            for src, dst in desc_fixes.items():
+                old = dcache.get(src)
+                if old is None:
+                    added += 1
+                elif str(old) != dst:
+                    updated += 1
+                dcache.put(src, dst)
+            dcache.save(force=True)
 
-        # ---------- ③ 术语表（只有术语模式） ----------
+        # ---------- ② 译文文件（名字 / 描述各生成一份） ----------
+        n_lines = _write_translated(src_file, cache)
+        if desc_fixes:
+            try:
+                df = str(pair.get("desc_file") or "")
+                n_lines += _write_translated(
+                    df, Cache(C.cache_path_for(df) or ""))
+            except Exception as e:               # noqa: BLE001
+                log.warning("生成描述译文失败（忽略）：%s", e)
+
+        # ---------- ③ 术语表（只有术语模式，且只收名字类） ----------
         if typ == "term":
             try:
                 import auto_terms
@@ -653,7 +931,7 @@ def writeback(basis, mode=None):
                 log.warning("并进术语表失败（不影响缓存与译文）：%s", e)
 
         st["files"] += 1
-        st["applied"] += len(fixes)
+        st["applied"] += len(fixes) + len(desc_fixes)
         st["added"] += added
         st["updated"] += updated
         st["file_lines"] += n_lines

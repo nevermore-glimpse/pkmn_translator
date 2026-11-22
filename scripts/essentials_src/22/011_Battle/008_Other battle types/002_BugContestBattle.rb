@@ -1,0 +1,79 @@
+#===============================================================================
+# Bug-Catching Contest battle visuals class.
+#===============================================================================
+class Battle::Visuals
+  alias _bugContest_pbInitSprites pbInitSprites unless method_defined?(:_bugContest_pbInitSprites)
+
+  def pbInitSprites
+    _bugContest_pbInitSprites
+    # "helpwindow" shows the currently caught Pokémon's details when asking if
+    # you want to replace it with a newly caught Pokémon.
+    @sprites["helpwindow"] = Window_UnformattedTextPokemon.newWithSize("", 0, 0, 32, 32, @viewport)
+    @sprites["helpwindow"].z       = 90
+    @sprites["helpwindow"].visible = false
+  end
+
+  def pbShowHelp(text)
+    @sprites["helpwindow"].resizeToFit(text, Graphics.width)
+    @sprites["helpwindow"].y       = 0
+    @sprites["helpwindow"].x       = 0
+    @sprites["helpwindow"].text    = text
+    @sprites["helpwindow"].visible = true
+  end
+
+  def pbHideHelp
+    @sprites["helpwindow"].visible = false
+  end
+end
+
+#===============================================================================
+# Bug-Catching Contest battle class.
+#===============================================================================
+class BugContestBattle < Battle
+  attr_accessor :ballCount
+
+  def initialize(*arg)
+    @ballCount = 0
+    @ballConst = GameData::Item.get(:SPORTBALL).id
+    super(*arg)
+  end
+
+  def pbItemMenu(idxBattler, _firstAction)
+    return pbRegisterItem(idxBattler, @ballConst, 1)
+  end
+
+  def pbCommandMenu(idxBattler, _firstAction)
+    cmds = [:fight, nil, :throw_ball_contest, :run, :pokemon]
+    return @visuals.pbCommandMenuEx(idxBattler, cmds)
+  end
+
+  def pbConsumeItemInBag(_item, _idxBattler)
+    @ballCount -= 1 if @ballCount > 0
+  end
+
+  def pbStorePokemon(pkmn)
+    if pbBugContestState.lastPokemon
+      lastPokemon = pbBugContestState.lastPokemon
+      pbDisplayPaused(_INTL("You already caught a {1}.", lastPokemon.name))
+      helptext = _INTL("Stock Pokémon:\n{1} Lv.{2} Max HP: {3}\nThis Pokémon:\n{4} Lv.{5} Max HP: {6}",
+                       lastPokemon.name, lastPokemon.level, lastPokemon.totalhp,
+                       pkmn.name, pkmn.level, pkmn.totalhp)
+      @visuals.pbShowHelp(helptext)
+      if pbDisplayConfirm(_INTL("Switch Pokémon?"))
+        pbBugContestState.lastPokemon = pkmn
+        @visuals.pbHideHelp
+      else
+        @visuals.pbHideHelp
+        return
+      end
+    else
+      pbBugContestState.lastPokemon = pkmn
+    end
+    pbDisplay(_INTL("Caught {1}!", pkmn.name))
+  end
+
+  def pbEndOfRoundPhase
+    super
+    @decision = Battle::Outcome::FLEE if @ballCount <= 0 && !decided?
+  end
+end

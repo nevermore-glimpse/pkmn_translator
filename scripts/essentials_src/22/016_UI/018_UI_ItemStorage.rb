@@ -1,0 +1,434 @@
+#===============================================================================
+#
+#===============================================================================
+class Window_PokemonItemStorage < Window_DrawableCommand
+  attr_reader :bag
+  attr_reader :pocket
+  attr_reader :sortIndex
+
+  def sortIndex=(value)
+    @sortIndex = value
+    refresh
+  end
+
+  def initialize(bag, x, y, width, height)
+    @bag = bag
+    @sortIndex = -1
+    super(x, y, width, height)
+    self.windowskin = nil
+  end
+
+  def item
+    item = @bag[self.index]
+    return (item) ? item[0] : nil
+  end
+
+  def itemCount
+    return @bag.length + 1
+  end
+
+  def drawItem(index, _count, rect)
+    rect = drawCursor(index, rect)
+    textpos = []
+    if index == @bag.length
+      textpos.push([_INTL("CANCEL"), rect.x, rect.y, :left, self.baseColor, self.shadowColor])
+    else
+      item     = @bag[index][0]
+      itemname = GameData::Item.get(item).display_name
+      baseColor = (index == @sortIndex) ? Color.new(248, 24, 24) : self.baseColor
+      textpos.push([itemname, rect.x, rect.y, :left, self.baseColor, self.shadowColor])
+      if GameData::Item.get(item).show_quantity?
+        qty     = _ISPRINTF("×{1: 2d}", @bag[index][1])
+        sizeQty = self.contents.text_size(qty).width
+        xQty = rect.x + rect.width - sizeQty - 2
+        textpos.push([qty, xQty, rect.y, :left, baseColor, self.shadowColor])
+      end
+    end
+    pbDrawTextPositions(self.contents, textpos)
+  end
+end
+
+#===============================================================================
+#
+#===============================================================================
+class ItemStorage_Scene
+  ITEMLISTBASECOLOR   = Color.new(88, 88, 80)
+  ITEMLISTSHADOWCOLOR = Color.new(168, 184, 184)
+  ITEMTEXTBASECOLOR   = Color.new(248, 248, 248)
+  ITEMTEXTSHADOWCOLOR = Color.new(0, 0, 0)
+  TITLEBASECOLOR      = Color.new(248, 248, 248)
+  TITLESHADOWCOLOR    = Color.new(0, 0, 0)
+  ITEMSVISIBLE        = 7
+
+  def initialize(title)
+    @title = title
+  end
+
+  def update
+    pbUpdateSpriteHash(@sprites)
+  end
+
+  def pbStartScene(bag)
+    @viewport   = Viewport.new(0, 0, Graphics.width, Graphics.height)
+    @viewport.z = 99_999
+    @bag = bag
+    @sprites = {}
+    @sprites["background"] = IconSprite.new(0, 0, @viewport)
+    @sprites["background"].setBitmap("Graphics/UI/itemstorage_bg")
+    @sprites["icon"] = ItemIconSprite.new(48, Graphics.height - 48, nil, @viewport)
+    # Item list
+    @sprites["itemwindow"] = Window_PokemonItemStorage.new(@bag, 98, 14, 334, 32 + (ITEMSVISIBLE * 32))
+    @sprites["itemwindow"].viewport    = @viewport
+    @sprites["itemwindow"].index       = 0
+    @sprites["itemwindow"].baseColor   = ITEMLISTBASECOLOR
+    @sprites["itemwindow"].shadowColor = ITEMLISTSHADOWCOLOR
+    @sprites["itemwindow"].refresh
+    # Title
+    @sprites["pocketwindow"] = BitmapSprite.new(88, 64, @viewport)
+    @sprites["pocketwindow"].x = 14
+    @sprites["pocketwindow"].y = 16
+    pbSetNarrowFont(@sprites["pocketwindow"].bitmap)
+    # Item description
+    @sprites["itemtextwindow"] = Window_UnformattedTextPokemon.newWithSize("", 80, 272, Graphics.width - 98, 128, @viewport)
+    @sprites["itemtextwindow"].baseColor   = ITEMTEXTBASECOLOR
+    @sprites["itemtextwindow"].shadowColor = ITEMTEXTSHADOWCOLOR
+    @sprites["itemtextwindow"].windowskin  = nil
+    @sprites["helpwindow"] = Window_UnformattedTextPokemon.new("")
+    @sprites["helpwindow"].visible  = false
+    @sprites["helpwindow"].viewport = @viewport
+    # Letter-by-letter message window
+    @sprites["msgwindow"] = Window_AdvancedTextPokemon.new("")
+    @sprites["msgwindow"].visible  = false
+    @sprites["msgwindow"].viewport = @viewport
+    pbBottomLeftLines(@sprites["helpwindow"], 1)
+    pbDeactivateWindows(@sprites)
+    pbRefresh
+    pbFadeInAndShow(@sprites)
+  end
+
+  def pbEndScene
+    pbFadeOutAndHide(@sprites)
+    pbDisposeSpriteHash(@sprites)
+    @viewport.dispose
+  end
+
+  def pbChooseNumber(helptext, maximum)
+    return UIHelper.pbChooseNumber(@sprites["helpwindow"], helptext, maximum) { update }
+  end
+
+  def pbDisplay(msg, brief = false)
+    UIHelper.pbDisplay(@sprites["msgwindow"], msg, brief) { update }
+  end
+
+  def pbConfirm(msg)
+    UIHelper.pbConfirm(@sprites["msgwindow"], msg) { update }
+  end
+
+  def pbShowCommands(helptext, commands)
+    return UIHelper.pbShowCommands(@sprites["helpwindow"], helptext, commands) { update }
+  end
+
+  def pbRefresh
+    bm = @sprites["pocketwindow"].bitmap
+    # Draw title at upper left corner ("Toss Item/Withdraw Item")
+    drawTextEx(bm, 0, 8, bm.width, 2, @title, TITLEBASECOLOR, TITLESHADOWCOLOR)
+    itemwindow = @sprites["itemwindow"]
+    # Draw item icon
+    @sprites["icon"].item = itemwindow.item
+    # Get item description
+    if itemwindow.item
+      @sprites["itemtextwindow"].text = GameData::Item.get(itemwindow.item).description
+    else
+      @sprites["itemtextwindow"].text = _INTL("Close storage.")
+    end
+    itemwindow.refresh
+  end
+
+  def pbChooseItem
+    pbRefresh
+    @sprites["helpwindow"].visible = false
+    itemwindow = @sprites["itemwindow"]
+    itemwindow.refresh
+    pbActivateWindow(@sprites, "itemwindow") do
+      loop do
+        Graphics.update
+        Input.update
+        olditem = itemwindow.item
+        update
+        pbRefresh if itemwindow.item != olditem
+        if Input.trigger?(Input::BACK)
+          return nil
+        elsif Input.trigger?(Input::USE)
+          if itemwindow.index < @bag.length
+            pbRefresh
+            return @bag[itemwindow.index][0]
+          else
+            return nil
+          end
+        end
+      end
+    end
+  end
+end
+
+#===============================================================================
+#
+#===============================================================================
+class WithdrawItemScene < ItemStorage_Scene
+  def initialize
+    super(_INTL("Withdraw\nItem"))
+  end
+end
+
+#===============================================================================
+#
+#===============================================================================
+class TossItemScene < ItemStorage_Scene
+  def initialize
+    super(_INTL("Toss\nItem"))
+  end
+end
+
+#===============================================================================
+#
+#===============================================================================
+class ItemStorageScreen
+  def initialize(scene, bag)
+    @bag   = bag
+    @scene = scene
+  end
+
+  def pbDisplay(text)
+    @scene.pbDisplay(text)
+  end
+
+  def pbConfirm(text)
+    return @scene.pbConfirm(text)
+  end
+
+  # UI logic for withdrawing an item in the item storage screen.
+  def pbWithdrawItemScreen
+    $PokemonGlobal.pcItemStorage ||= PCItemStorage.new
+    storage = $PokemonGlobal.pcItemStorage
+    @scene.pbStartScene(storage)
+    loop do
+      item = @scene.pbChooseItem
+      break if !item
+      itm = GameData::Item.get(item)
+      qty = storage.quantity(item)
+      if qty > 1 && !itm.is_important?
+        qty = @scene.pbChooseNumber(_INTL("How many do you want to withdraw?"), qty)
+      end
+      next if qty <= 0
+      if @bag.can_add?(item, qty)
+        raise "Can't delete items from storage" if !storage.remove(item, qty)
+        raise "Can't withdraw items from storage" if !@bag.add(item, qty)
+        @scene.pbRefresh
+        dispqty = (itm.is_important?) ? 1 : qty
+        itemname = (dispqty > 1) ? itm.portion_name_plural : itm.portion_name
+        pbDisplay(_INTL("Withdrew {1} {2}.", dispqty, itemname))
+      else
+        pbDisplay(_INTL("There's no more room in the Bag."))
+      end
+    end
+    @scene.pbEndScene
+  end
+
+  # UI logic for tossing an item in the item storage screen.
+  def pbTossItemScreen
+    $PokemonGlobal.pcItemStorage ||= PCItemStorage.new
+    storage = $PokemonGlobal.pcItemStorage
+    @scene.pbStartScene(storage)
+    loop do
+      item = @scene.pbChooseItem
+      break if !item
+      itm = GameData::Item.get(item)
+      if itm.is_important?
+        @scene.pbDisplay(_INTL("That's too important to toss out!"))
+        next
+      end
+      qty = storage.quantity(item)
+      itemname       = itm.portion_name
+      itemnameplural = itm.portion_name_plural
+      qty = @scene.pbChooseNumber(_INTL("Toss out how many {1}?", itemnameplural), qty) if qty > 1
+      next if qty <= 0
+      itemname = itemnameplural if qty > 1
+      next if !pbConfirm(_INTL("Is it OK to throw away {1} {2}?", qty, itemname))
+      raise "Can't delete items from storage" if !storage.remove(item, qty)
+      @scene.pbRefresh
+      pbDisplay(_INTL("Threw away {1} {2}.", qty, itemname))
+    end
+    @scene.pbEndScene
+  end
+end
+
+#===============================================================================
+# Common UI functions used in both the Bag and item storage screens.
+# Displays messages and allows the user to choose a number/command.
+# The window _helpwindow_ will display the _helptext_.
+#===============================================================================
+module UIHelper
+  module_function
+
+  # Letter by letter display of the message _msg_ by the window _helpwindow_.
+  def pbDisplay(helpwindow, msg, brief)
+    cw = helpwindow
+    oldvisible = cw.visible
+    cw.letterbyletter = true
+    cw.text           = msg + "\1"
+    cw.visible        = true
+    pbBottomLeftLines(cw, 2)
+    loop do
+      Graphics.update
+      Input.update
+      (block_given?) ? yield : cw.update
+      break if !cw.busy? && (brief || (Input.trigger?(Input::USE) && cw.resume))
+    end
+    cw.visible = oldvisible
+  end
+
+  def pbDisplayStatic(msgwindow, message)
+    oldvisible = msgwindow.visible
+    msgwindow.visible        = true
+    msgwindow.letterbyletter = false
+    msgwindow.width          = Graphics.width
+    msgwindow.resizeHeightToFit(message, Graphics.width)
+    msgwindow.text = message
+    pbBottomRight(msgwindow)
+    loop do
+      Graphics.update
+      Input.update
+      (block_given?) ? yield : msgwindow.update
+      break if Input.trigger?(Input::BACK) || Input.trigger?(Input::USE)
+    end
+    msgwindow.visible = oldvisible
+    Input.update
+  end
+
+  # Letter by letter display of the message _msg_ by the window _helpwindow_,
+  # used to ask questions. Returns true if the user chose yes, false if no.
+  def pbConfirm(helpwindow, msg)
+    dw = helpwindow
+    oldvisible = dw.visible
+    dw.letterbyletter = true
+    dw.text           = msg
+    dw.visible        = true
+    pbBottomLeftLines(dw, 2)
+    commands = [_INTL("Yes"), _INTL("No")]
+    cw = Window_CommandPokemon.new(commands)
+    cw.index = 0
+    cw.viewport = helpwindow.viewport
+    pbBottomRight(cw)
+    cw.y -= dw.height
+    ret = false
+    loop do
+      cw.visible = (!dw.busy?)
+      Graphics.update
+      Input.update
+      cw.update
+      (block_given?) ? yield : dw.update
+      if !dw.busy? && dw.resume
+        if Input.trigger?(Input::BACK)
+          pbPlayCancelSE
+          break
+        elsif Input.trigger?(Input::USE)
+          pbPlayDecisionSE
+          ret = (cw.index == 0)
+          break
+        end
+      end
+    end
+    cw.dispose
+    dw.visible = oldvisible
+    return ret
+  end
+
+  def pbChooseNumber(helpwindow, helptext, maximum, initnum = 1)
+    oldvisible = helpwindow.visible
+    helpwindow.visible        = true
+    helpwindow.text           = helptext
+    helpwindow.letterbyletter = false
+    curnumber = initnum
+    ret = 0
+    numwindow = Window_UnformattedTextPokemon.new("×000")
+    numwindow.viewport       = helpwindow.viewport
+    numwindow.letterbyletter = false
+    numwindow.text           = _ISPRINTF("×{1:03d}", curnumber)
+    numwindow.resizeToFit(numwindow.text, Graphics.width)
+    pbBottomRight(numwindow)
+    helpwindow.resizeHeightToFit(helpwindow.text, Graphics.width - numwindow.width)
+    pbBottomLeft(helpwindow)
+    loop do
+      Graphics.update
+      Input.update
+      numwindow.update
+      helpwindow.update
+      yield if block_given?
+      oldnumber = curnumber
+      if Input.trigger?(Input::BACK)
+        ret = 0
+        pbPlayCancelSE
+        break
+      elsif Input.trigger?(Input::USE)
+        ret = curnumber
+        pbPlayDecisionSE
+        break
+      elsif Input.repeat?(Input::UP)
+        curnumber += 1
+        curnumber = 1 if curnumber > maximum
+      elsif Input.repeat?(Input::DOWN)
+        curnumber -= 1
+        curnumber = maximum if curnumber < 1
+      elsif Input.repeat?(Input::LEFT)
+        curnumber -= 10
+        curnumber = 1 if curnumber < 1
+      elsif Input.repeat?(Input::RIGHT)
+        curnumber += 10
+        curnumber = maximum if curnumber > maximum
+      end
+      if curnumber != oldnumber
+        numwindow.text = _ISPRINTF("×{1:03d}", curnumber)
+        pbPlayCursorSE
+      end
+    end
+    numwindow.dispose
+    helpwindow.visible = oldvisible
+    return ret
+  end
+
+  def pbShowCommands(helpwindow, helptext, commands, initcmd = 0)
+    ret = -1
+    oldvisible = helpwindow.visible
+    helpwindow.visible        = (helptext) ? true : false
+    helpwindow.letterbyletter = false
+    helpwindow.text           = helptext || ""
+    cmdwindow = Window_CommandPokemon.new(commands)
+    cmdwindow.index = initcmd
+    begin
+      cmdwindow.viewport = helpwindow.viewport
+      pbBottomRight(cmdwindow)
+      helpwindow.resizeHeightToFit(helpwindow.text, Graphics.width - cmdwindow.width)
+      pbBottomLeft(helpwindow)
+      loop do
+        Graphics.update
+        Input.update
+        yield
+        cmdwindow.update
+        if Input.trigger?(Input::BACK)
+          ret = -1
+          pbPlayCancelSE
+          break
+        end
+        if Input.trigger?(Input::USE)
+          ret = cmdwindow.index
+          pbPlayDecisionSE
+          break
+        end
+      end
+    ensure
+      cmdwindow&.dispose
+    end
+    helpwindow.visible = oldvisible
+    return ret
+  end
+end

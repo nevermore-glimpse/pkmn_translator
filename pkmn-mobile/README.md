@@ -246,7 +246,7 @@ GitHub `nevermore-glimpse/pkmn_translator`、Bilibili `space.bilibili.com/354660
 （路径由 `PKMN_DATA_DIR` 注入）→ `os.path.isdir` 永远 False。
 
 改成优先读 `PKMN_DATA_DIR`；`status()` 还多返回了基准版本清单，
-关于页现在会列出实际内置的版本（v16 … v21.1），一眼就能确认工具能认出哪些版本。
+关于页现在会列出实际内置的版本（v16 … v22），一眼就能确认工具能认出哪些版本。
 
 
 
@@ -302,6 +302,19 @@ GitHub `nevermore-glimpse/pkmn_translator`、Bilibili `space.bilibili.com/354660
 > `python tools/stage_assets.py`。
 
 ---
+
+## v1.9.0：对齐电脑版 v1.10.0
+
+### 新增 / 调整
+
+- 支持 **Essentials v22**：版本识别、基准覆盖、开启 DEBUG、中文文本处理插件、
+  PBS 编辑、F7 自动治愈队伍。
+- 基准覆盖页的「版本」下拉新增 v22；默认仍为自动识别，也可手动指定。
+- 基准覆盖 debug 菜单时直接使用内置的中文官方脚本，不再运行时查翻译表。
+- 开启 DEBUG 方式①改为在 `Scene_Map#update` 写入 `$DEBUG = true`。
+- 开启 DEBUG 方式⑦改为「调试包装插件」：新建独立脚本 / 插件覆盖调试函数与入口
+  （T 键 / F9），不再改写游戏里的函数定义和调用点。
+- 「中文文本处理」插件只保留中文自动换行与替换字体；同步 v22 版本。
 
 ## v1.8.3：对齐电脑版（删掉方式说明 + 新增 F7 自动治愈队伍）
 

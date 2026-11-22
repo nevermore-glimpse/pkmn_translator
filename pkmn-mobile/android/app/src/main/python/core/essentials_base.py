@@ -27,7 +27,7 @@ Game_Temp / … / Compiler / Main），点开一个，右边是它的代码。
     · Settings 脚本              → **忽略**（那是作者自己的游戏设置，
                                    动它是天经地义）
 
-官方 Essentials（16 / 17 / 18 / 19 / 19.1 / 20 / 20.1 / 21 / 21.1）各生成一份，
+官方 Essentials（16 / 17 / 18 / 19 / 19.1 / 20 / 20.1 / 21 / 21.1 / 22）各生成一份，
 存成 JSON 随程序分发（scripts/essentials_base/*.json）。
 
 ★ 指纹不是拿全文做哈希：先去掉注释与缩进差异，避免「只加了注释 / 只改了缩进」
@@ -234,7 +234,7 @@ def base_dir():
 
 
 def list_baselines():
-    """已内置的基准版本 → ["16", "17", …, "21.1"]（按版本号排序）。"""
+    """已内置的基准版本 → ["16", "17", …, "22"]（按版本号排序）。"""
     d = base_dir()
     if not os.path.isdir(d):
         return []
@@ -542,7 +542,7 @@ def build_baseline(engine_dir, out_path, version=None):
     从一份官方 Essentials 目录生成基准表。返回 (版本, 脚本数, 函数数)。
 
     用法（命令行）：
-        python essentials_base.py "E:/Pokemon Essentials/pokemon-essentials-21.1"
+        python essentials_base.py "E:/Pokemon Essentials/pokemon-essentials-22"
     """
     ver = version or detect_version(engine_dir)
     if not ver:

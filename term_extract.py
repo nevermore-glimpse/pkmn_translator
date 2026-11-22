@@ -288,12 +288,24 @@ def is_term_source_file(path):
     ★ 供「游戏汉化」菜单 2–7 排除名字文件用：那批文件归「术语提取」管，
       翻译 / 重翻 / 润色 / 前缀字典都不该碰 —— 否则同一批名词会被
       翻译流水线和术语流水线各翻一遍，译法还可能不一致。
+    ★ 随名字类一起提取的四类描述文件（ABILITY_DESCRIPTIONS /
+      ITEM_DESCRIPTIONS / MOVE_DESCRIPTIONS / POKEDEX_ENTRIES）同样排除。
     ★ 名字刻意不与上面那个按文件名判据的 is_names_file 冲突：
        那个只看文件名，这个连 [编号] 区块一起看（更严，也更准）。
     """
     try:
         if not path or not os.path.isfile(path):
             return False
+        block = peek_block(path)
+        sec = sections().get(block) if block is not None else None
+        if not sec:
+            sec = os.path.splitext(os.path.basename(path))[0].upper()
+        try:
+            import term_pairs as TP
+            if TP.is_desc_section(sec):
+                return True
+        except Exception:
+            pass
         return bool(resolve_names(path)[0])
     except Exception:
         return False
@@ -741,6 +753,21 @@ def run_extract(target, batch_size=None, progress=None, cancel=None,
     recs0 = file_records(target, files)
     names_of = {r["path"]: r["names"] for r in recs0}
 
+    # ★ 配对的描述文件也一起翻：它们已从菜单 4「翻译」里剔除，
+    #   不在这里翻就永远没人翻。描述不并入术语表（只有名字类进 AUTO 区）。
+    desc_jobs = {}
+    try:
+        import term_pairs as TP
+        for p, r in zip(files, recs0):
+            dsec = TP.desc_section_of(r["section"])
+            if not dsec:
+                continue
+            df = TP.find_desc_file(p, dsec)
+            if df and os.path.isfile(df) and df not in files:
+                desc_jobs[df] = dsec
+    except Exception as e:                       # noqa: BLE001
+        log.warning("配对描述文件失败（忽略）：%s", e)
+
     # ★ 兼容旧参数 batch_size：正常流水线按 config.BATCH_SIZE 分批，
     #   临时换一下，跑完还原。
     saved_batch = None
@@ -814,6 +841,25 @@ def run_extract(target, batch_size=None, progress=None, cancel=None,
                     translated += 1
             if progress:
                 progress(i, total, os.path.basename(path))
+
+        # ---------- 配对的描述文件（不并术语表） ----------
+        for df, dsec in desc_jobs.items():
+            if cancel and cancel():
+                cancelled = True
+                break
+            if not os.path.isfile(df):
+                continue
+            config.Runtime.set_input(df)
+            try:
+                lines, newline = _read_lines(df)
+            except Exception as e:               # noqa: BLE001
+                log.warning("读取描述文件失败，跳过：%s：%s", df, e)
+                continue
+            log.info("翻译配对描述文件：%s（%s）", os.path.basename(df), dsec)
+            try:
+                C._translate_core(df, lines, newline, show_header=False)
+            except Exception as e:               # noqa: BLE001
+                log.error("翻译描述文件失败（继续）：%s：%s", df, e)
 
         # ---------- 全部翻完：缓存里的「原文 → 译文」并入术语表 ----------
         recs = file_records(target, files)

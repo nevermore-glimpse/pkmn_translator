@@ -69,15 +69,6 @@ def ischinese?(char)
   char.ord >= 0x4e00 && char.ord <= 0x9fa5
 end
 
-def _MAPINTL(mapid, *arg)
-  string = MessageTypes.getFromMapHash(mapid, arg[0])
-  string = string.clone
-  (1...arg.length).each do |i|
-    string.gsub!(/\{#{i}\}/, arg[i].to_s) 
-  end
-  string = string.gsub(/([\p{Han}\p{P}])\s+([\p{Han}\p{P}])/, '\1\2')
-  return string
-end
 
 def getFormattedText(bitmap, xDst, yDst, widthDst, heightDst, text, lineheight = 32,
                      newlineBreaks = true, explicitBreaksOnly = false,
@@ -524,21 +515,4 @@ def getFormattedTextFast(bitmap, xDst, yDst, widthDst, heightDst, text, lineheig
     characters.compact!
   end
   return characters
-end
-
-def pbDrawShadowText(bitmap, x, y, width, height, string, baseColor, shadowColor = nil, align = 0)
-  return if !bitmap || !string
-  width = (width < 0) ? bitmap.text_size(string).width + 1 : width
-  height = (height < 0) ? bitmap.text_size(string).height + 1 : height
-  y = y + Settings::Y_OFFSET_OF_TEXT - Settings::Y_OFFSET_OF_ORDER_CORRCETION
-  if shadowColor && shadowColor.alpha > 0
-    bitmap.font.color = shadowColor
-    bitmap.draw_text(x + 2, y, width, height, string, align)
-    bitmap.draw_text(x, y + 2, width, height, string, align)
-    bitmap.draw_text(x + 2, y + 2, width, height, string, align)
-  end
-  if baseColor && baseColor.alpha > 0
-    bitmap.font.color = baseColor
-    bitmap.draw_text(x, y, width, height, string, align)
-  end
 end

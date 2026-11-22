@@ -74,13 +74,24 @@ TIMEOUT_PROXY  = 25
 # ================================================================
 # ★ 资源包**只允许**写这些顶层条目（目录以 / 结尾）。
 #   新增随程序分发的资源目录时，记得同步加到这里，否则更新不会带上它。
+#
+# ★★ 曾经这里 `"pokemon_terms/"` 后面少了逗号 → 两个字符串被隐式拼接成
+#    `"pokemon_terms/翻译中间文件/"`，两个目录**都不在白名单里**，更新时
+#    静默跳过（日志 debug 级，用户只看到「资源已更新」却还是旧术语）。
+#    以后加条目一律一行一个，别再靠隐式拼接。
 RESOURCE_WHITELIST = (
     "prompts/",
     "replacements/",
     "scripts/",
     "text_preserve/",
     "LM操作指南/",
+    # 各语言术语表（scripts/build_terms.py 生成），纯程序数据
+    "pokemon_terms/",
+    # 术语分派表（scripts/gen_term_sections.py 生成）：
+    # 不更新的话新术语的「同原文多译文」会按旧 section 落盘
+    "term_sections.json",
 )
+
 
 # ★ 用户数据：不管它出现在哪个包里、在哪个层级，一律不覆盖。
 #   这些文件被覆盖一次，用户几十小时的翻译缓存和手工维护的术语表就没了。
@@ -92,11 +103,8 @@ USER_DATA_PROTECT = (
     "intl_cache.json",
     "user_config.json",
     ".runtime.json",
-    "term_dict.py",
-    "term_sections.json",
     "term_conflicts.json",
     "terms_stats.json",
-    "check_whitelist.json",
     "术语表（Glossary）.xlsx",
     "术语表.xlsx",
 )

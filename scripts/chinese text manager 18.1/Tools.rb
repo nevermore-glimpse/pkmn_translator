@@ -2,7 +2,6 @@
 # [pkmn] 中文文本处理 · Essentials 18.1 版（旧引擎 / Ruby 1.8 / RGSS1）
 #
 #   由「中文文本处理 v21.1」（作者：木亦会枯、楠楠楠小鸟）移植而来，
-#   功能一致：中文逐字换行、字体替换、文本垂直偏移、地图文本去多余空格。
 #
 #   ★ 本文件是**生成物**：脚本 make_legacy_plugins.py 从官方 Essentials 18.1
 #     的引擎源码里把下面这几个函数整份抠出来，再打上中文补丁拼成这一份，
@@ -23,7 +22,6 @@
 #        被当成一个超长词、永不换行；这里让汉字逐字可断，非汉字照旧；
 #     ③ getLineBrokenChunks / getLineBrokenText 的切词改成「连续非汉字算一个
 #        词、汉字一字一词」（颜色码的位置仍按原词对齐）；
-#     ④ pbDrawShadowText 里加整体垂直偏移（值在同目录 Settings.rb 里调）。
 #
 #   ★ 禁止手改本文件 —— 要改插件设置请改同目录的 Settings.rb。
 # ==============================================================================
@@ -96,30 +94,6 @@ def ischinese?(char)
   #   直接按 UTF-8 解出码点，1.8 / 1.9 以上都准。
   code = char.unpack("U")[0]
   return code != nil && code >= 0x4e00 && code <= 0x9fa5
-end
-
-
-# 旧版引擎从 v17 起就有 _MAPINTL，但有的整合版没有 MessageTypes ——
-# 那就干脆别定义，免得引擎调用时找不到 MessageTypes 直接崩。
-if defined?(MessageTypes) && MessageTypes.respond_to?(:getFromMapHash)
-  PKMN_CN_SPACE_RE = begin
-    Regexp.new("([\\p{Han}\\p{P}])\\s+([\\p{Han}\\p{P}])")
-  rescue Exception
-    nil
-  end
-
-  def _MAPINTL(mapid, *arg)
-    string = MessageTypes.getFromMapHash(mapid, arg[0])
-    string = string.clone
-    (1...arg.length).each do |i|
-      string.gsub!(/\{#{i}\}/, arg[i].to_s)
-    end
-    # ★ 去掉汉字/标点之间的多余空格。旧版 Oniguruma 可能不认 \p{Han}，
-    #   所以正则改成运行时构造；构造不出来就跳过这一步
-    #   （只影响「地图文本去空格」，换行与字体照旧）。
-    string = string.gsub(PKMN_CN_SPACE_RE, '\1\2') if PKMN_CN_SPACE_RE
-    return string
-  end
 end
 
 
@@ -939,20 +913,3 @@ def getFormattedTextFast(bitmap,xDst,yDst,widthDst,heightDst,text,lineheight,
 end
 
 # ---- 来自官方 Essentials 18.1 源码：234028_DrawText.rb ----
-def pbDrawShadowText(bitmap,x,y,width,height,string,baseColor,shadowColor=nil,align=0)
-  return if !bitmap || !string
-  width=(width<0) ? bitmap.text_size(string).width+4 : width
-  height=(height<0) ? bitmap.text_size(string).height+4 : height
-  # ★ 中文文本处理：整体垂直偏移（值在同目录 Settings.rb 里调）
-  y = y + Settings::Y_OFFSET_OF_TEXT - Settings::Y_OFFSET_OF_ORDER_CORRCETION
-  if shadowColor && shadowColor.alpha>0
-    bitmap.font.color=shadowColor
-    bitmap.draw_text(x+2,y,width,height,string,align)
-    bitmap.draw_text(x,y+2,width,height,string,align)
-    bitmap.draw_text(x+2,y+2,width,height,string,align)
-  end
-  if baseColor && baseColor.alpha>0
-    bitmap.font.color=baseColor
-    bitmap.draw_text(x,y,width,height,string,align)
-  end
-end

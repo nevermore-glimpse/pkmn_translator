@@ -538,7 +538,7 @@
     const sel = $("debugMode");
     const r = await API("/api/debug/modes");
     if (!r.ok || !r.data || !(r.data.modes || []).length) {
-      sel.innerHTML = `<option value="main">① 通用（写 Main，启动即调试）</option>`;
+      sel.innerHTML = `<option value="main">① 通用（Scene_Map#update 写 $DEBUG=true）</option>`;
       return;
     }
     DEBUG_MODES = r.data.modes;

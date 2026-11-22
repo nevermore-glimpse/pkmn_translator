@@ -20,6 +20,8 @@ import re
 import config
 
 SRC_DIR_NAME = os.path.join("scripts", "essentials_src")
+# 已翻译好的官方 debug 脚本（开发期从 debug_menu_zh.json 生成，覆盖时直接用）
+ZH_DIR_NAME = os.path.join("scripts", "essentials_src_zh")
 DEBUG_MENU_SUBDIR = os.path.join("020_Debug", "003_Debug menus")
 
 # ----------------------------------------------------------------
@@ -30,7 +32,7 @@ DEBUG_MENU_SUBDIR = os.path.join("020_Debug", "003_Debug menus")
 #   v18 / v18.1  同上
 #   v19          Debug_Menus / Debug_MenuCommands / Debug_MenuExtraCode / Debug_PokemonCommands
 #   v19.1        同上 + Debug_MenuSpriteRenamer
-#   v20 / v20.1 / v21 / v21.1
+#   v20 / v20.1 / v21 / v21.1 / v22
 #                Debug_Menus / Debug_MenuCommands / Debug_MenuExtraCode /
 #                Debug_BattleCommands / Debug_BattlePkmnCommands /
 #                Debug_BattleExtraCode / Debug_PokemonCommands / Debug_FilenameUpdater
@@ -43,6 +45,12 @@ _V20_DEBUG_SET = (
     "Debug_BattleCommands", "Debug_BattlePkmnCommands",
     "Debug_BattleExtraCode", "Debug_PokemonCommands",
     "Debug_FilenameUpdater",
+)
+# v22 删掉了 Debug_FilenameUpdater，其余同名
+_V22_DEBUG_SET = (
+    "Debug_Menus", "Debug_MenuCommands", "Debug_MenuExtraCode",
+    "Debug_BattleCommands", "Debug_BattlePkmnCommands",
+    "Debug_BattleExtraCode", "Debug_PokemonCommands",
 )
 _V19_DEBUG_SET = (
     "Debug_Menus", "Debug_MenuCommands", "Debug_MenuExtraCode",
@@ -58,6 +66,7 @@ _OVERWRITE_SCRIPTS = {
     "20.1": _V20_DEBUG_SET,
     "21": _V20_DEBUG_SET,
     "21.1": _V20_DEBUG_SET,
+    "22": _V22_DEBUG_SET,
 }
 
 # 函数级覆盖：v16 的「宝可梦 debug 菜单」不在独立脚本里，
@@ -83,13 +92,18 @@ def norm_ver(version):
     try:
         maj, minor = (int(x) for x in v.split(".")[:2])
     except (ValueError, AttributeError):
-        return "21.1" if v else "21.1"
+        return "22"
     if maj <= 18:
         return str(maj)
     if maj == 19:
         return "19.1" if minor >= 1 else "19"
-    return v if v in _OVERWRITE_SCRIPTS else f"{maj}.{minor}" \
-        if f"{maj}.{minor}" in _OVERWRITE_SCRIPTS else str(maj)
+    if maj == 20:
+        return "20.1" if minor >= 1 else "20"
+    if maj == 21:
+        return "21.1" if minor >= 1 else "21"
+    if maj >= 22:
+        return "22"
+    return v if v in _OVERWRITE_SCRIPTS else str(maj)
 
 
 def overwrite_script_names(version):
@@ -187,6 +201,26 @@ def _ver_dir(version):
     return os.path.join(src_root(), str(norm_ver(version)))
 
 
+def _debug_menu_subdir(version):
+    """
+    该版本的 debug 菜单目录（相对版本目录）。
+
+    v16–v21.1 是 `020_Debug/003_Debug menus`，v22 起改成
+    `020_Debug/005_Debug menus`。不写死，按实际目录名找。
+    """
+    base = os.path.join(_ver_dir(version), "020_Debug")
+    if os.path.isdir(base):
+        hits = sorted(d for d in os.listdir(base)
+                      if d.lower().endswith("debug menus"))
+        if hits:
+            want = "005" if str(norm_ver(version)) == "22" else "003"
+            for d in hits:
+                if d.startswith(want):
+                    return os.path.join("020_Debug", d)
+            return os.path.join("020_Debug", hits[0])
+    return DEBUG_MENU_SUBDIR
+
+
 def debug_menu_files(version):
     """
     debug 菜单脚本的相对路径列表（相对于版本目录）。
@@ -197,9 +231,10 @@ def debug_menu_files(version):
     names = overwrite_script_names(version)
     if not names:
         return []
-    sub = os.path.join(_ver_dir(version), DEBUG_MENU_SUBDIR)
+    sub = os.path.join(_ver_dir(version), _debug_menu_subdir(version))
     if os.path.isdir(sub):
-        have = {re.sub(r"^\d+_", "", f[:-3]): os.path.join(DEBUG_MENU_SUBDIR, f)
+        have = {re.sub(r"^\d+_", "", f[:-3]): os.path.join(
+                    os.path.relpath(sub, _ver_dir(version)), f)
                 for f in os.listdir(sub) if f.endswith(".rb")}
         return [have[n] for n in names if n in have]
     # ★ v16 / v17 / v18：扁平布局，没有子目录 —— 取实际文件名
@@ -211,19 +246,73 @@ def debug_menu_files(version):
     return out
 
 
-def engine_files(version, files=None):
+def engine_files(version, files=None, translated=False):
     """
     某版本官方脚本的绝对路径列表。
 
     files=None → 用 debug 菜单脚本；否则用给定的相对路径列表。
+    translated=True → 优先取「已翻译」的副本（scripts/essentials_src_zh/）。
     """
     rels = files if files is not None else debug_menu_files(version)
     out = []
     for rel in rels:
         p = os.path.join(_ver_dir(version), rel)
+        if translated:
+            zp = _zh_abs(version, rel)
+            if zp:
+                p = zp
         if os.path.isfile(p):
             out.append(p)
     return out
+
+
+def zh_root():
+    return config.resource_path(ZH_DIR_NAME)
+
+
+def _zh_abs(version, rel):
+    """某版本某脚本的「已翻译」副本路径（没有返回 ""）。"""
+    p = os.path.join(zh_root(), str(norm_ver(version)), rel)
+    return p if os.path.isfile(p) else ""
+
+
+def translated_script_path(version, script):
+    """
+    取某版本某脚本的已翻译副本；没有返回 ""。
+
+    ★ 覆盖 debug 菜单时直接用这份，不再在覆盖阶段跑 debug_menu_zh.json。
+    """
+    rel = script_rel_path(version, script)
+    if not rel:
+        return ""
+    return _zh_abs(version, rel)
+
+
+def translated_engine_files(version):
+    """某版本 debug 覆盖清单里「已有翻译副本」的文件列表。"""
+    return engine_files(version, translated=True)
+
+
+def engine_files_zh_first(version):
+    """
+    与 `engine_files(version)` 同一批、同一顺序，但**优先用已翻译副本**。
+
+    返回 [(官方源, 实际要读的文件), ...]：
+      · 有 `essentials_src_zh/<ver>/…` 的 → 实际文件是译文副本；
+      · 没有译文副本的 → 退回官方英文源（不能因为缺一个译文就少覆盖一份脚本）。
+
+    ★ 方式七（写入改名调试函数）必须用这个：它把脚本内容原样拼进游戏，
+      用英文源就等于把官方英文菜单又塞回中文游戏里。
+    """
+    pairs = []
+    names = debug_menu_files(version)
+    for rel in names:
+        p = os.path.join(_ver_dir(version), rel)
+        if not os.path.isfile(p):
+            continue
+        pairs.append((p, _zh_abs(version, rel) or p))
+    return pairs
+
 
 
 def load_translations():

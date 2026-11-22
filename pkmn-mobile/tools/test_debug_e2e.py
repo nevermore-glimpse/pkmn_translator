@@ -43,6 +43,13 @@ def mainFunction
 end
 """
 
+SCENE_SRC = """class Scene_Map
+  def update
+    $game_player.update
+  end
+end
+"""
+
 
 def build_game():
     """造一个能通过 check_game_root 且带 Data/Scripts.rxdata 的假游戏。"""
@@ -62,8 +69,8 @@ def build_game():
                     b"UI_Timer", b"Scene_Map", b"Strings"]
     entries = [[100000, b"Ze_Marker", zlib.compress(b"\n")]]   # 空标记，应被跳过
     for i, nm in enumerate(filler_names):
-        entries.append([100001 + i, nm, zlib.compress(
-            f"# filler {nm.decode()}\n".encode("utf-8"))])
+        body = SCENE_SRC if nm == b"Scene_Map" else f"# filler {nm.decode()}\n"
+        entries.append([100001 + i, nm, zlib.compress(body.encode("utf-8"))])
     # Main 放最后
     entries.append([100900, b"Main", zlib.compress(MAIN_SRC.encode("utf-8"))])
     blob = writes(entries)
@@ -72,15 +79,19 @@ def build_game():
     return d
 
 
-def read_main_text(game_dir):
-    """把 Scripts.rxdata 里 Main 那条的源文本读回来。"""
+def read_named_text(game_dir, name):
+    """把 Scripts.rxdata 里指定标题的源文本读回来。"""
     import game_scripts as GS
     entries, total = GS.read_rxdata_entries(
         os.path.join(game_dir, "Data", "Scripts.rxdata"))
     for idx, title, text in entries:
-        if str(title).strip().lower() == "main":
+        if str(title).strip().lower() == name.lower():
             return text
     return None
+
+
+def read_main_text(game_dir):
+    return read_named_text(game_dir, "main")
 
 
 def main():
@@ -99,12 +110,15 @@ def main():
         report(ok_, "假游戏目录通过 check_game_root", why)
 
         main_text = read_main_text(game)
+        scene_text = read_named_text(game, "Scene_Map") or ""
         report(main_text is not None, "能从 Scripts.rxdata 读回 Main 脚本")
         if main_text is None:
             return 1
         report("def mainFunction" in main_text,
                "Main 脚本里含有 def mainFunction")
-        report("$DEBUG" not in main_text, "初始状态没有 $DEBUG=true")
+        report("def update" in scene_text, "Scene_Map 脚本里含有 def update")
+        report("$DEBUG" not in main_text and "$DEBUG" not in scene_text,
+               "初始状态没有 $DEBUG=true")
 
         # ---------- 1. 开启 ----------
         logs = []
@@ -113,10 +127,10 @@ def main():
                rep.get("reason", "")[:90])
         print(f"     日志 {len(logs)} 行")
 
-        after = read_main_text(game)
-        report("$DEBUG=true" in (after or ""),
-               "★ $DEBUG=true 真的写进了 mainFunction",
-               f"写入后包含标记 = {'$DEBUG=true' in (after or '')}")
+        after = read_named_text(game, "Scene_Map") or ""
+        report("$DEBUG=true" in after,
+               "★ $DEBUG=true 真的写进了 Scene_Map#update",
+               f"写入后包含标记 = {'$DEBUG=true' in after}")
         report((after or "").count("$DEBUG") == 1,
                "只写了一行，没有重复插入")
 
@@ -125,7 +139,7 @@ def main():
 
         # ---------- 2. 幂等 ----------
         rep2 = DT.enable_debug(game, emit=lambda m: None)
-        after2 = read_main_text(game)
+        after2 = read_named_text(game, "Scene_Map") or ""
         report((after2 or "").count("$DEBUG") == 1,
                "★ 再点一次开启不会重复写入（幂等）")
 
@@ -135,8 +149,8 @@ def main():
 
         # ---------- 4. 关闭 ----------
         DT.remove_debug_from_main(game, emit=lambda m: None)
-        after3 = read_main_text(game)
-        report("$DEBUG" not in (after3 or ""),
+        after3 = read_named_text(game, "Scene_Map") or ""
+        report("$DEBUG" not in after3,
                "★ 关闭 DEBUG 后干净移除 $DEBUG=true")
         st3 = DT.status(game)
         report(not st3.get("debug_on"), "status() 显示 debug_on=False")

@@ -2,7 +2,7 @@
 """
 存档编辑接口。
 
-统一用 SaveFile 这一层，**不区分 v16~v18（15 条 Marshal 流）和 v19+/v20/v21
+统一用 SaveFile 这一层，**不区分 v16~v18（15 条 Marshal 流）和 v19+/v20/v21/v22
 （单条 Hash）** —— 这层抽象 core/save_tools.py 已经做好了（见 SaveFile 类开头
 的说明），所以这里只有一套实现。
 

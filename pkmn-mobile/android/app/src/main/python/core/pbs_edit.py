@@ -6,7 +6,7 @@ PBS 编辑 —— 把游戏 Data/*.dat 提取成 PBS/*.txt、编辑后再编译�
 
 * **v19 / v19.1**：``[编号]`` 段 + ``Key = Value``；abilities / moves / items /
   ribbons / trainertypes / berryplants / shadowmoves 还是「一行一条 CSV」的老格式。
-* **v20 / v20.1 / v21 / v21.1**：全部 ``[内部名]`` 段 + ``Key = Value``。
+* **v20 / v20.1 / v21 / v21.1 / v22**：全部 ``[内部名]`` 段 + ``Key = Value``。
 * v16～v18 的老游戏（``berryplants.dat`` / ``attacksRS.dat`` 那套）**不在支持范围**——
   那些游戏自带 PBS 目录，交给游戏自己编译。
 
@@ -245,6 +245,7 @@ def detect_family(game_root: str) -> Tuple[str, str]:
         if m:
             major = int(m.group(1))
             if major >= 21:
+                # v22 的 PBS / .dat 结构与 v21 同族
                 return "v21", f"Essentials {ver}"
             if major == 20:
                 return "v20", f"Essentials {ver}"

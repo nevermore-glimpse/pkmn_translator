@@ -1,0 +1,314 @@
+#===============================================================================
+# ** Game_System
+#------------------------------------------------------------------------------
+#  This class handles data surrounding the system. Backround music, etc.
+#  is managed here as well. Refer to "$game_system" for the instance of
+#  this class.
+#===============================================================================
+class Game_System
+  attr_reader   :map_interpreter          # map event interpreter
+  attr_reader   :battle_interpreter       # battle event interpreter
+  attr_accessor :timer_start              # $stats.play_time when timer was started, or nil
+  attr_accessor :timer_duration           # Time (in seconds) the timer is initially set to
+  attr_accessor :save_disabled            # save forbidden
+  attr_accessor :menu_disabled            # menu forbidden
+  attr_accessor :encounter_disabled       # encounter forbidden
+  attr_accessor :message_position         # text option: positioning
+  attr_accessor :message_frame            # text option: window frame
+  attr_accessor :save_count               # save count
+  attr_accessor :magic_number             # magic number
+  attr_accessor :autoscroll_x_speed
+  attr_accessor :autoscroll_y_speed
+  attr_accessor :bgm_position
+
+  def initialize
+    @map_interpreter        = Interpreter.new(0, true)
+    @battle_interpreter     = Interpreter.new(0, false)
+    @timer_start            = nil
+    @timer_duration         = 0
+    @save_disabled          = false
+    @menu_disabled          = false
+    @encounter_disabled     = false
+    @message_position       = 2
+    @message_frame          = 0
+    @save_count             = 0
+    @magic_number           = 0
+    @adventure_magic_number = rand(2**32)
+    @autoscroll_x_speed     = 0
+    @autoscroll_y_speed     = 0
+    @bgm_position           = 0
+    @bgs_position           = 0
+  end
+
+  def adventure_magic_number
+    @adventure_magic_number ||= rand(2**32)
+    return @adventure_magic_number
+  end
+
+  def battle_bgm
+    return (@battle_bgm) ? @battle_bgm : $data_system.battle_bgm
+  end
+
+  attr_writer :battle_bgm
+
+  def battle_end_me
+    return (@battle_end_me) ? @battle_end_me : $data_system.battle_end_me
+  end
+
+  attr_writer :battle_end_me
+
+  def windowskin_name
+    return $data_system.windowskin_name if @windowskin_name.nil?
+    return @windowskin_name
+  end
+
+  attr_writer :windowskin_name
+
+  def timer
+    return 0 if !@timer_start || !$stats
+    return @timer_duration - $stats.play_time + @timer_start
+  end
+
+  #-----------------------------------------------------------------------------
+
+  def bgm_play(bgm, track = nil)
+    old_pos = @bgm_position
+    @bgm_position = 0
+    bgm_play_internal(bgm, 0, track)
+    @bgm_position = old_pos
+  end
+
+  def bgm_play_internal2(name, volume, pitch, position, track = nil) # :nodoc:
+    bgm_name = FileTest::AUDIO_EXTENSIONS.map { |ext| name + ext }.find { |path| File.exist?(path) }
+    return if !bgm_name
+    vol = volume
+    vol *= $PokemonSystem.main_volume / 100.0
+    vol *= $PokemonSystem.bgmvolume / 100.0
+    vol = vol.to_i
+    begin
+      Audio.bgm_play(bgm_name, vol, pitch, position, track)
+    rescue ArgumentError
+      Audio.bgm_play(bgm_name, vol, pitch, 0, track)
+    end
+  end
+
+  def bgm_play_internal(bgm, position, track = nil) # :nodoc:
+    if !track || track == 0
+      @bgm_position = position if !@bgm_paused
+      @playing_bgm = bgm&.clone
+    end
+    if bgm && bgm.name != ""
+      if !@defaultBGM && FileTest.audio_exist?("Audio/BGM/" + bgm.name)
+        bgm_play_internal2("Audio/BGM/" + bgm.name, bgm.volume, bgm.pitch, @bgm_position, track)
+      end
+    else
+      if !track || track == 0
+        @bgm_position = position if !@bgm_paused
+        @playing_bgm = nil
+      end
+      Audio.bgm_stop(track) if !@defaultBGM
+    end
+    if @defaultBGM
+      bgm_play_internal2("Audio/BGM/" + @defaultBGM.name,
+                         @defaultBGM.volume, @defaultBGM.pitch, @bgm_position, track)
+    end
+    Graphics.frame_reset
+  end
+
+  def bgm_pause(fadetime = 0.0) # :nodoc:
+    pos = Audio.bgm_pos rescue 0
+    self.bgm_fade(fadetime) if fadetime > 0.0
+    @bgm_position = pos
+    @bgm_paused   = true
+  end
+
+  def bgm_unpause  # :nodoc:
+    @bgm_position = 0
+    @bgm_paused   = false
+  end
+
+  def bgm_resume(bgm) # :nodoc:
+    return if !@bgm_paused
+    self.bgm_play_internal(bgm, @bgm_position)
+    @bgm_position = 0
+    @bgm_paused   = false
+  end
+
+  def bgm_stop(track = nil) # :nodoc:
+    if !track || track == 0
+      @bgm_position = 0 if !@bgm_paused
+      @playing_bgm  = nil
+    end
+    Audio.bgm_stop(track) if !@defaultBGM
+  end
+
+  def bgm_fade(time, track = nil) # :nodoc:
+    if !track || track == 0
+      @bgm_position = 0 if !@bgm_paused
+      @playing_bgm = nil
+    end
+    Audio.bgm_fade((time * 1000).floor, track) if !@defaultBGM
+  end
+
+  def playing_bgm
+    return @playing_bgm
+  end
+
+  # Saves the currently playing background music for later playback.
+  def bgm_memorize
+    @memorized_bgm = @playing_bgm
+  end
+
+  # Plays the currently memorized background music
+  def bgm_restore
+    bgm_play(@memorized_bgm)
+  end
+
+  # Returns an RPG::AudioFile object for the currently playing background music
+  def getPlayingBGM
+    return (@playing_bgm) ? @playing_bgm.clone : nil
+  end
+
+  def setDefaultBGM(bgm, volume = 80, pitch = 100)
+    bgm = RPG::AudioFile.new(bgm, volume, pitch) if bgm.is_a?(String)
+    @defaultBGM = nil
+    if bgm && bgm.name != ""
+      self.bgm_play(bgm)
+      @defaultBGM = bgm.clone
+    else
+      self.bgm_play(@playing_bgm)
+    end
+  end
+
+  #-----------------------------------------------------------------------------
+
+  def me_play(me)
+    me = RPG::AudioFile.new(me) if me.is_a?(String)
+    if me && me.name != ""
+      me_name = "Audio/ME/" + me.name
+      return if !FileTest.audio_exist?(me_name)
+      me_name = FileTest::AUDIO_EXTENSIONS.map { |ext| me_name + ext }.find { |path| File.exist?(path) }
+      return if !me_name
+      vol = me.volume
+      vol *= $PokemonSystem.main_volume / 100.0
+      vol *= $PokemonSystem.bgmvolume / 100.0
+      vol = vol.to_i
+      Audio.me_play(me_name, vol, me.pitch)
+    else
+      Audio.me_stop
+    end
+    Graphics.frame_reset
+  end
+
+  #-----------------------------------------------------------------------------
+
+  def bgs_play(bgs)
+    @playing_bgs = (bgs.nil?) ? nil : bgs.clone
+    if bgs && bgs.name != ""
+      bgs_name = "Audio/BGS/" + bgs.name
+      return if !FileTest.audio_exist?(bgs_name)
+      bgs_name = FileTest::AUDIO_EXTENSIONS.map { |ext| bgs_name + ext }.find { |path| File.exist?(path) }
+      return if !bgs_name
+      vol = bgs.volume
+      vol *= $PokemonSystem.main_volume / 100.0
+      vol *= $PokemonSystem.sevolume / 100.0
+      vol = vol.to_i
+      Audio.bgs_play(bgs_name, vol, bgs.pitch)
+    else
+      @bgs_position = 0
+      @playing_bgs  = nil
+      Audio.bgs_stop
+    end
+    Graphics.frame_reset
+  end
+
+  def bgs_pause(fadetime = 0.0) # :nodoc:
+    if fadetime > 0.0
+      self.bgs_fade(fadetime)
+    else
+      self.bgs_stop
+    end
+    @bgs_paused = true
+  end
+
+  def bgs_unpause  # :nodoc:
+    @bgs_paused = false
+  end
+
+  def bgs_resume(bgs) # :nodoc:
+    return if !@bgs_paused
+    self.bgs_play(bgs)
+    @bgs_paused = false
+  end
+
+  def bgs_stop
+    @bgs_position = 0
+    @playing_bgs  = nil
+    Audio.bgs_stop
+  end
+
+  def bgs_fade(time)
+    @bgs_position = 0
+    @playing_bgs  = nil
+    Audio.bgs_fade((time * 1000).floor)
+  end
+
+  def playing_bgs
+    return @playing_bgs
+  end
+
+  def bgs_memorize
+    @memorized_bgs = @playing_bgs
+  end
+
+  def bgs_restore
+    bgs_play(@memorized_bgs)
+  end
+
+  def getPlayingBGS
+    return (@playing_bgs) ? @playing_bgs.clone : nil
+  end
+
+  #-----------------------------------------------------------------------------
+
+  def se_play(se)
+    se = RPG::AudioFile.new(se) if se.is_a?(String)
+    se_name = "Audio/SE/" + se.name
+    return if !se || se.name == "" || !FileTest.audio_exist?(se_name)
+    se_name = FileTest::AUDIO_EXTENSIONS.map { |ext| se_name + ext }.find { |path| File.exist?(path) }
+    return if !se_name
+    vol = se.volume
+    vol *= $PokemonSystem.main_volume / 100.0
+    vol *= $PokemonSystem.sevolume / 100.0
+    vol = vol.to_i
+    Audio.se_play(se_name, vol, se.pitch)
+  end
+
+  def pokemon_cry_play(se)
+    se = RPG::AudioFile.new(se) if se.is_a?(String)
+    se_name = "Audio/SE/" + se.name
+    return if !se || se.name == "" || !FileTest.audio_exist?(se_name)
+    se_name = FileTest::AUDIO_EXTENSIONS.map { |ext| se_name + ext }.find { |path| File.exist?(path) }
+    return if !se_name
+    vol = se.volume
+    vol *= $PokemonSystem.main_volume / 100.0
+    vol *= $PokemonSystem.pokemon_cry_volume / 100.0
+    vol = vol.to_i
+    Audio.se_play(se_name, vol, se.pitch)
+  end
+
+  def se_stop
+    Audio.se_stop
+  end
+
+  #-----------------------------------------------------------------------------
+
+  def update
+    if Input.trigger?(Input::ACTION) && pbCurrentEventCommentInput(1, "Cut Scene")
+      event = @map_interpreter.get_self
+      @map_interpreter.pbSetSelfSwitch(event.id, "A", true)
+      @map_interpreter.command_end
+      event.start
+    end
+  end
+end

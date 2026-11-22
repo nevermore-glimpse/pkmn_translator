@@ -38,13 +38,13 @@ else:
 # ★ 与电脑版保持一致：**不写每种方式的说明文字**（电脑版 v1.9.8 起已删掉
 #   下拉框下面那一大段 desc），这里只留下拉框显示用的 label。
 MODES = [
-    {"key": "main",         "label": "① 通用（写 Main，启动即调试）"},
+    {"key": "main",         "label": "① 通用（Scene_Map#update 写 $DEBUG=true）"},
     {"key": "keys",         "label": "② 删条件（F9/队伍/穿墙 免 $DEBUG 可用）"},
     {"key": "special",      "label": "③ F6 键（按 F6 直接开调试 + 提示）"},
     {"key": "special_menu", "label": "④ F6 键（按 F6 直接开调试菜单）"},
     {"key": "repel",        "label": "⑤ 除虫喷雾（用喷雾即设 $DEBUG）"},
     {"key": "repel_menu",   "label": "⑥ 除虫喷雾（用喷雾即开调试菜单）"},
-    {"key": "rewrite",      "label": "⑦ 改名调试函数（顶掉原函数，按 T 开菜单）"},
+    {"key": "rewrite",      "label": "⑦ 调试包装插件（新脚本覆盖调试函数/入口，按 T 开菜单）"},
 ]
 
 MODE_KEYS = tuple(m["key"] for m in MODES)
@@ -204,7 +204,7 @@ def api_enable(ctx):
 
         rep = DT.enable_debug(
             d, emit=emit, force=force,
-            # ★ 只有方式①（通用）才往 pbCallTitle 第一行写 $DEBUG=true。
+            # ★ 只有方式①（通用）才写 $DEBUG=true（写进 Scene_Map#update）。
             #   方式② 的做法本来就是把「需要 $DEBUG 才生效」的判定删掉，
             #   再写一个 $DEBUG=true 是画蛇添足；方式⑦ 更不能设 ——
             #   反调试里有 `exit if $DEBUG`。

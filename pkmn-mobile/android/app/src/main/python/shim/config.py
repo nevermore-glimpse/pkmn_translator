@@ -59,16 +59,15 @@ for _d in (BASE_DIR, REPORT_DIR, TMP_DIR, LOG_DIR):
 _RESOURCE_MAP = {
     "scripts/essentials_base": os.path.join(DATA_DIR, "essentials_base"),
     "scripts/essentials_src": os.path.join(DATA_DIR, "essentials_src"),
-    # 插件源码的目录名带空格（"scripts/chinese text manager 21.1"），
-    # 手机上改用无空格的短名，这里按 basename 兜底匹配。
-    "scripts/essentials_src": os.path.join(DATA_DIR, "essentials_src"),
+    "scripts/essentials_src_zh": os.path.join(DATA_DIR, "essentials_src_zh"),
 }
 
 # 插件源码变体 → core_data/plugins/ 下的短名目录。
 # 电脑版用 "scripts/chinese text manager 21.1" 这种带空格的路径，
 # 安卓打包与路径拼接都容易出问题，所以映射到 ctm-21.1。
 _PLUGIN_DIRS = {
-    "scripts/chinese text manager":           "ctm-21.1",
+    "scripts/chinese text manager":           "ctm-22",
+    "scripts/chinese text manager 22":        "ctm-22",
     "scripts/chinese text manager 21.1":      "ctm-21.1",
     "scripts/chinese text manager 20.1":      "ctm-20.1",
     "scripts/chinese text manager 19.1":      "ctm-19.1",
@@ -137,7 +136,7 @@ def resource_dir(name):
 # 应用信息（防御性导出，保持与电脑版同名）
 # ================================================================
 APP_NAME = "宝可梦同人工具"
-VERSION = os.environ.get("PKMN_VERSION", "1.8.3")
+VERSION = os.environ.get("PKMN_VERSION", "1.9.0")
 APP_TITLE = f"{APP_NAME} v{VERSION}"
 
 # ★ 电脑版「翻译中间文件」目录名（桌面批量翻译把缓存/报告/润色稿放这里）。

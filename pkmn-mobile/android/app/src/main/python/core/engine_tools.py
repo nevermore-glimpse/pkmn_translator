@@ -77,8 +77,8 @@ FONT_RULES = (
     (("16", "17", "17.2"), "SpriteWindow", FONT_OLD_CONSTS, "MessageConfig"),
     (("18", "18.1"), "MessageConfig", FONT_OLD_CONSTS, "MessageConfig"),
     (("19",), "Settings", ("FONT_OPTIONS",), "Settings"),
-    (("19.1", "20", "20.1", "21", "21.1"), "MessageConfig", FONT_NEW_CONSTS,
-     "MessageConfig"),
+    (("19.1", "20", "20.1", "21", "21.1", "22"), "MessageConfig",
+     FONT_NEW_CONSTS, "MessageConfig"),
 )
 
 
@@ -420,7 +420,7 @@ def _create_script_everywhere(game_dir, sname, text, index=1):
     return made
 
 
-def overwrite_plan(game_dir, version, files=None):
+def overwrite_plan(game_dir, version, files=None, translated=False):
     """
     算「覆盖计划」→ [item, ...]，不写盘。
 
@@ -435,8 +435,12 @@ def overwrite_plan(game_dir, version, files=None):
 
     files=None 时用该版本内置的 debug 覆盖清单。
     """
+    # ★ 空版本不能默认成 v22（v16 会拿到 v22 的脚本）
+    if not str(version or "").strip():
+        version = _xqk_resolve_version(game_dir, "")
     out = []
-    for src in engine_src.engine_files(version, files=files):
+    for src in engine_src.engine_files(version, files=files,
+                                       translated=translated):
         name = os.path.splitext(os.path.basename(src))[0]
         # 文件名形如 001_Debug_Menus → 脚本名 Debug_Menus（去编号前缀）
         sname = re.sub(r"^\d+_", "", name)
@@ -449,6 +453,8 @@ def overwrite_plan(game_dir, version, files=None):
         out.append(item)
     for sname, fname in engine_src.overwrite_func_items(version):
         src = engine_src.script_src_path(version, sname)
+        if translated:
+            src = engine_src.translated_script_path(version, sname) or src
         tgt = find_game_script(game_dir, sname)
         out.append({"kind": "func", "src": src, "name": sname,
                     "func": fname, "target": tgt})
@@ -471,17 +477,19 @@ def overwrite_engine_scripts(game_dir, version, translate=True, emit=None,
         if emit:
             emit(msg)
 
+    if not str(version or "").strip():
+        version = _xqk_resolve_version(game_dir, "")
     rep = {"ok": False, "version": version, "written": [], "skipped": [],
            "backups": [], "created": 0, "reason": ""}
-    plan = overwrite_plan(game_dir, version, files=files)
+    # ★ 中文来自随工具分发的「已翻译官方脚本」（scripts/essentials_src_zh/），
+    #   覆盖时不再跑 debug_menu_zh.json 做字符串替换。
+    plan = overwrite_plan(game_dir, version, files=files, translated=translate)
     if not plan:
         rep["reason"] = (f"没有内置 v{version} 的引擎脚本，无法覆盖。"
                          "（工具只内置了 debug 菜单相关脚本）")
         say(f"[覆盖] ✘ {rep['reason']}")
         return rep
 
-    tr = engine_src.load_translations() if translate else {}
-    n_tr = 0
     for item in plan:
         sname = item["name"]
         src = item["src"]
@@ -513,9 +521,6 @@ def overwrite_engine_scripts(game_dir, version, translate=True, emit=None,
             rep["reason"] = f"读官方脚本 {os.path.basename(src)} 失败：{e}"
             say(f"[覆盖] ✘ {rep['reason']}")
             return rep
-        if translate and tr:
-            text, k = engine_src.apply_translation(text, tr)
-            n_tr += k
         if cp:
             # ★ 游戏里没有这个脚本 → 把基准里那一份**新增进去**
             #   （两处脚本落盘处都建：见 _create_script_everywhere）
@@ -582,7 +587,7 @@ def overwrite_engine_scripts(game_dir, version, translate=True, emit=None,
         if rep.get("created") else ""
     if translate:
         say(f"[覆盖] 共替换 {len(rep['written'])} 处，"
-            f"翻译 {n_tr} 条菜单文本{extra}")
+            f"使用内置的中文 debug 脚本{extra}")
     else:
         say(f"[覆盖] 共替换 {len(rep['written'])} 处{extra}")
     log.info("基准覆盖：%s v%s → %d 处", game_dir, version,
@@ -773,21 +778,22 @@ def _norm_eol(text):
 #   除虫喷雾：PItem_ItemEffects / Item_Effects 的 pbRepel 函数开头
 #
 # ★ 编号 = GUI 下拉框里的「方式N」，与 _debug_mode_labels 一一对应：
-#     ① main          写 Main 的 $DEBUG=true
+#     ① main          写 Scene_Map#update 的 $DEBUG=true
 #     ② keys          删各处 $DEBUG 条件
 #     ③ special       F6 键 → 设 $DEBUG（直接开，不再判断 !$DEBUG）
 #     ④ special_menu  F6 键 → 直接打开调试菜单（新，= 方式⑤ 的 F6 版）
 #     ⑤ repel         除虫喷雾 → 设 $DEBUG
 #     ⑥ repel_menu    除虫喷雾 → 直接打开调试菜单
-#     ⑦ launcher      调试启动器
+#     ⑦ rewrite       调试包装插件（新脚本覆盖调试函数/入口）
+#     ⑧ launcher      调试启动器
 DEBUG_MODES = (
-    ("main", "通用方式：给 Main 的 mainFunction 写 $DEBUG=true"),
+    ("main", "通用方式：给 Scene_Map#update 写 $DEBUG=true"),
     ("keys", "方式二：删除 F9 调试菜单 / 队伍调试 / 穿墙 的 $DEBUG 条件"),
     ("special", "方式三：F6 键 —— Scene_Map 里按 F6 直接开启调试模式"),
     ("special_menu", "方式四：F6 键 —— Scene_Map 里按 F6 直接打开调试菜单"),
     ("repel", "方式五：除虫喷雾 —— 使用时写入 $DEBUG=true"),
     ("repel_menu", "方式六：除虫喷雾 —— 直接打开调试菜单"),
-    ("rewrite", "方式七：改名调试函数 —— 用基准改名函数顶掉原函数，按 T 开助手菜单"),
+    ("rewrite", "方式七：调试包装插件 —— 新脚本覆盖调试函数/入口，按 T 开助手菜单"),
     ("launcher", "方式八：调试启动器 —— 生成 exe，双击进调试"),
 )
 
@@ -1468,6 +1474,7 @@ _HEAL_VERSIONS = {
     "20.1": ("$player.party", "pbMessage", "each"),
     "21": ("$player.party", "pbMessage", "each"),
     "21.1": ("$player.party", "pbMessage", "each"),
+    "22": ("$player.party", "pbMessage", "each"),
 }
 # 版本读不到时拿来认世代的脚本（拼起来看指纹）
 _HEAL_PROBE_SCRIPTS = ("Scene_Map", "Debug_Menu", "Debug", "Trainer", "Player",
@@ -1506,7 +1513,7 @@ def _heal_probe(game_dir):
     return "\n".join(out)
 
 
-def _heal_family(version, probe):
+def _heal_family(version, probe, game_dir=None):
     """
     挑一份跟这个游戏对得上的 heal 代码 → (版本键, 依据说明)。
 
@@ -1515,7 +1522,7 @@ def _heal_family(version, probe):
            · 脚本里在用 `$player.party`          → v20+ 那一套
            · 有裸 `pbMessage(`（v18 起才有）      → v18 那一套
            · 只有 `Kernel.pbMessage`             → v16 / v17 那一套
-           · 全认不出                            → 按最新版 v21.1 处理
+           · 全认不出                            → 按最新版 v22 处理
     """
     ver = (version or "").strip()
     if ver in _HEAL_VERSIONS:
@@ -1528,7 +1535,15 @@ def _heal_family(version, probe):
         return "20", "读不到版本，按指纹：裸 pbMessage（v18 起）"
     if "Kernel.pbMessage" in probe:
         return "16", "读不到版本，按指纹：只有 Kernel.pbMessage（v16/v17）"
-    return "21.1", "读不到版本，指纹也认不出，按最新版 v21.1 处理"
+    # 脚本读不出来 / 指纹也认不出：按运行时兜底。RGSS 一定是 v16–v18
+    # 的旧写法，不能落成 v22 的 $player.party + 裸 pbMessage。
+    if game_dir:
+        try:
+            if detect_runtime(game_dir) == "rgss":
+                return "16", "读不到版本，按运行时：RGSS（v16–v18）"
+        except Exception:                        # noqa: BLE001
+            pass
+    return "22", "读不到版本，指纹也认不出，按最新版 v22 处理"
 
 
 def _heal_block(ref_line, family, why, is_elsif):
@@ -1606,7 +1621,7 @@ def patch_heal_key(game_dir, version=None, emit=None):
             "moving? 判断，没法确定 F7 挂哪儿")
         return {"ok": False, "reason": "Scene_Map 里找不到注入锚点"}
     ver = (version or "").strip() or GS.essentials_version(game_dir)
-    fam, why = _heal_family(ver, _heal_probe(game_dir))
+    fam, why = _heal_family(ver, _heal_probe(game_dir), game_dir=game_dir)
     is_elsif = lines[anchor].lstrip().startswith("elsif")
     body = _heal_block(lines[anchor], fam, why, is_elsif)
     new_text = "\n".join(lines[:anchor] + body + lines[anchor:])
@@ -1904,7 +1919,7 @@ def _inject_into_branch(game_dir, sname, branch_re, body, emit=None):
 
 
 # ================================================================
-# 方式七：改名调试函数（规避反调试脚本）
+# 方式七：调试包装插件（新建脚本 / 插件覆盖原函数与入口）
 # ================================================================
 # 反调试脚本（典型如汉化插件的 000_Config.rb）大致干了这些事：
 #
@@ -1965,7 +1980,11 @@ XQK_MENU_ACT_FUNC = "pbAideWindowActions"
 XQK_PKMN_CMD_FUNC = "pbAidePokemonCommands"
 XQK_PKMN_ACT_FUNC = "pbAidePokemonActions"
 XQK_CALL_FUNC = "call_aide"
-XQK_TAG = "方式七：改名调试函数"
+XQK_BATTLE_FUNC = "pbAideBattle"
+XQK_BATTLE_INFO_FUNC = "pbAideBattleBattlerInfo"
+XQK_BATTLE_PKMN_INFO_FUNC = "pbAideBattlePokemonInfo"
+XQK_BATTLE_PKMN_DEBUG = "pbAideBattlePokemon"
+XQK_TAG = "方式七：调试包装插件"
 # 目录名排 ASCII 尾部（排序后 CJK 目录在其后）→ reverse 后「中文名的反调试插件
 # 先加载、本插件后加载」。这样本插件对 Scene_Map / Input 的封装才在反调试之后生效。
 XQK_PLUGIN_DIR = "zzz_pkmn_aide"
@@ -1976,17 +1995,31 @@ XQK_OLD_PLUGIN_DIRS = ("zzz_pkmn_assist", "zzz_pkmn_xqk", "pkmn_assist")
 
 # 旧名 → 新名（顺序即替换顺序；长名在前，避免 `pbXxx` 前缀互吃）
 XQK_RENAMES = (
+    ("pbBattleDebugBattlerInfo", XQK_BATTLE_INFO_FUNC),
+    ("pbBattleDebugPokemonInfo", XQK_BATTLE_PKMN_INFO_FUNC),
     ("pbPokemonDebugCommands", XQK_PKMN_CMD_FUNC),
     ("pbPokemonDebugActions", XQK_PKMN_ACT_FUNC),
     ("pbDebugMenuCommands", XQK_MENU_CMD_FUNC),
     ("pbDebugMenuActions", XQK_MENU_ACT_FUNC),
     ("pbPokemonDebug", XQK_PKMN_FUNC),
+    ("pokemon_debug_menu", XQK_PKMN_FUNC),
+    ("pbBattlePokemonDebug", XQK_BATTLE_PKMN_DEBUG),
+    ("pbBattleDebug", XQK_BATTLE_FUNC),
     ("pbDebugMenu", XQK_MENU_FUNC),
     ("call_debug", XQK_CALL_FUNC),
 )
 
+# v19 的调试命令表是模块常量（Debug_MenuCommands / Debug_PokemonCommands），
+# 也要一起改名，否则入口函数改完仍在引用「带 debug 的旧常量」。
+XQK_CONST_RENAMES = (
+    ("PokemonDebugMenuCommands", "PokemonAideMenuCommands"),
+    ("DebugMenuCommands", "AideMenuCommands"),
+)
+
 # v19+ 菜单注册表 key / 选项 key 改名（`MenuHandlers.add` 被反调试按名字过滤）
 XQK_SYM_RENAMES = (
+    (":battle_pokemon_debug_menu", ":aide_battle_pokemon_menu"),
+    (":battle_debug_menu", ":aide_battle_menu"),
     (":pokemon_debug_menu", ":aide_pokemon_menu"),
     (":debug_menu", ":aide_menu"),
     # 单独出现的 `:debug`（party_menu / pause_menu 的选项 key）
@@ -2221,39 +2254,153 @@ def _xqk_sym_re(sym):
 # 我们**有意**改成的新符号（修复历史误改时要排除这几条）
 _XQK_SYM_NEW = tuple(new for _old, new in XQK_SYM_RENAMES)
 
-
-def _rename_in_func_body(body):
-    """把函数体里出现的旧函数名/旧注册 key 全换成新名。"""
-    out = body
-    for old, new in XQK_RENAMES:
-        out = re.sub(r"(?<![A-Za-z0-9_])" + re.escape(old) + r"(?![A-Za-z0-9_])",
-                     new, out)
-    for old, new in XQK_SYM_RENAMES:
-        out = _xqk_sym_re(old).sub(new, out)
-    return out
+# 这些「带 debug 的全局函数」在改名后的脚本里也要一起换掉；
+# 其余含 debug 的类 / 模块（PokemonDebugMixin、SpriteWindow_Debug* 等）
+# 被别的脚本 include / 引用，**不能**改名。
+_XQK_FUNC_KEEP = frozenset(("PBDebug", "pbDebugLog"))
 
 
-def _baseline_func_renamed(version, script, func):
+def _xqk_aide_name(name):
+    """把标识符里的 debug 子串换成 aide（保留大小写风格）。"""
+    def _rep(m):
+        s = m.group(0)
+        return "Aide" if s[0].isupper() else "aide"
+    return re.sub(r"(?i)debug", _rep, str(name))
+
+
+_XQK_MAP_CACHE = {}
+
+
+def _xqk_rename_map(version):
     """
-    从官方基准取 `func` 的函数体，改名后返回。
-    script=None → 在所有基准脚本里找第一个定义了 func 的。
+    该版本 debug 覆盖脚本里要改的「函数 / 常量」名 → 新名。
+
+    固定映射之外，再扫一遍基准 debug 脚本里所有 `def pb*debug*` 的全局函数，
+    统一换成 `pbAide*`（Debug_MenuCommands / Debug_PokemonCommands 里的
+    pbDebugVariables、pbDebugSetVariable 等一并覆盖）。
     """
-    cands = []
-    if script:
-        p = engine_src.script_src_path(version, script)
-        if p:
-            cands.append(p)
-    else:
-        cands = engine_src.engine_files(version)
-    for p in cands:
+    v = engine_src.norm_ver(version)
+    if v in _XQK_MAP_CACHE:
+        return _XQK_MAP_CACHE[v]
+    mapping = dict(XQK_RENAMES)
+    mapping.update(dict(XQK_CONST_RENAMES))
+    for p in engine_src.engine_files(v):
         try:
             with io.open(p, "r", encoding="utf-8", errors="replace") as f:
                 text = _norm_eol(f.read())
         except OSError:
             continue
+        for m in re.finditer(
+                r"^[ \t]*def\s+(?:self\.)?([A-Za-z_][A-Za-z0-9_]*[!?]?)",
+                text, re.M):
+            name = m.group(1)
+            if name in _XQK_FUNC_KEEP or "debug" not in name.lower():
+                continue
+            if name.startswith("pb") and name not in mapping:
+                mapping[name] = _xqk_aide_name(name)
+    _XQK_MAP_CACHE[v] = mapping
+    return mapping
+
+
+def _xqk_rename_text(text, version):
+    """把一整份官方 debug 脚本里的函数 / 常量 / 菜单 key 全部换成 aide 名。"""
+    out = text
+    mapping = _xqk_rename_map(version)
+    for old, new in sorted(mapping.items(), key=lambda kv: -len(kv[0])):
+        out = re.sub(r"(?<![:@$A-Za-z0-9_])" + re.escape(old)
+                     + r"(?![A-Za-z0-9_])", new, out)
+    for old, new in XQK_SYM_RENAMES:
+        out = _xqk_sym_re(old).sub(new, out)
+    return out
+
+
+def _rename_in_func_body(body, symbols=True, version=None,
+                         rename_map=None):
+    """把函数体里出现的旧函数名全换成新名；symbols=True 时连注册 key 一起换。"""
+    out = body
+    mapping = (rename_map or (_xqk_rename_map(version) if version
+                              else dict(XQK_RENAMES)))
+    for old, new in sorted(mapping.items(), key=lambda kv: -len(kv[0])):
+        # ★ 不能碰 `:pokemon_debug_menu` 这类符号（菜单注册 key），
+        #   也不能碰 `@debug_...` 之类实例变量。
+        out = re.sub(r"(?<![:@$A-Za-z0-9_])" + re.escape(old)
+                     + r"(?![A-Za-z0-9_])", new, out)
+    if symbols:
+        for old, new in XQK_SYM_RENAMES:
+            out = _xqk_sym_re(old).sub(new, out)
+    return out
+
+
+def _read_script_text(path):
+    """读基准脚本文本（统一行尾）；读不了返回 ""。"""
+    if not path:
+        return ""
+    try:
+        with io.open(path, "r", encoding="utf-8", errors="replace") as f:
+            return _norm_eol(f.read())
+    except OSError:
+        return ""
+
+
+def _xqk_baseline_paths(version, script=None):
+    """
+    「要读哪几份基准」→ 路径列表，**译文副本优先**，官方英文源兜底。
+
+    ★ 方式七是把基准脚本内容原样拼进游戏 / 覆盖游戏里的函数，
+      读英文源等于把官方英文菜单又塞回中文游戏。所以这里默认先找
+      `scripts/essentials_src_zh/<ver>/…`，没有译文副本才退回英文源。
+    """
+    v = engine_src.norm_ver(version)
+    if script:
+        srcs = [engine_src.script_src_path(v, script)]
+    else:
+        srcs = [p for p, _use in engine_src.engine_files_zh_first(v)]
+    out = []
+    for p in srcs:
+        if not p or not os.path.isfile(p):
+            continue
+        zh = _zh_path_for(v, p)
+        out.append(zh or p)
+        if zh:
+            out.append(p)          # 译文副本里万一没这个函数 → 再用英文源试
+    return out
+
+
+def _zh_path_for(version, src_path):
+    """官方源绝对路径 → 已翻译副本绝对路径（没有返回 ""）。"""
+    if not src_path:
+        return ""
+    root = engine_src.src_root()
+    try:
+        rel = os.path.relpath(src_path, os.path.join(
+            root, str(engine_src.norm_ver(version))))
+    except ValueError:
+        return ""
+    if rel.startswith(".."):
+        return ""
+    p = os.path.join(engine_src.zh_root(),
+                     str(engine_src.norm_ver(version)), rel)
+    return p if os.path.isfile(p) else ""
+
+
+def _baseline_func_renamed(version, script, func, symbols=True,
+                           translated=True):
+    """
+    从官方基准取 `func` 的函数体，改名后返回。
+
+    script=None → 在所有基准脚本里找第一个定义了 func 的。
+    translated=True（默认）→ 先读已翻译副本，副本里没有该函数再退回英文源。
+    """
+    cands = (_xqk_baseline_paths(version, script) if translated
+             else ([engine_src.script_src_path(version, script)]
+                   if script else engine_src.engine_files(version)))
+    for p in cands:
+        text = _read_script_text(p)
+        if not text:
+            continue
         src = _extract_func(text, func)
         if src:
-            return _rename_in_func_body(src)
+            return _rename_in_func_body(src, symbols=symbols, version=version)
     return ""
 
 
@@ -2264,6 +2411,40 @@ def _baseline_func_renamed(version, script, func):
 #            pbPokemonDebugCommands+Actions+pbPokemonDebug(Debug_Pokemon.rb)
 #   v18    : 同 v17（Debug_Menu.rb / Debug_Pokemon.rb）
 #   v19+   : pbDebugMenu + pbPokemonDebug(Debug_Menus.rb)
+def _xqk_resolve_version(game_dir, version=None):
+    """
+    方式七用哪一版基准。
+
+    ★ 老引擎（v16）脚本里没有版本常量，GUI / 手机端传进来的 version 会是
+      空串；直接 `norm_ver("")` 会落到最新版（v22），插件里就会用
+      `Input.triggerex?`、PokemonDebugMixin 等 v22 写法 → 一进游戏就报错。
+      所以这里必须「自报版本 → 函数指纹 → 最新版兜底」。
+    """
+    v = str(version or "").strip()
+    if v:
+        return v
+    try:
+        import essentials_base as EB
+        v = (EB.detect_version(game_dir) or "").strip()
+        if v:
+            return v
+        auto, ratio = EB.best_baseline(EB.scan_game_scripts(game_dir))
+        if auto:
+            log.info("读不到版本号，按指纹认出 v%s（重合 %.0f%%）",
+                     auto, (ratio or 0) * 100)
+            return auto
+    except Exception as e:                       # noqa: BLE001
+        log.warning("版本指纹识别失败：%s", e)
+    # 脚本读不出来 / 指纹也认不出：按运行时兜底。RGSS 至少是 v16 的旧写法，
+    # 绝不能落到 v22（那会生成 v22 专用函数 → 一进游戏就报错）。
+    try:
+        if detect_runtime(game_dir) == "rgss":
+            return "16"
+    except Exception:                            # noqa: BLE001
+        pass
+    return "22"
+
+
 def _xqk_entry_funcs(version):
     """
     返回 [(旧名, 基准脚本名 or None), ...]：该版本要用基准改名覆盖的函数。
@@ -2274,6 +2455,15 @@ def _xqk_entry_funcs(version):
             ("pbDebugMenu", "Debug"),
             ("pbPokemonDebug", "PScreen_Party"),
         ]
+    if v == "22":
+        return [
+            ("pbDebugMenu", "Debug_Menus"),
+            ("pokemon_debug_menu", "Debug_Menus"),
+            ("pbBattleDebugBattlerInfo", "Debug_Menus"),
+            ("pbBattleDebugPokemonInfo", "Debug_Menus"),
+            ("pbBattlePokemonDebug", "Debug_Menus"),
+            ("pbBattleDebug", "Debug_Menus"),
+        ]
     if v in ("17", "18"):
         return [
             ("pbDebugMenuCommands", "Debug_Menu"),
@@ -2283,7 +2473,16 @@ def _xqk_entry_funcs(version):
             ("pbPokemonDebugActions", "Debug_Pokemon"),
             ("pbPokemonDebug", "Debug_Pokemon"),
         ]
-    # 19 / 19.1 / 20 / 20.1 / 21 / 21.1
+    if v in ("20", "20.1", "21", "21.1"):
+        return [
+            ("pbDebugMenu", "Debug_Menus"),
+            ("pbPokemonDebug", "Debug_Menus"),
+            ("pbBattleDebugBattlerInfo", "Debug_Menus"),
+            ("pbBattleDebugPokemonInfo", "Debug_Menus"),
+            ("pbBattlePokemonDebug", "Debug_Menus"),
+            ("pbBattleDebug", "Debug_Menus"),
+        ]
+    # 19 / 19.1
     return [
         ("pbDebugMenu", "Debug_Menus"),
         ("pbPokemonDebug", "Debug_Menus"),
@@ -2551,18 +2750,32 @@ def _xqk_key_patch_legacy(text):
     n = 0
     eol = _xqk_eol(text)
     # ---- ① 常量：插在 `ALT = 23` 行之后（各版本都有 ALT）----
-    if not re.search(r"(?m)^[ \t]*T[ \t]*=[ \t]*\d+\b", text):
+    has_t = bool(re.search(r"(?m)^[ \t]*T[ \t]*=[ \t]*\d+\b", text))
+    if not has_t:
         m = re.search(r"(?m)^([ \t]*)ALT[ \t]*=[ \t]*23[ \t]*\r?$", text)
         if not m:
             m = re.search(r"(?m)^([ \t]*)F9[ \t]*=[ \t]*\d+[ \t]*\r?$", text)
-        if m:
+        if not m:
+            # 实在找不到锚点：插在 `module Input` 之后（缩进两格）
+            m = re.search(r"(?m)^([ \t]*)module Input[ \t]*\r?$", text)
+            if m:
+                ind = m.group(1) + "  "
+                ins = (eol + ind + f"T         = {XQK_T_BTN}"
+                       + "   # T key (pkmn-aide)")
+                text = text[:m.end()] + ins + text[m.end():]
+                has_t = True
+                n += 1
+        else:
             ind = m.group(1)
             ins = (eol + ind + f"T         = {XQK_T_BTN}"
                    + "   # T key (pkmn-aide)")
             text = text[:m.end()] + ins + text[m.end():]
+            has_t = True
             n += 1
     # ---- ② buttonToKey：在 `else; return []` / `else return []` 之前插 ----
-    if not re.search(r"when[ \t]+Input::T\b", text):
+    # ★ 常量没插成功时**绝不**插分支：否则 `when Input::T` 会把游戏在
+    #   启动注册按键时直接 `NameError` 掉。
+    if has_t and not re.search(r"when[ \t]+Input::T\b", text):
         m = re.search(r"(?m)^([ \t]*)else;[ \t]*return \[\]", text)
         if not m:
             m = re.search(r"(?m)^([ \t]*)else\s+return\s+\[\]", text)
@@ -2703,8 +2916,9 @@ end
 '''
 
 # T 键判据（v16–18 走 buttonToKey；v19+ 走 mkxp-z 的 scancode 符号）
-XQK_TKEY_LEGACY = "Input.trigger?(Input::T)"
-XQK_TKEY_MKXP = "Input.triggerex?(:T) || Input.triggerex?(Input::T)"
+XQK_TKEY_LEGACY = "(defined?(Input::T) ? Input.trigger?(Input::T) : false)"
+XQK_TKEY_MKXP = ("(defined?(Input::T) ? (Input.triggerex?(:T) || "
+                 "Input.triggerex?(Input::T)) : Input.triggerex?(:T))")
 
 
 def _xqk_tkey(version=None):
@@ -2765,21 +2979,266 @@ def _xqk_impl_block(version=None):
     v = engine_src.norm_ver(version)
     parts = []
     for old, script in _xqk_entry_funcs(v):
-        src = _baseline_func_renamed(v, script, old)
-        if src:
+        src = _baseline_func_renamed(v, script, old, symbols=True)
+        if not src:
+            continue
+        chain = _xqk_func_scope(v, script, old)
+        if chain:
+            # 同作用域定义：函数体里会用到 self 的实例方法与实例变量
+            body = "\n".join("  " + ln if ln.strip() else ln
+                             for ln in src.split("\n"))
+            parts.append(
+                f"if defined?({chain[-1]})\n"
+                f"  {chain[-1]}.module_eval do\n{body}\n  end\n"
+                f"end")
+        else:
             parts.append(src)
     return "\n\n".join(parts)
 
 
+def _xqk_func_scope(version, script, func):
+    """基准函数所在的 module / class 链（外层→内层）。找不到返回 []。
+
+    ★ 与 `_baseline_func_renamed` 用同一套取源顺序（译文副本 → 英文源），
+      否则「从译文里抠函数体、却拿英文源判作用域」会出现两边不一致。
+    """
+    for p in _xqk_baseline_paths(version, script):
+        text = _read_script_text(p)
+        if not text:
+            continue
+        lines = text.split("\n")
+        for i, ln in enumerate(lines):
+            m = re.match(r"^([ \t]*)def\s+(?:self\.)?" + re.escape(func) + r"\b",
+                         ln)
+            if not m:
+                continue
+            ind = len(m.group(1))
+            chain = []
+            for j in range(i - 1, -1, -1):
+                mm = re.match(r"^([ \t]*)(module|class)\s+([A-Za-z_][\w:]*)",
+                              lines[j])
+                if mm and len(mm.group(1)) < ind:
+                    chain.append(mm.group(3))
+                    ind = len(mm.group(1))
+            return list(reversed(chain))
+    return []
+
+
+def _xqk_transformed_debug_block(version):
+    """
+    把该版本「基准 debug 覆盖清单」里的脚本整份改名后拼进来。
+
+    ★ 覆盖范围与基准覆盖一致：Debug_Menus / Debug_MenuCommands /
+      Debug_MenuExtraCode / Debug_Battle* / Debug_PokemonCommands /
+      Debug_FilenameUpdater（v22 少 FilenameUpdater）。
+      这样反调试即使把命令表清空、把 MenuHandlers.add 改成过滤器，
+      插件最后加载时也能把整套调试命令重新注册成 :aide_* 菜单。
+
+    ★★ **译文优先**：读 `essentials_src_zh/<ver>/` 里那份已翻译的基准，
+      没有译文副本才退回英文源。以前只用英文源，结果方式七把官方英文
+      菜单原样贴回中文游戏 —— 菜单项、提示语全是英文。
+    """
+    v = engine_src.norm_ver(version)
+    parts = []
+    for src_path, use_path in engine_src.engine_files_zh_first(v):
+        text = _read_script_text(use_path)
+        if not text:
+            continue
+        name = os.path.basename(src_path)
+        tag = "已翻译" if use_path != src_path else "无译文副本，用英文源"
+        parts.append("# ===== 来自官方基准：%s（%s，已改名）=====\n%s"
+                     % (name, tag, _xqk_rename_text(text, v)))
+    return "\n\n".join(parts)
+
+
+def _xqk_wrapper_block(version):
+    """
+    生成「原函数名 → 包装后的助手函数」的转发定义。
+
+    新方案不再改游戏脚本里的函数定义与调用点：插件 / 新脚本加载后
+    直接覆盖原名方法，原有调用方一行都不用动。
+    """
+    v = engine_src.norm_ver(version)
+    renames = dict(XQK_RENAMES)
+    parts = []
+    for old, script in _xqk_entry_funcs(v):
+        new = renames.get(old)
+        if not new:
+            continue
+        chain = _xqk_func_scope(v, script, old)
+        if chain:
+            target = chain[-1]
+            parts.append(
+                f"if defined?({target})\n"
+                f"  {target}.module_eval do\n"
+                f"    def {old}(*args, &blk)\n"
+                f"      {new}(*args, &blk)\n"
+                f"    end\n"
+                f"  end\n"
+                f"end")
+        else:
+            parts.append(
+                f"def {old}(*args, &blk)\n"
+                f"  {new}(*args, &blk)\n"
+                f"end")
+    return "\n\n".join(parts)
+
+
+def _xqk_menu_handler_block(version):
+    """
+    v20+ 的调试菜单入口由 MenuHandlers 注册。
+
+    目标游戏的反调试会：
+      · 把 `MenuHandlers.add` 改成「名字含 debug 就丢弃」；
+      · `MenuHandlers.remove` 批量删掉调试菜单项；
+    所以插件最后加载时先**换回不经过滤的 add**，再把基准命令重新注册到
+    `:aide_*` 菜单；同时补上暂停菜单 / 队伍菜单的「助手」入口。
+    """
+    v = engine_src.norm_ver(version)
+    if v in ("16", "17", "18", "19", "19.1"):
+        return ""
+    v22 = v == "22"
+    party_part = ('''  if defined?(UI) && UI.const_defined?(:Party) &&
+     UI::Party.const_defined?(:ACTIONS)
+    UI::Party::ACTIONS.add(:aide, {
+      :effect => proc { |screen|
+        screen.pokemon_debug_menu(screen.pokemon, screen.index)
+      }
+    })
+  end
+  MenuHandlers.remove(:party_screen_interact, :aide)
+  MenuHandlers.add(:party_screen_interact, :aide, {
+    "name"      => _INTL("助手"),
+    "order"     => 20,
+    "condition" => proc { |screen| next true }
+  })''' if v22 else '''  MenuHandlers.remove(:party_menu, :aide)
+  MenuHandlers.add(:party_menu, :aide, {
+    "name"      => _INTL("助手"),
+    "order"     => 20,
+    "condition" => proc { |screen, party, party_idx| next true },
+    "effect"    => proc { |screen, party, party_idx|
+      screen.pbAidePokemon(party[party_idx], party_idx)
+    }
+  })''')
+    return '''if defined?(MenuHandlers) && defined?(HandlerHash)
+  module MenuHandlers
+    def self.add(menu, option, hash)
+      @@handlers = {} if !defined?(@@handlers) || @@handlers.nil?
+      @@handlers[menu] = HandlerHash.new if !@@handlers.has_key?(menu)
+      @@handlers[menu].add(option, hash)
+    end
+  end
+  [:aide_menu, :aide_pokemon_menu, :aide_battle_menu,
+   :aide_battle_pokemon_menu].each do |m|
+    MenuHandlers.clear(m) if MenuHandlers.respond_to?(:clear)
+  end
+  [[:pause_menu, :debug], [:party_menu, :debug],
+   [:party_screen_interact, :debug], [:bag_screen_interact, :debug],
+   [:load_screen, :debug], [:storage_pokemon_interact, :debug]].each do |menu, option|
+    hash = (MenuHandlers.get(menu, option) rescue nil)
+    next if !hash
+    hash["condition"] = proc { true }
+    MenuHandlers.remove(menu, option)
+    MenuHandlers.add(menu, option, hash)
+  end
+  MenuHandlers.remove(:pause_menu, :aide)
+  MenuHandlers.add(:pause_menu, :aide, {
+    "name"      => _INTL("助手"),
+    "order"     => 80,
+    "condition" => proc { true },
+    "effect"    => proc { |menu|
+      pbPlayDecisionSE if respond_to?(:pbPlayDecisionSE, true)
+      pbFadeOutIn { pbAideWindow }
+      menu.pbRefresh if menu.respond_to?(:pbRefresh)
+      menu.refresh if menu.respond_to?(:refresh)
+      next false
+    }
+  })
+''' + party_part + '''
+end'''
+
+
+def _xqk_scene_map_block(version):
+    """T 键入口 + 把 `Scene_Map#call_debug`（F9）指向助手菜单。"""
+    v = engine_src.norm_ver(version)
+    tkey = _xqk_tkey(v)
+    return '''class Scene_Map
+  if method_defined?(:_pkmn_aide_ready)
+    # 已经装过，不动（幂等）
+  else
+    if method_defined?(:del_update)
+      alias pkmn_aide_update del_update
+    else
+      alias pkmn_aide_update update
+    end
+    define_method(:_pkmn_aide_ready) { true }
+
+    def update
+      pkmn_aide_update
+      begin
+        if %(tkey)s
+          pbFadeOutIn { %(menu)s }
+        end
+      rescue Exception
+      end
+    end
+
+    if method_defined?(:call_debug)
+      alias pkmn_aide_call_debug call_debug
+      def call_debug
+        $game_temp.debug_calling = false if $game_temp.respond_to?(:debug_calling=)
+        $game_player.straighten if $game_player
+        pbPlayDecisionSE if respond_to?(:pbPlayDecisionSE, true)
+        pbFadeOutIn { %(menu)s }
+      end
+    end
+  end
+end''' % {"tkey": tkey, "menu": XQK_MENU_FUNC}
+
+
+_XQK_WRAPPER_TEMPLATE = r'''# ==================================================================
+# %(tag)s（包装调试函数 / 调试入口）
+# ------------------------------------------------------------------
+# 本文件由「宝可梦汉化翻译工具」生成 —— 请勿手改（重开一次会覆盖）。
+#
+# 做法：
+#   · 基准 debug 覆盖清单里的脚本整份改名（函数 / 常量 / 菜单 key），
+#     包括 Debug_MenuCommands、Debug_PokemonCommands 等命令表；
+#   · 恢复被反调试过滤的 MenuHandlers.add，把命令重新注册到 :aide_* 菜单；
+#   · **覆盖原函数名 / 原方法**，游戏里所有调用方不用改；
+#   · T 键 / F9 直接打开助手菜单，全程不设 $DEBUG。
+#
+# 还原：删掉 Plugins/%(dir)s/ 与本脚本条目。
+# ==================================================================
+$pkmn_aide_loaded = true
+
+# ① 改名后的官方入口函数
+%(impl)s
+
+# ② 恢复菜单注册 + 助手入口（v20+）
+%(menuhandlers)s
+
+# ③ 基准 debug 脚本整份改名后重跑（命令表 / 菜单注册全部重新挂上）
+%(transformed)s
+
+# ④ 原函数名 → 助手函数（覆盖原方法）
+%(wrappers)s
+
+# ⑤ 地图场景入口（T 键 / F9）
+%(scene_map)s
+'''
+
+
 def _xqk_plugin_body(version=None):
-    """生成「方式七」插件的完整 Ruby 源码。"""
-    return _QXK_PLUGIN_TEMPLATE % {
+    """生成「方式七」包装脚本 / 插件的完整 Ruby 源码。"""
+    return _XQK_WRAPPER_TEMPLATE % {
         "dir": XQK_PLUGIN_DIR,
         "tag": XQK_TAG,
-        "menu": XQK_MENU_FUNC,
         "impl": _xqk_impl_block(version),
-        "tkey": _xqk_tkey(version),
-        "protect": _xqk_protect_block(version),
+        "transformed": _xqk_transformed_debug_block(version),
+        "wrappers": _xqk_wrapper_block(version),
+        "menuhandlers": _xqk_menu_handler_block(version),
+        "scene_map": _xqk_scene_map_block(version),
     }
 
 
@@ -2885,6 +3344,43 @@ def install_aide_plugin(game_dir, version=None, emit=None):
     say(f"[方式七] ✔ 已写入独立插件 Plugins/{XQK_PLUGIN_DIR}/"
         f"（元数据 {XQK_PLUGIN_NAME}，排在最后加载）")
     return {"dir": d, "file": rb}
+
+
+def install_aide_script(game_dir, version=None, emit=None):
+    """
+    把「方式七」的包装脚本写成一个**独立脚本**（排在 Main 之前）。
+
+    v19+ 的插件系统之外再放一份，老引擎（v16–v18）没有插件系统，
+    就靠这一份覆盖原函数。
+    """
+    def say(msg):
+        if emit:
+            emit(msg)
+    body = _xqk_plugin_body(version)
+    title = "pkmn_aide"
+    # 解包脚本按文件名排序：998_ 排在 999_Main 之前
+    file_title = "998_pkmn_aide"
+    made = []
+    loader_dir = GS.loader_scripts_dir(game_dir)
+    if loader_dir and os.path.isdir(loader_dir):
+        fn = GS.script_file_name(game_dir, file_title, index=90)
+        made.append({"mode": "file",
+                     "path": GS.add_script_file_at(
+                         os.path.join(loader_dir, fn), body)})
+        say(f"[方式七] ✔ 已写入 {fn}（排在 Main 之前）")
+        return made
+    rx = GS.rxdata_path(game_dir)
+    if rx and os.path.isfile(rx):
+        _backup(rx, emit=emit)
+        GS.upsert_rxdata_script(rx, title, body)
+        made.append({"mode": "rxdata", "path": rx})
+    if GS.script_dirs(game_dir):
+        p = GS.add_script_file(game_dir, file_title, body, index=90)
+        if p:
+            made.append({"mode": "file", "path": p})
+    if made:
+        say("[方式七] ✔ 已写入包装脚本（排在 Main 之前，覆盖原调试函数）")
+    return made
 
 
 def inject_aide_into_scripts(game_dir, version=None, emit=None):
@@ -3162,7 +3658,7 @@ _XQK_META = {
     "name": XQK_PLUGIN_NAME,
     "version": "1.0.0",
     "essentials": ["16", "16.1", "16.2", "17", "17.1", "17.2", "18", "18.1",
-                   "19", "19.1", "20", "20.1", "21", "21.1"],
+                   "19", "19.1", "20", "20.1", "21", "21.1", "22"],
     "link": XQK_PLUGIN_LINK,
     "credits": ["pkmn_translator"],
 }
@@ -3681,41 +4177,36 @@ def undo_fix_plugin_load_order(game_dir, emit=None):
 # ==================================================================
 def patch_rewrite_debug_func(game_dir, version=None, emit=None):
     """
-    方式七：改名调试函数（规避反调试脚本）。
+    方式七：调试包装（新建脚本 / 插件，覆盖原调试函数与入口）。
 
     步骤：
-      ⓪ 先**修回历史误改**（早期版把 `:debug<X>` 裸替换成 `:aide<X>`，
-         例如 `attr_accessor :debug_calling` → 游戏一跑图就 NoMethodError）；
-      ① 用**官方基准的改名函数**覆盖游戏里 debug 相关函数的定义；
-      ② 在「按键注册脚本」里**正式注册 T 键**；
-      ③ 批量改所有调用点 / 菜单注册 key；
-      ④ UI 里显示的 `"Debug"` 选项名 → `"助手"`；
-      ④.5 **保留原函数名**：给每个改名后的函数在同一作用域补一个转发壳
-         （`def pbDebugMenu(*args, &blk) → pbAideWindow(*args, &blk)`），
-         免得还在按旧名调用的插件 / 脚本 `NameError`；
-      ④.6 **同步删掉「$DEBUG 才生效」的条件**（同方式②）：改名只换了入口，
-         穿墙 / F9 判定 / 队伍·背包里的 Debug 项 / v20+ 的
-         `"condition" => proc { next $DEBUG }` 那些判定还在的话就还是关着的。
-         ★ 只删条件、绝不写 `$DEBUG`（写了就撞反调试的 `exit if $DEBUG`）；
-      ⑤ 写独立插件 + 把同内容注入游戏 `Scene_Map` 末尾（双保险）；
-      ⑥ 把插件编进 `Data/PluginScripts.rxdata`（v19+ 的插件机制，
-         游戏真正 eval 的就是它）+ 关掉插件自动重编译（rxdata 固定，
-         不再被 `Plugins/` 目录覆盖）；
-      ⑦ 给「依赖别的插件才能跑」的调用加 `defined?` 保护（治本）；
-      ⑧ 顺手把 rxdata 里的加载顺序摆正（把使用方挪到提供方之后）。
+      ⓪ 修回历史误改的符号；
+      ① 生成一个**独立脚本 + 插件**：
+         · 官方基准的调试函数（改名后）保留在原作用域；
+         · 原函数名 / 原方法用新脚本覆盖，转调改名后的实现；
+         · T 键 / F9 入口指向助手菜单；
+         · v20+ 把 MenuHandlers 里调试入口的 `$DEBUG` 条件改成恒真；
+         · 全程不设 `$DEBUG`；
+      ② 在「按键注册脚本」里正式注册 T 键（v16–v18 需要）；
+      ③ 同步删掉「$DEBUG 才生效」的条件（老引擎内联写法）；
+      ④ 把脚本排到 Main 之前；有插件系统的再编进 PluginScripts.rxdata；
+      ⑤ 给依赖保护、摆正插件加载顺序。
 
-    返回 {"ok","plugin","replaced","added","keyed","renamed","relabeled",
-          "compat","injected","rxdata","norecompile","guarded","reordered",
-          "repaired","reason"}。
+    返回 {"ok","plugin","keyed","stripped","script","rxdata",
+          "norecompile","guarded","reordered","repaired","reason"}。
     """
     def say(msg):
         if emit:
             emit(msg)
 
-    out = {"ok": True, "plugin": None, "replaced": 0, "added": 0, "keyed": 0,
-           "renamed": 0, "relabeled": 0, "compat": 0, "stripped": 0,
-           "injected": 0, "rxdata": None, "norecompile": 0, "guarded": 0,
+    out = {"ok": True, "plugin": None, "keyed": 0, "stripped": 0,
+           "script": [], "rxdata": None, "norecompile": 0, "guarded": 0,
            "reordered": 0, "repaired": 0, "reason": ""}
+
+    # ★ 老游戏（v16）没有版本常量：先按指纹认出引擎，别默认成 v22
+    version = _xqk_resolve_version(game_dir, version)
+    out["version"] = version
+    say(f"[方式七] 使用 Essentials v{version} 的基准")
 
     # ---- ⓪ 修回历史误改的符号（早期版的裸替换把 :debug_calling 也改了） ----
     try:
@@ -3723,16 +4214,11 @@ def patch_rewrite_debug_func(game_dir, version=None, emit=None):
     except (OSError, RuntimeError) as e:
         say(f"[方式七] ⚠ 修回误改名失败：{e}")
 
-    # ---- ① 覆盖函数定义 ----
+    # ---- ① 清掉旧版注入到 Scene_Map 末尾的引导块 ----
     try:
-        r1 = replace_aide_functions(game_dir, version=version, emit=emit)
-        out["replaced"] = r1["replaced"]
-        out["added"] = r1["added"]
-    except (OSError, RuntimeError, ValueError) as e:
-        out["ok"] = False
-        out["reason"] = f"覆盖函数失败：{e}"
-        say(f"[方式七] ✘ {out['reason']}")
-        return out
+        remove_aide_from_scripts(game_dir, emit=emit)
+    except (OSError, RuntimeError) as e:
+        say(f"[方式七] ⚠ 清理旧引导块失败：{e}")
 
     # ---- ② 注册 T 键 ----
     try:
@@ -3740,27 +4226,7 @@ def patch_rewrite_debug_func(game_dir, version=None, emit=None):
     except (OSError, RuntimeError) as e:
         say(f"[方式七] ⚠ 注册 T 键失败：{e}")
 
-    # ---- ③ 改调用点 / 注册 key ----
-    out["renamed"] = replace_aide_call_sites(game_dir, emit=emit)
-
-    # ---- ④ UI 选项名 ----
-    out["relabeled"] = relabel_aide_ui(game_dir, emit=emit)
-
-    # ---- ④.5 补「原函数名」兼容层 ----
-    # ★ 必须排在 ③（改调用点，`call_debug` 在这里才改完名）之后、
-    #   ⑤（注入 Scene_Map）之前 —— 这样壳只落在游戏脚本里真正定义函数的地方，
-    #   作用域与原定义一致；不会塞进注入块里变成重复定义。
-    try:
-        out["compat"] = add_aide_compat(game_dir, version=version, emit=emit)
-    except (OSError, RuntimeError) as e:
-        out["compat"] = 0
-        say(f"[方式七] ⚠ 补原函数名兼容层失败：{e}")
-
-    # ---- ④.6 同步删掉「$DEBUG 才生效」的条件（同方式②）----
-    # 改名只是把**入口**换掉了名；游戏脚本里那些 `if $DEBUG …` 的判定还在，
-    # 不删的话「助手菜单外的调试功能」（穿墙、F9 判定、队伍/背包里的 Debug 项、
-    # v20+ 的 `"condition" => proc { next $DEBUG }`）依然是关着的。
-    # ★ 只删条件、**绝不写 $DEBUG** —— 写了就撞反调试的 `exit if $DEBUG`。
+    # ---- ③ 删除 $DEBUG 条件（老引擎的内联菜单项）----
     try:
         out["stripped"] = patch_remove_debug_conditions(
             game_dir, emit=emit).get("changed", 0)
@@ -3768,19 +4234,22 @@ def patch_rewrite_debug_func(game_dir, version=None, emit=None):
         out["stripped"] = 0
         say(f"[方式七] ⚠ 删 $DEBUG 条件失败：{e}")
 
-    # ---- ⑤ 独立插件 + 注入 ----
+    # ---- ④ 独立包装脚本（排在 Main 之前）+ 插件 ----
+    try:
+        out["script"] = install_aide_script(game_dir, version=version,
+                                            emit=emit)
+    except (OSError, RuntimeError, ValueError) as e:
+        out["ok"] = False
+        out["reason"] = f"写包装脚本失败：{e}"
+        say(f"[方式七] ✘ {out['reason']}")
+        return out
     try:
         out["plugin"] = install_aide_plugin(game_dir, version=version,
                                             emit=emit)
     except (OSError, RuntimeError, ValueError) as e:
         say(f"[方式七] ⚠ 写独立插件失败：{e}")
-    try:
-        out["injected"] = inject_aide_into_scripts(game_dir, version=version,
-                                                   emit=emit)
-    except (OSError, RuntimeError) as e:
-        say(f"[方式七] ⚠ 写进游戏脚本失败：{e}")
 
-    # ---- ⑥ 编进 PluginScripts.rxdata + 关掉自动重编译 ----
+    # ---- ⑤ 编进 PluginScripts.rxdata + 关掉自动重编译 ----
     try:
         out["rxdata"] = write_aide_to_rxdata(game_dir, version=version,
                                              emit=emit)
@@ -3791,24 +4260,22 @@ def patch_rewrite_debug_func(game_dir, version=None, emit=None):
     except (OSError, RuntimeError) as e:
         say(f"[方式七] ⚠ 关插件重编译失败：{e}")
 
-    # ---- ⑦ 给「依赖别的插件的调用」加 defined? 保护（防 $DEBUG 下崩） ----
+    # ---- ⑥ 给「依赖别的插件的调用」加 defined? 保护（防 $DEBUG 下崩） ----
     try:
         out["guarded"] = guard_known_plugin_deps(game_dir, emit=emit)
     except (OSError, RuntimeError) as e:
         out["guarded"] = 0
         say(f"[方式七] ⚠ 加依赖保护失败：{e}")
 
-    # ---- ⑧ 顺手把 rxdata 里的加载顺序摆正（使用方挪到提供方之后） ----
+    # ---- ⑦ 顺手把 rxdata 里的加载顺序摆正（使用方挪到提供方之后） ----
     try:
         out["reordered"] = fix_plugin_load_order(game_dir, emit=emit)
     except Exception as e:                              # noqa: BLE001
         out["reordered"] = 0
         say(f"[方式七] ⚠ 调整插件顺序失败：{e}")
 
-    say(f"[方式七] ✔ 改名覆盖 {out['replaced']} 个函数（补定义 {out['added']}）"
-        f"｜注册 T 键 {out['keyed']} 处｜改调用 {out['renamed']} 处"
-        f"｜改选项名 {out['relabeled']} 处｜保留旧名 {out['compat']} 处"
-        f"｜删$DEBUG条件 {out['stripped']} 处｜注入脚本 {out['injected']} 个"
+    say(f"[方式七] ✔ 包装脚本 {len(out['script'])} 处"
+        f"｜注册 T 键 {out['keyed']} 处｜删$DEBUG条件 {out['stripped']} 处"
         + (f"｜修回误改名 {out['repaired']} 处" if out.get("repaired") else "")
         + (f"｜rxdata {'已写' if (out['rxdata'] or {}).get('ok') else '跳过'}"
            if out["rxdata"] else "")

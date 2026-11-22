@@ -186,7 +186,7 @@ def test_overwrite():
     # ---- 版本清单 ----
     from engine_src import list_versions, engine_files
     vs = list_versions()
-    report(len(vs) == 9, "9 个版本的基准齐全", str(vs))
+    report(len(vs) >= 10 and "22" in vs, "10 个版本的基准齐全（含 v22）", str(vs))
     missing = []
     for v in vs:
         if not engine_files(v):

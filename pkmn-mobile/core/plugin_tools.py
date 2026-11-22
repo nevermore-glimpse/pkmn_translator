@@ -40,6 +40,7 @@ log = get_logger("plugin_tools")
 # Color.new_from_rgb，v21.1 没有 rgbToColor / Rgb16ToColor），所以必须分版本。
 PLUGIN_DIR_NAME = "chinese text manager"
 PLUGIN_SRC_DIRS = (
+    ("22", os.path.join("scripts", "chinese text manager 22")),
     ("21.1", os.path.join("scripts", "chinese text manager")),
     ("20.1", os.path.join("scripts", "chinese text manager 20.1")),
     ("19.1", os.path.join("scripts", "chinese text manager 19.1")),
@@ -49,7 +50,7 @@ PLUGIN_SRC_DIRS = (
     # ★ 认不出型号的老引擎：用 18.1 那份兜底（它同样只用 RGSS 基础 API）
     ("legacy", os.path.join("scripts", "chinese text manager 18.1")),
 )
-PLUGIN_SRC_DIR = PLUGIN_SRC_DIRS[0][1]        # 默认（21.1），兼容旧调用
+PLUGIN_SRC_DIR = PLUGIN_SRC_DIRS[0][1]        # 默认（22），兼容旧调用
 PLUGIN_META_FILE = "meta.txt"
 PLUGIN_SETTINGS_FILE = "Settings.rb"
 PLUGIN_TOOLS_FILE = "Tools.rb"
@@ -89,11 +90,11 @@ def plugin_dir(game_dir):
 
 def plugin_src_dir(ver=None):
     """工作区里的插件本体：scripts/chinese text manager[- 版本]/"""
-    key = ver or "21.1"
+    key = ver or "22"
     for k, rel in PLUGIN_SRC_DIRS:
         if k == key:
             return config.resource_path(rel)
-    log.warning("未知的插件变体「%s」，按 21.1 处理", key)
+    log.warning("未知的插件变体「%s」，按 22 处理", key)
     return config.resource_path(PLUGIN_SRC_DIRS[0][1])
 
 
@@ -101,6 +102,8 @@ def variant_for_major(major):
     """Essentials 主版本号 → 插件变体键；比 v16 还老的返回 None。"""
     if major is None:
         return None
+    if major >= 22:
+        return "22"
     if major >= 21:
         return "21.1"
     if major == 20:
@@ -127,7 +130,7 @@ def detect_plugin_engine(game_dir):
     认出这个游戏该用哪份插件本体 → dict：
 
       version   —— 脚本里读到的 Essentials 版本号（读不到为 ""）
-      variant   —— 21.1 / 20.1 / 19.1 / 18.1 / 17.2 / 16 / legacy
+      variant   —— 22 / 21.1 / 20.1 / 19.1 / 18.1 / 17.2 / 16 / legacy
       source    —— 依据："version"（版本号）/ "fingerprint"（函数指纹）
                         / "fallback"（都没认出来）
       matched   —— 指纹认出来的基准版本（source=fingerprint 时有值）
@@ -136,7 +139,7 @@ def detect_plugin_engine(game_dir):
     ★ 判定顺序就是**先版本号、读不出来再函数指纹**：
 
         ① 版本号（module Essentials::VERSION / ESSENTIALSVERSION）
-           主版本 ≥21→21.1 ；20→20.1 ；19→19.1 ；18→18.1 ；17→17.2 ；16→16
+           主版本 ≥22→22 ；21→21.1 ；20→20.1 ；19→19.1 ；18→18.1 ；17→17.2 ；16→16
         ② 读不出版本号 → 按「函数指纹重合度」认（essentials_base.best_baseline，
            跟「官方引擎覆盖」用的是同一套基准表）
         ③ 连指纹也认不出 → legacy（用 18.1 那份兜底）
@@ -173,7 +176,7 @@ def _fingerprint_variant(game_dir):
     按「函数指纹重合度」认引擎 → (变体, 认出的基准版本, 重合度)。
 
     ★ 老同人作和一部分改过版本号的作品读不出版本号，只能靠这个；
-      基准表里 16~21.1 都有，认出哪个主版本就用对应那版插件。
+      基准表里 16~22 都有，认出哪个主版本就用对应那版插件。
       认不出（重合度不够）返回 (None, None, 最好重合度)。
     """
     try:
@@ -673,18 +676,14 @@ def essentials_version(game_dir):
 # 但「型号读不出来」或「引擎里缺插件依赖的 API」时还是可能出错，
 # 所以留一层「兼容外壳」兜底：插件自己的实现一旦抛异常，
 # 就退回引擎原本的实现（原版换行逻辑），至少不会一进游戏就崩。
-COMPAT_METHODS = ("getFormattedText", "getFormattedTextFast",
-                  "pbDrawShadowText", "_MAPINTL")
+COMPAT_METHODS = ("getFormattedText", "getFormattedTextFast")
 
 # 这些是 RGSS / 引擎内建的，脚本里搜不到但一定存在
 _BUILTIN_APIS = ("Font.default_color", "Bitmap#text_size")
 
 # 插件用到的外部 API → 在脚本里的样子
 _PLUGIN_APIS = {
-    "MessageTypes.getFromMapHash": r"def self\.getFromMapHash",
-    "MessageTypes.getFromHash": r"def self\.getFromHash",
     "getFormattedText": r"^def getFormattedText\b",
-    "pbDrawShadowText": r"^def pbDrawShadowText\b",
     "MessageConfig": r"module MessageConfig",
     "Settings": r"module Settings\b",
 }
@@ -864,7 +863,7 @@ def write_compat_layer(dst_dir, methods=None):
 
 def plugin_needs_essentials(ver=None):
     """读插件 meta.txt 里声明的 Essentials 版本（读不到返回 ""）。
-    ver 为空时读默认的 21.1 那份。"""
+    ver 为空时读默认的 22 那份。"""
     p = os.path.join(plugin_src_dir(ver), PLUGIN_META_FILE)
     if not os.path.isfile(p):
         return ""
@@ -884,7 +883,7 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
     植入中文文本处理插件。两条路（按游戏自动选，见 install_mode）：
 
       ★ 「有插件系统 + 有 Plugins 目录」→ 老办法：
-          1. 按**引擎版本**挑插件本体（16 / 17.2 / 18.1 / 19.1 / 20.1 / 21.1，
+          1. 按**引擎版本**挑插件本体（16 / 17.2 / 18.1 / 19.1 / 20.1 / 21.1 / 22，
              见 detect_plugin_engine），复制到 <游戏>/Plugins/chinese text manager/；
           2. 选定字体写进 Settings.rb，字体复制到 Fonts/；
              并把引擎脚本里的字体定义一起改掉（见 engine_tools.patch_engine_font）；
@@ -900,7 +899,7 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
     ★ 挑版本**只看引擎**（先版本号、读不出来再函数指纹），不看有没有
       PluginManager —— 那东西只决定怎么装。
 
-    adaptive=False 时不做兼容层、也不按版本挑（一律用 21.1 那份、走插件系统）。
+    adaptive=False 时不做兼容层、也不按版本挑（一律用 22 那份、走插件系统）。
     返回报告 dict。
     """
     def say(msg):
@@ -926,7 +925,7 @@ def install_plugin(game_dir, font_file=None, emit=None, adaptive=True):
             say("[插件] 注意：这个游戏没有真正的插件系统"
                 "（脚本里的 PluginManager 可能只是空壳），所以走「插到脚本里」这条路")
     else:
-        variant, mode = "21.1", "plugins"
+        variant, mode = "22", "plugins"
 
     src = plugin_src_dir(variant)
     if not os.path.isdir(src):

@@ -3750,7 +3750,7 @@ class PbsGamePanel(tk.Frame):
     和存档编辑那块一样：**选 exe 不选目录**（exe 只有那一个，选它不会选错层，
     根目录由 exe 位置推出）。选好后显示：
       · 游戏名 / Data 目录在不在
-      · 识别到的 Essentials 版本族（v19 / v20 / v21）
+      · 识别到的 Essentials 版本族（v19 / v20 / v21 / v22）
       · PBS 文件夹里已经有哪些 txt
     """
 
@@ -3798,7 +3798,7 @@ class PbsGamePanel(tk.Frame):
         self.list_inner.pack(fill="both", padx=6, pady=(2, 4))
         self._hint = tk.Label(
             self.list_inner,
-            text="先在上面选好游戏。\n\n支持的版本：Essentials v19 / v20 / v21（v16～v18 不支持）。",
+            text="先在上面选好游戏。\n\n支持的版本：Essentials v19 / v20 / v21 / v22（v16～v18 不支持）。",
             bg=bg, fg=C_HINT, font=FONT_SMALL, justify="left",
             wraplength=max(120, width - 62))
         self._hint.pack(anchor="w", padx=6, pady=10)
@@ -3866,7 +3866,7 @@ class PbsGamePanel(tk.Frame):
                                      fg=C_KEY)
             else:
                 self.info_lbl.config(
-                    text="⚠ 认不出版本：%s\n（支持 Essentials v16 ~ v21.1）" % why,
+                    text="⚠ 认不出版本：%s\n（支持 Essentials v16 ~ v22）" % why,
                     fg=C_WARN)
         else:
             self.info_lbl.config(text="")
@@ -4816,6 +4816,8 @@ class App:
                                         bits.append("注册 T 键")
                                     if mres.get("plugin"):
                                         bits.append("写入插件")
+                                    if mres.get("script"):
+                                        bits.append("写入包装脚本")
                                     if (mres.get("rxdata") or {}).get("ok"):
                                         rx = (mres["rxdata"].get("action")
                                               == "appended" and "追加进 rxdata"
@@ -5899,7 +5901,7 @@ class App:
         tk.Label(c3.body,
                  text="先读游戏里的 Essentials 版本号，读不出来再按函数指纹认，"
                       "据此挑对应版本的插件本体（16 / 17.2 / 18.1 / "
-                      "19.1 / 20.1 / 21.1），装进游戏、把字体复制到 Fonts，"
+                      "19.1 / 20.1 / 21.1 / 22），装进游戏、把字体复制到 Fonts，"
                       "并把引擎脚本里的字体定义一起改掉。",
                  bg=CARD, fg=C_HINT, font=FONT_SMALL,
                  justify="left", wraplength=560).pack(anchor="w", pady=(6, 0))
@@ -11836,6 +11838,30 @@ class App:
         GlassButton(row1b, "还原覆盖", width=108, height=38, bg=CARD,
                     font=FONT_SMALL,
                     command=self._do_overwrite_restore).pack(side="left")
+        # ★ 覆盖用哪一版基准：默认自动（自报版本 → 指纹识别），也可手选
+        row1c = tk.Frame(c1.body, bg=CARD)
+        row1c.pack(fill="x", pady=(6, 0))
+        tk.Label(row1c, text="覆盖引擎版本：", bg=CARD, fg=C_TITLE,
+                 font=FONT_SMALL).pack(side="left")
+        try:
+            import essentials_base as _EB
+            _vers = _EB.list_baselines() or []
+        except Exception:
+            _vers = []
+        self._ow_version_labels = (
+            [("auto", "自动（自报版本 → 指纹识别）")]
+            + [(v, "v" + v) for v in _vers])
+        self.ow_version = tk.StringVar(
+            value=self._ow_version_labels[0][1])
+        self._ow_version_cb = ttk.Combobox(
+            row1c, textvariable=self.ow_version, width=26, state="readonly",
+            font=FONT_SMALL,
+            values=[lab for _v, lab in self._ow_version_labels])
+        self._ow_version_cb.pack(side="left", padx=8)
+        tk.Label(c1.body,
+                 text="默认自动；认不出版本时可手动指定要覆盖成哪一版。",
+                 bg=CARD, fg=C_HINT, font=FONT_SMALL).pack(anchor="w",
+                                                           pady=(4, 0))
         self.dbg_ow_lbl = tk.Label(c1.body, text="", bg=CARD, fg=C_KEY,
                                    font=FONT_SMALL, justify="left",
                                    wraplength=560)
@@ -11882,13 +11908,13 @@ class App:
                  font=FONT_SMALL).pack(side="left")
         self.debug_mode = tk.StringVar(value="main")
         self._debug_mode_labels = [
-            ("main", "① 通用（写 Main，启动即调试 + 跳过调试开场）"),
+            ("main", "① 通用（Scene_Map#update 写 $DEBUG=true）"),
             ("keys", "② 删条件（F9/队伍/穿墙 免 $DEBUG 可用）"),
             ("special", "③ F6 键（按 F6 直接开调试 + 提示）"),
             ("special_menu", "④ F6 键（按 F6 直接开调试菜单）"),
             ("repel", "⑤ 除虫喷雾（用喷雾即设 $DEBUG）"),
             ("repel_menu", "⑥ 除虫喷雾（用喷雾即开调试菜单）"),
-            ("rewrite", "⑦ 改名调试函数（顶掉原函数，按 T 开菜单）"),
+            ("rewrite", "⑦ 调试包装插件（新脚本覆盖调试函数/入口，按 T 开菜单）"),
             ("launcher", "⑧ 调试启动器（生成 exe，双击进调试）"),
         ]
         self._debug_mode_cb = ttk.Combobox(
@@ -12267,10 +12293,25 @@ class App:
             return None
         return self._dbg_folder(need_data=True)
 
+    def _ow_manual_version(self):
+        """覆盖页「版本」下拉框选的手动版本；自动返回 ""。"""
+        try:
+            cur = self.ow_version.get()
+        except Exception:
+            return ""
+        for key, lab in getattr(self, "_ow_version_labels", []):
+            if lab == cur:
+                return "" if key == "auto" else key
+        return ""
+
     def _do_overwrite_menus(self):
         """用基准覆盖 debug 菜单脚本（覆盖前提醒风险）。"""
         d = self._dbg_folder_data()
         if not d:
+            return
+        manual = self._ow_manual_version()
+        if manual:
+            self._do_overwrite_menus_ask(d, manual, "手动指定")
             return
         import essentials_base as EB
         try:
@@ -12302,6 +12343,10 @@ class App:
         """任务3：用基准的 Scene_Map 覆盖游戏的「地图更新」。"""
         d = self._dbg_folder_data()
         if not d:
+            return
+        manual = self._ow_manual_version()
+        if manual:
+            self._do_overwrite_scene_map_ask(d, manual, "手动指定")
             return
         import essentials_base as EB
         try:
@@ -12765,7 +12810,7 @@ class App:
                              "编辑：只开放 4 个文件：宝可梦（pokemon）、宝可梦形态"
                              "（pokemon_forms）、道具（items）、招式（moves）；"
                              "其余类型暂不提供编辑界面。\n"
-                             "提取按该版本官方引擎脚本走（v16 ~ v21.1 各自不同）；"
+                             "提取按该版本官方引擎脚本走（v16 ~ v22 各自不同）；"
                              "v16-18 会从 .dat 还原并补齐名字"
                              "（宝可梦 / 招式，取自消息表），编译时把名字写回消息表。",
                         bg=CARD, fg=C_HINT, font=FONT_SMALL, justify="left",
@@ -12837,7 +12882,7 @@ class App:
             messagebox.showwarning(
                 "认不出版本",
                 "这个游戏识别为：%s\n\nPBS 提取／编译支持 Essentials "
-                "v16 ~ v21.1 的游戏。" % (why or "未知"))
+                "v16 ~ v22 的游戏。" % (why or "未知"))
             return None, "", ""
         return root, fam, why
 
